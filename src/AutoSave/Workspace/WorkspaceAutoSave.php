@@ -126,6 +126,54 @@ final class WorkspaceAutoSave {
   }
 
   /**
+   * The workspace a bookkeeping switch is entering, while one is in progress.
+   *
+   * @see ::executeInWorkspaceUnchecked()
+   */
+  private ?string $uncheckedSwitchWorkspaceId = NULL;
+
+  /**
+   * Whether a bookkeeping switch into this workspace is in progress.
+   *
+   * @see \Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks::workspaceAccess()
+   */
+  public function isUncheckedSwitchInto(string $workspace_id): bool {
+    return $this->uncheckedSwitchWorkspaceId === $workspace_id;
+  }
+
+  /**
+   * Runs a callback inside a workspace, regardless of who triggered it.
+   *
+   * Staging bookkeeping (pending lists, discarding staged revisions when an
+   * entity is deleted, lock lookups) runs in whichever request causes it: a
+   * field admin deleting a field storage, a content editor deleting a node.
+   * Core only lets the current user switch into a workspace they may view,
+   * but bookkeeping is not a user action, so view access is granted for the
+   * switch's duration through hook_workspace_access(). Access results are
+   * statically cached per account: a cached denial is dropped before the
+   * switch and the grant afterwards.
+   *
+   * @see \Drupal\workspaces\WorkspaceManager::doSwitchWorkspace()
+   * @see \Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks::workspaceAccess()
+   */
+  private function executeInWorkspaceUnchecked(string $workspace_id, callable $callback): mixed {
+    \assert($this->workspaceManager !== NULL);
+    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
+    $wm = $this->workspaceManager;
+    $handler = $this->entityTypeManager->getAccessControlHandler('workspace');
+    $previous = $this->uncheckedSwitchWorkspaceId;
+    $this->uncheckedSwitchWorkspaceId = $workspace_id;
+    $handler->resetCache();
+    try {
+      return $wm->executeInWorkspace($workspace_id, $callback);
+    }
+    finally {
+      $this->uncheckedSwitchWorkspaceId = $previous;
+      $handler->resetCache();
+    }
+  }
+
+  /**
    * The snapshot target langcode for an entity.
    *
    * Language-less targets (config entities) use LANGCODE_NOT_SPECIFIED, not
@@ -220,13 +268,11 @@ final class WorkspaceAutoSave {
       return NULL;
     }
     \assert($entity instanceof ContentEntityInterface);
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
     $id = $entity->id();
     if ($id === NULL) {
       return NULL;
     }
-    return $wm->executeInWorkspace($owning_id, function () use ($entity, $id, $owning_id): array {
+    return $this->executeInWorkspaceUnchecked($owning_id, function () use ($entity, $id, $owning_id): array {
       $staged = $this->entityTypeManager->getStorage($entity->getEntityTypeId())->load($id);
       $info = ['workspaceId' => $owning_id, 'ownerId' => 0, 'updated' => (int) $this->time->getRequestTime()];
       if ($staged instanceof ContentEntityInterface) {
@@ -290,9 +336,7 @@ final class WorkspaceAutoSave {
     }
     $id = $entity->id();
     \assert($id !== NULL);
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
-    $reloaded = $wm->executeInWorkspace($this->getStagingWorkspaceId(), function () use ($entity, $id) {
+    $reloaded = $this->executeInWorkspaceUnchecked($this->getStagingWorkspaceId(), function () use ($entity, $id) {
       $storage = $this->entityTypeManager->getStorage($entity->getEntityTypeId());
       $loaded = $storage->load($id);
       return $loaded instanceof ContentEntityInterface ? $loaded : $entity;
@@ -312,7 +356,7 @@ final class WorkspaceAutoSave {
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
     $wm = $this->workspaceManager;
     $key = AutoSaveManager::getAutoSaveKey($entity);
-    return $wm->executeInWorkspace($this->getStagingWorkspaceId(), function () use ($entity, $id, $key, $wm): AutoSaveEntity {
+    return $this->executeInWorkspaceUnchecked($this->getStagingWorkspaceId(), function () use ($entity, $id, $key, $wm): AutoSaveEntity {
       $storage = $this->entityTypeManager->getStorage($entity->getEntityTypeId());
       $active = $storage->load($id);
       if (!$active instanceof ContentEntityInterface) {
@@ -885,7 +929,7 @@ final class WorkspaceAutoSave {
     // revisions (e.g. a page's path alias, staged as a dependent path_alias
     // entity) only resolve to their staged values inside the workspace, and
     // the emitted data_hash must match what per-entity staging reads produce.
-    $wm->executeInWorkspace($staging_workspace_id, function () use (&$out, $wm, $staging_workspace_id): void {
+    $this->executeInWorkspaceUnchecked($staging_workspace_id, function () use (&$out, $wm, $staging_workspace_id): void {
       $tracked = $this->workspaceAssociation->getTrackedEntities($staging_workspace_id);
       foreach ($tracked as $entity_type_id => $revision_map) {
         // Entities implicitly staged alongside a host item (e.g. the URL
@@ -1085,12 +1129,10 @@ final class WorkspaceAutoSave {
    * Deletes every tracked pending revision of one entity from the workspace.
    */
   private function discardTrackedRevisions(string $type_id, string $eid): void {
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
     /** @var \Drupal\workspaces\WorkspaceTrackerInterface $tracker */
     $tracker = $this->workspaceAssociation;
     $staging_workspace_id = $this->getStagingWorkspaceId();
-    $wm->executeInWorkspace($staging_workspace_id, function () use ($type_id, $eid, $tracker, $staging_workspace_id): void {
+    $this->executeInWorkspaceUnchecked($staging_workspace_id, function () use ($type_id, $eid, $tracker, $staging_workspace_id): void {
       $storage = $this->entityTypeManager->getStorage($type_id);
       if (!$storage instanceof RevisionableStorageInterface) {
         return;
@@ -1132,9 +1174,7 @@ final class WorkspaceAutoSave {
       if (empty($tracked[$dependent_type_id])) {
         continue;
       }
-      /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-      $wm = $this->workspaceManager;
-      $dependent_ids = $wm->executeInWorkspace($staging_workspace_id, function () use ($dependent_type_id, $tracked, $host_path): array {
+      $dependent_ids = $this->executeInWorkspaceUnchecked($staging_workspace_id, function () use ($dependent_type_id, $tracked, $host_path): array {
         $ids = [];
         $storage = $this->entityTypeManager->getStorage($dependent_type_id);
         foreach (\array_unique($tracked[$dependent_type_id]) as $dependent_id) {

@@ -6,6 +6,8 @@ namespace Drupal\canvas\Hook;
 
 use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\Workspace\WorkspaceReview;
+use Drupal\Core\Access\AccessResult;
+use Drupal\Core\Access\AccessResultInterface;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Hook\Attribute\Hook;
@@ -97,6 +99,22 @@ final class WorkspaceAutoSaveRevisionHooks {
   #[Hook('workspace_delete')]
   public function workspaceDelete(WorkspaceInterface $workspace): void {
     $this->workspaceAutoSave->clearWorkspaceStores((string) $workspace->id());
+  }
+
+  /**
+   * Implements hook_ENTITY_TYPE_access() for workspace entities.
+   *
+   * Grants the view access core requires to switch into a workspace while
+   * Canvas staging bookkeeping is switching into it on the user's behalf.
+   *
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::executeInWorkspaceUnchecked()
+   */
+  #[Hook('workspace_access')]
+  public function workspaceAccess(WorkspaceInterface $workspace, string $operation): AccessResultInterface {
+    if ($operation === 'view' && $this->workspaceAutoSave->isUncheckedSwitchInto((string) $workspace->id())) {
+      return AccessResult::allowed()->setCacheMaxAge(0);
+    }
+    return AccessResult::neutral();
   }
 
 }
