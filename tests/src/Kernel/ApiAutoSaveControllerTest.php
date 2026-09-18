@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\canvas\Kernel;
 
+// cspell:ignore snode
+
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\Controller\ApiAutoSaveController;

@@ -244,31 +244,31 @@ function canvas_update_11202(): void {
     $installer->install(['workspace_config']);
   }
 
-  $edum = \Drupal::entityDefinitionUpdateManager();
+  $update_manager = \Drupal::entityDefinitionUpdateManager();
 
   // The snapshot rows' workspace column; existing rows belong to the Main
   // workspace.
-  if ($edum->getFieldStorageDefinition('workspace', CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) === NULL) {
+  if ($update_manager->getFieldStorageDefinition('workspace', CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) === NULL) {
     $workspace_field = BaseFieldDefinition::create('string')
       ->setLabel(t('Workspace'))
       ->setSetting('max_length', 128)
       ->setRequired(TRUE)
       ->setDefaultValue(AutoSaveWorkspace::ID)
       ->setInitialValue(AutoSaveWorkspace::ID);
-    $edum->installFieldStorageDefinition('workspace', CanvasAutoSaveSnapshot::ENTITY_TYPE_ID, 'canvas', $workspace_field);
+    $update_manager->installFieldStorageDefinition('workspace', CanvasAutoSaveSnapshot::ENTITY_TYPE_ID, 'canvas', $workspace_field);
   }
   // Refresh the entity schema so the unique key becomes
   // (workspace, target type, target ID, langcode).
-  $snapshot_type = $edum->getEntityType(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
+  $snapshot_type = $update_manager->getEntityType(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
   if ($snapshot_type !== NULL) {
-    $edum->updateEntityType($snapshot_type);
+    $update_manager->updateEntityType($snapshot_type);
   }
 
   // Canvas's review and scheduling base fields on the workspace entity.
   $workspace_type = \Drupal::entityTypeManager()->getDefinition('workspace');
   foreach (CanvasWorkspaceHooks::entityBaseFieldInfo($workspace_type) as $field_name => $field_definition) {
-    if ($edum->getFieldStorageDefinition($field_name, 'workspace') === NULL) {
-      $edum->installFieldStorageDefinition($field_name, 'workspace', 'canvas', $field_definition);
+    if ($update_manager->getFieldStorageDefinition($field_name, 'workspace') === NULL) {
+      $update_manager->installFieldStorageDefinition($field_name, 'workspace', 'canvas', $field_definition);
     }
   }
 
@@ -332,7 +332,7 @@ function canvas_update_11203(): void {
     $workflow_storage->create(Yaml::decode((string) \file_get_contents($path)))->save();
   }
 
-  $edum = \Drupal::entityDefinitionUpdateManager();
+  $update_manager = \Drupal::entityDefinitionUpdateManager();
   $workspace_type = \Drupal::entityTypeManager()->getDefinition('workspace');
   $fields = CanvasWorkspaceHooks::entityBaseFieldInfo($workspace_type);
 
@@ -344,7 +344,7 @@ function canvas_update_11203(): void {
     ->setName('canvas_workspace_status')
     ->setTargetEntityTypeId('workspace')
     ->setProvider('canvas');
-  $existing = $edum->getFieldStorageDefinition('canvas_workspace_status', 'workspace');
+  $existing = $update_manager->getFieldStorageDefinition('canvas_workspace_status', 'workspace');
   if ($existing !== NULL && $existing->getType() !== 'string') {
     $database = \Drupal::database();
     $result = $database->select('workspace', 'w')
@@ -354,7 +354,7 @@ function canvas_update_11203(): void {
     $database->update('workspace')
       ->fields(['canvas_workspace_status' => NULL])
       ->execute();
-    $edum->updateFieldStorageDefinition($status_definition);
+    $update_manager->updateFieldStorageDefinition($status_definition);
     foreach ($statuses as $id => $status) {
       if ($status === NULL) {
         continue;
@@ -366,7 +366,7 @@ function canvas_update_11203(): void {
     }
   }
 
-  if ($edum->getFieldStorageDefinition('canvas_review_workflow', 'workspace') === NULL) {
-    $edum->installFieldStorageDefinition('canvas_review_workflow', 'workspace', 'canvas', $fields['canvas_review_workflow']);
+  if ($update_manager->getFieldStorageDefinition('canvas_review_workflow', 'workspace') === NULL) {
+    $update_manager->installFieldStorageDefinition('canvas_review_workflow', 'workspace', 'canvas', $fields['canvas_review_workflow']);
   }
 }

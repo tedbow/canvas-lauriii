@@ -101,7 +101,7 @@ final class ComponentSourceManager extends DefaultPluginManager {
     if ($this->isUpdateKernel) {
       return $this;
     }
-    // Re-entrancy guard: generation triggers cache invalidations (workspace
+    // Reentrancy guard: generation triggers cache invalidations (workspace
     // switches during config saves, entity field definition rebuilds) whose
     // listeners can call back into this method. One generation pass is
     // already doing the work; re-entering would recurse indefinitely.

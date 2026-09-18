@@ -177,9 +177,9 @@ unit of review and publish.
 10. Workspace switches became frequent (staging enters and leaves workspace
     context throughout), and every switch makes workspace_config clear
     entity field definitions, which makes layout_builder clear block plugin
-    definitions, which reaches Canvas's component generation. Ungated, that
+    definitions, which reaches Canvas's component generation. Without a gate, that
     cascade re-entered itself through the config saves generation performs
-    and hung requests. Component generation therefore carries a re-entrancy
+    and hung requests. Component generation therefore carries a reentrancy
     guard, runs outside any active workspace (generated Component config
     mirrors code, not editorial intent, so it must never stage), and the
     block manager decorator only regenerates when the block plugin ID set

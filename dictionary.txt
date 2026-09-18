@@ -113,6 +113,7 @@ liftup
 lightningcss
 Linkit
 Loro
+macrotask
 Mautic
 Mercure
 metacharacter
@@ -161,6 +162,7 @@ pubout
 Qqtnj
 rdndmb
 rearchitected
+reentrancy
 recomputations
 redoable
 redocly
@@ -173,6 +175,7 @@ reparse
 reparsed
 requiredness
 rescanning
+retargeted
 retag
 retagging
 retags
@@ -219,6 +222,7 @@ tseslint
 turbopack
 unbuilt
 unifont
+unreviewed
 Unifont
 ultrawide
 uncollapse
