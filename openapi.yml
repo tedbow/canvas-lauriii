@@ -4182,6 +4182,191 @@ paths:
                     pattern:
                       title: Test pattern
                       id: test_pattern
+  /canvas/api/v0/workspaces:
+    description: Workspaces the current user may view, and the active one.
+    get:
+      summary: List the top-level workspaces the current user may view
+      responses:
+        '200':
+          description: The visible workspaces and the ID of the active one.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - activeWorkspaceId
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workspace'
+                  activeWorkspaceId:
+                    type: [ string, "null" ]
+                    description: ID of the active workspace, or null when none is active (live).
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+    post:
+      summary: Create a workspace
+      description: The workspace ID is derived from the label.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - label
+              additionalProperties: false
+              properties:
+                label:
+                  type: string
+                  description: Human-readable label; must be non-empty.
+                requireReview:
+                  type: boolean
+                  description: Whether publishing this workspace requires review approval.
+            examples:
+              example:
+                value:
+                  label: Spring campaign
+                  requireReview: true
+      responses:
+        '201':
+          description: The created workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '400':
+          description: The label is missing or the workspace fails validation.
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+  /canvas/api/v0/workspaces/{workspace}:
+    parameters:
+      - $ref: '#/components/parameters/workspace'
+    delete:
+      summary: Delete a workspace, discarding its staged work
+      description: Deleting the active workspace switches the current user to live first.
+      responses:
+        '204':
+          description: The workspace was deleted.
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+        '409':
+          description: The Main workspace cannot be deleted.
+  /canvas/api/v0/workspaces/{workspace}/activate:
+    parameters:
+      - $ref: '#/components/parameters/workspace'
+    post:
+      summary: Activate a workspace for the current user
+      description: Persists through core's workspace negotiators, so non-Canvas surfaces observe the same active workspace.
+      responses:
+        '200':
+          description: The now-active workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+  /canvas/api/v0/workspaces/{workspace}/schedule:
+    parameters:
+      - $ref: '#/components/parameters/workspace'
+    delete:
+      summary: Cancel the workspace's scheduled publish
+      responses:
+        '200':
+          description: The workspace, no longer scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+    post:
+      summary: Schedule the workspace to publish at a given time
+      description: A review-required workspace must already be approved, exactly as if it were being published now.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - publishAt
+              additionalProperties: false
+              properties:
+                publishAt:
+                  type: integer
+                  description: Unix timestamp; must be in the future.
+            examples:
+              example:
+                value:
+                  publishAt: 1800000000
+      responses:
+        '200':
+          description: The scheduled workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '400':
+          description: The "publishAt" timestamp is missing, not an integer, or not in the future.
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+        '409':
+          description: The workspace's review state does not allow publishing.
+  /canvas/api/v0/workspaces/{workspace}/status:
+    parameters:
+      - $ref: '#/components/parameters/workspace'
+    post:
+      summary: Execute a review workflow transition on the workspace
+      description: The legacy aliases "submit" and "reject" map onto the shipped workflow's "submit_for_review" and "send_back" transitions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - transition
+              additionalProperties: false
+              properties:
+                transition:
+                  type: string
+                  description: A transition ID of the workspace's review workflow.
+            examples:
+              example:
+                value:
+                  transition: submit_for_review
+      responses:
+        '200':
+          description: The workspace after the transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '400':
+          description: The "transition" is missing.
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+        '409':
+          description: The transition is not available from the workspace's current review state.
 # @see https://spec.openapis.org/oas/v3.1.0.html#components-object
 components:
   # @see https://spec.openapis.org/oas/v3.1.0.html#schema-object
@@ -6077,6 +6262,87 @@ components:
           label:
             type: [ 'null', string ]
             description: Optional label for the component instance.
+    Workspace:
+      type: object
+      description: The client-side representation of one workspace.
+      required:
+        - id
+        - label
+        - isDefault
+        - isActive
+        - status
+        - statusLabel
+        - statusIsApproved
+        - statusIsInitial
+        - requireReview
+        - availableTransitions
+        - scheduledPublishAt
+        - scheduledPublishError
+        - pendingChangesCount
+        - access
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: The workspace ID.
+        label:
+          type: string
+          description: The workspace label.
+        isDefault:
+          type: boolean
+          description: Whether this is the Main workspace.
+        isActive:
+          type: boolean
+          description: Whether this workspace is active for the current user.
+        status:
+          type: string
+          description: The review workflow state ID.
+        statusLabel:
+          type: string
+          description: The review workflow state label.
+        statusIsApproved:
+          type: boolean
+          description: Whether the review state allows publishing.
+        statusIsInitial:
+          type: boolean
+          description: Whether the review state is the workflow's initial state.
+        requireReview:
+          type: boolean
+          description: Whether publishing requires review approval.
+        availableTransitions:
+          type: array
+          description: Review workflow transitions the current user may execute.
+          items:
+            type: object
+            required:
+              - id
+              - label
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              label:
+                type: string
+        scheduledPublishAt:
+          type: [ integer, "null" ]
+          description: Unix timestamp of the scheduled publish, or null.
+        scheduledPublishError:
+          type: [ string, "null" ]
+          description: The error from the last failed scheduled publish, or null.
+        pendingChangesCount:
+          type: integer
+          description: Approximate number of entities with pending changes in this workspace.
+        access:
+          type: object
+          required:
+            - delete
+            - publish
+          additionalProperties: false
+          properties:
+            delete:
+              type: boolean
+            publish:
+              type: boolean
   # @see https://spec.openapis.org/oas/v3.1.0.html#response-object
   responses:
     ContentEntityResponse:
@@ -6288,6 +6554,16 @@ components:
         "A config entity id":
           value:
             sdc.canvas_test_sdc.my-cta
+    workspace:
+      name: workspace
+      in: path
+      required: true
+      description: Workspace ID
+      schema:
+        type: string
+      examples:
+        example:
+          value: spring_campaign
     queryAjaxForm:
       # @see \Drupal\Core\Form\FormBuilderInterface::AJAX_FORM_REQUEST
       # @see \Drupal\Core\Form\EventSubscriber\FormAjaxSubscriber
