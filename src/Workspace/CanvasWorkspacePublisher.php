@@ -51,11 +51,13 @@ final class CanvasWorkspacePublisher {
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly WorkspaceReview $workspaceReview,
     private readonly ModuleHandlerInterface $moduleHandler,
+    // Nullable, resolved to NULL until the Workspaces module is installed
+    // (before database updates run), so the container can compile.
     /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface
+     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
      */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly object $workspaceManager,
+    private readonly ?object $workspaceManager,
   ) {}
 
   /**
@@ -83,6 +85,9 @@ final class CanvasWorkspacePublisher {
     $workspace = $this->entityTypeManager->getStorage('workspace')->load($workspace_id);
     \assert($workspace !== NULL);
 
+    if ($this->workspaceManager === NULL) {
+      throw new \LogicException('The Workspaces module is not installed.');
+    }
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
     $wm = $this->workspaceManager;
     $published_count = $wm->executeInWorkspace($workspace_id, function () use ($workspace, $account): int {

@@ -71,6 +71,10 @@ class ComponentValidationTest extends BetterConfigEntityValidationTestBase {
     'ckeditor5',
     'editor',
     'user',
+    // Canvas's dependencies (see canvas.info.yml): the review workflow it
+    // ships requires both.
+    'workspaces',
+    'workflows',
   ];
 
   /**

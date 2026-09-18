@@ -12,6 +12,8 @@ use Drupal\Component\Transliteration\TransliterationInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\workspaces\WorkspaceInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
+use Drupal\workspaces\WorkspaceTrackerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -40,25 +42,41 @@ final class ApiWorkspaceController extends ApiControllerBase {
     #[Autowire(service: 'transliteration')]
     private readonly TransliterationInterface $transliteration,
     private readonly TimeInterface $time,
+    // Nullable, resolved to NULL until the Workspaces module is installed
+    // (before database updates run), so the container can compile. The
+    // routes are unreachable until then.
     /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface
+     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
      */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly object $workspaceManager,
+    private readonly ?object $workspaceManager,
     /**
-     * @var \Drupal\workspaces\WorkspaceTrackerInterface
+     * @var \Drupal\workspaces\WorkspaceTrackerInterface|null
      */
     #[Autowire(service: 'workspaces.tracker')]
-    private readonly object $workspaceAssociation,
+    private readonly ?object $workspaceAssociation,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    if (!$this->workspaceManager instanceof WorkspaceManagerInterface) {
+      throw new \LogicException('The Workspaces module is not installed.');
+    }
+    return $this->workspaceManager;
+  }
+
+  private function workspaceTracker(): WorkspaceTrackerInterface {
+    if (!$this->workspaceAssociation instanceof WorkspaceTrackerInterface) {
+      throw new \LogicException('The Workspaces module is not installed.');
+    }
+    return $this->workspaceAssociation;
+  }
 
   /**
    * Lists the workspaces the current user may view.
    */
   public function list(): JsonResponse {
     $storage = $this->entityTypeManager->getStorage('workspace');
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
+    $wm = $this->workspaceManager();
     $active_id = $wm->hasActiveWorkspace() ? (string) $wm->getActiveWorkspace()?->id() : NULL;
     $data = [];
     foreach ($storage->loadMultiple() as $workspace) {
@@ -105,8 +123,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
       throw new BadRequestHttpException((string) $violations->get(0)->getMessage());
     }
     $workspace->save();
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
+    $wm = $this->workspaceManager();
     $active_id = $wm->hasActiveWorkspace() ? (string) $wm->getActiveWorkspace()?->id() : NULL;
     return new JsonResponse(data: $this->normalizeWorkspace($workspace, $active_id), status: Response::HTTP_CREATED);
   }
@@ -121,8 +138,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
     if ($workspace->id() === AutoSaveWorkspace::ID) {
       throw new ConflictHttpException('The Main workspace cannot be deleted.');
     }
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
+    $wm = $this->workspaceManager();
     if ($wm->hasActiveWorkspace() && $wm->getActiveWorkspace()?->id() === $workspace->id()) {
       $wm->switchToLive();
     }
@@ -137,8 +153,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
     if (!$workspace->access('view', $this->currentUser)) {
       throw new AccessDeniedHttpException('You do not have permission to switch to this workspace.');
     }
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
+    $wm = $this->workspaceManager();
     $wm->setActiveWorkspace($workspace);
     return new JsonResponse(data: $this->normalizeWorkspace($workspace, (string) $workspace->id()), status: Response::HTTP_OK);
   }
@@ -220,8 +235,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
   }
 
   private function activeWorkspaceIdOrNull(): ?string {
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
+    $wm = $this->workspaceManager();
     return $wm->hasActiveWorkspace() ? (string) $wm->getActiveWorkspace()?->id() : NULL;
   }
 
@@ -266,8 +280,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
    * review manifest is the authoritative list.
    */
   private function countPendingChanges(WorkspaceInterface $workspace): int {
-    /** @var \Drupal\workspaces\WorkspaceTrackerInterface $tracker */
-    $tracker = $this->workspaceAssociation;
+    $tracker = $this->workspaceTracker();
     $count = 0;
     foreach ($tracker->getTrackedEntities((string) $workspace->id()) as $entity_type_id => $revision_map) {
       if ($entity_type_id === 'path_alias') {
