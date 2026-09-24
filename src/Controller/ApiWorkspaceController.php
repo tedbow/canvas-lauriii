@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\canvas\Controller;
 
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\Workspace\WorkspaceNormalizer;
 use Drupal\canvas\Workspace\WorkspaceReview;
 use Drupal\canvas\Workspace\WorkspaceReviewAccessException;
 use Drupal\Component\Datetime\TimeInterface;
@@ -13,7 +14,6 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\workspaces\WorkspaceInterface;
 use Drupal\workspaces\WorkspaceManagerInterface;
-use Drupal\workspaces\WorkspaceTrackerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -37,6 +37,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly WorkspaceNormalizer $normalizer,
     private readonly WorkspaceReview $workspaceReview,
     private readonly AccountInterface $currentUser,
     #[Autowire(service: 'transliteration')]
@@ -50,11 +51,6 @@ final class ApiWorkspaceController extends ApiControllerBase {
      */
     #[Autowire(service: 'workspaces.manager')]
     private readonly ?object $workspaceManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceTrackerInterface|null
-     */
-    #[Autowire(service: 'workspaces.tracker')]
-    private readonly ?object $workspaceAssociation,
   ) {}
 
   private function workspaceManager(): WorkspaceManagerInterface {
@@ -64,20 +60,12 @@ final class ApiWorkspaceController extends ApiControllerBase {
     return $this->workspaceManager;
   }
 
-  private function workspaceTracker(): WorkspaceTrackerInterface {
-    if (!$this->workspaceAssociation instanceof WorkspaceTrackerInterface) {
-      throw new \LogicException('The Workspaces module is not installed.');
-    }
-    return $this->workspaceAssociation;
-  }
-
   /**
    * Lists the workspaces the current user may view.
    */
   public function list(): JsonResponse {
     $storage = $this->entityTypeManager->getStorage('workspace');
-    $wm = $this->workspaceManager();
-    $active_id = $wm->hasActiveWorkspace() ? (string) $wm->getActiveWorkspace()?->id() : NULL;
+    $active_id = $this->normalizer->activeWorkspaceId();
     $data = [];
     foreach ($storage->loadMultiple() as $workspace) {
       \assert($workspace instanceof WorkspaceInterface);
@@ -89,7 +77,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
       if ($workspace->hasParent()) {
         continue;
       }
-      $data[] = $this->normalizeWorkspace($workspace, $active_id);
+      $data[] = $this->normalizer->normalize($workspace, $active_id);
     }
     return new JsonResponse(data: ['data' => $data, 'activeWorkspaceId' => $active_id], status: Response::HTTP_OK);
   }
@@ -123,9 +111,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
       throw new BadRequestHttpException((string) $violations->get(0)->getMessage());
     }
     $workspace->save();
-    $wm = $this->workspaceManager();
-    $active_id = $wm->hasActiveWorkspace() ? (string) $wm->getActiveWorkspace()?->id() : NULL;
-    return new JsonResponse(data: $this->normalizeWorkspace($workspace, $active_id), status: Response::HTTP_CREATED);
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_CREATED);
   }
 
   /**
@@ -155,7 +141,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
     }
     $wm = $this->workspaceManager();
     $wm->setActiveWorkspace($workspace);
-    return new JsonResponse(data: $this->normalizeWorkspace($workspace, (string) $workspace->id()), status: Response::HTTP_OK);
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, (string) $workspace->id()), status: Response::HTTP_OK);
   }
 
   /**
@@ -188,7 +174,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
     catch (\InvalidArgumentException $e) {
       throw new ConflictHttpException($e->getMessage(), $e);
     }
-    return new JsonResponse(data: $this->normalizeWorkspace($workspace, $this->activeWorkspaceIdOrNull()), status: Response::HTTP_OK);
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_OK);
   }
 
   /**
@@ -218,7 +204,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
     $workspace->set('canvas_scheduled_publish_by', $this->currentUser->id());
     $workspace->set('canvas_scheduled_publish_error', NULL);
     $workspace->save();
-    return new JsonResponse(data: $this->normalizeWorkspace($workspace, $this->activeWorkspaceIdOrNull()), status: Response::HTTP_OK);
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_OK);
   }
 
   /**
@@ -231,70 +217,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
     $workspace->set('canvas_scheduled_publish_at', NULL);
     $workspace->set('canvas_scheduled_publish_by', NULL);
     $workspace->save();
-    return new JsonResponse(data: $this->normalizeWorkspace($workspace, $this->activeWorkspaceIdOrNull()), status: Response::HTTP_OK);
-  }
-
-  private function activeWorkspaceIdOrNull(): ?string {
-    $wm = $this->workspaceManager();
-    return $wm->hasActiveWorkspace() ? (string) $wm->getActiveWorkspace()?->id() : NULL;
-  }
-
-  /**
-   * The client-side representation of one workspace.
-   *
-   * @return array<string, mixed>
-   */
-  private function normalizeWorkspace(WorkspaceInterface $workspace, ?string $active_id): array {
-    $scheduled_at = $workspace->get('canvas_scheduled_publish_at')->value;
-    return [
-      'id' => (string) $workspace->id(),
-      'label' => (string) $workspace->label(),
-      'isDefault' => $workspace->id() === AutoSaveWorkspace::ID,
-      'isActive' => $active_id === (string) $workspace->id(),
-      'status' => $this->workspaceReview->getStatus($workspace),
-      'statusLabel' => $this->workspaceReview->getStatusLabel($workspace),
-      'statusIsApproved' => $this->workspaceReview->isApproved($workspace),
-      'statusIsInitial' => $this->workspaceReview->isInitialState($workspace),
-      'requireReview' => WorkspaceReview::requiresReview($workspace),
-      'availableTransitions' => \array_values(\array_map(
-        static fn ($transition): array => [
-          'id' => (string) $transition->id(),
-          'label' => (string) $transition->label(),
-        ],
-        $this->workspaceReview->getAvailableTransitions($workspace, $this->currentUser),
-      )),
-      'scheduledPublishAt' => $scheduled_at !== NULL ? (int) $scheduled_at : NULL,
-      'scheduledPublishError' => $workspace->get('canvas_scheduled_publish_error')->value,
-      'pendingChangesCount' => $this->countPendingChanges($workspace),
-      'access' => [
-        'delete' => $workspace->access('delete', $this->currentUser),
-        'publish' => $workspace->access('publish', $this->currentUser),
-      ],
-    ];
-  }
-
-  /**
-   * The number of entities the workspace tracks, plus Canvas snapshot drafts.
-   *
-   * An approximation for the switcher and the delete confirmation; the
-   * review manifest is the authoritative list.
-   */
-  private function countPendingChanges(WorkspaceInterface $workspace): int {
-    $tracker = $this->workspaceTracker();
-    $count = 0;
-    foreach ($tracker->getTrackedEntities((string) $workspace->id()) as $entity_type_id => $revision_map) {
-      if ($entity_type_id === 'path_alias') {
-        continue;
-      }
-      $count += \count(\array_unique($revision_map));
-    }
-    $snapshot_storage = $this->entityTypeManager->getStorage('canvas_auto_save_snapshot');
-    $count += (int) $snapshot_storage->getQuery()
-      ->accessCheck(FALSE)
-      ->condition('workspace', (string) $workspace->id())
-      ->count()
-      ->execute();
-    return $count;
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_OK);
   }
 
   /**

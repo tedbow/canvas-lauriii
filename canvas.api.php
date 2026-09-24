@@ -165,5 +165,23 @@ function hook_canvas_workspace_staged_write(\Drupal\workspaces\WorkspaceInterfac
 }
 
 /**
+ * Alters the client-side representation of a workspace.
+ *
+ * Every workspace API response returns this representation; see the
+ * `Workspace` schema in openapi.yml for the keys Canvas itself provides and
+ * the optional keys sub-modules add.
+ *
+ * @param array<string, mixed> $normalized
+ *   The normalized workspace.
+ * @param \Drupal\workspaces\WorkspaceInterface $workspace
+ *   The workspace being normalized.
+ *
+ * @see \Drupal\canvas\Workspace\WorkspaceNormalizer::normalize()
+ */
+function hook_canvas_workspace_normalize_alter(array &$normalized, \Drupal\workspaces\WorkspaceInterface $workspace): void {
+  $normalized['myModuleReviewed'] = (bool) $workspace->get('my_module_reviewed')->value;
+}
+
+/**
  * @} End of "addtogroup hooks".
  */

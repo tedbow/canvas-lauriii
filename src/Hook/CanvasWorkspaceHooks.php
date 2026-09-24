@@ -10,6 +10,7 @@ use Drupal\canvas\Workspace\WorkspaceReview;
 use Drupal\Core\Entity\EntityTypeInterface;
 use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\Hook\Attribute\Hook;
+use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\workspaces\WorkspaceInterface;
 
@@ -23,7 +24,38 @@ final class CanvasWorkspaceHooks {
 
   public function __construct(
     private readonly WorkspaceReview $workspaceReview,
+    private readonly AccountInterface $currentUser,
   ) {}
+
+  /**
+   * Implements hook_canvas_workspace_normalize_alter().
+   *
+   * Adds the review state, the transitions the current user may execute,
+   * and the schedule to the workspace API representation.
+   *
+   * @param array<string, mixed> $normalized
+   *   The normalized workspace.
+   */
+  #[Hook('canvas_workspace_normalize_alter')]
+  public function workspaceNormalizeAlter(array &$normalized, WorkspaceInterface $workspace): void {
+    $scheduled_at = $workspace->get('canvas_scheduled_publish_at')->value;
+    $normalized += [
+      'status' => $this->workspaceReview->getStatus($workspace),
+      'statusLabel' => $this->workspaceReview->getStatusLabel($workspace),
+      'statusIsApproved' => $this->workspaceReview->isApproved($workspace),
+      'statusIsInitial' => $this->workspaceReview->isInitialState($workspace),
+      'requireReview' => WorkspaceReview::requiresReview($workspace),
+      'availableTransitions' => \array_values(\array_map(
+        static fn ($transition): array => [
+          'id' => (string) $transition->id(),
+          'label' => (string) $transition->label(),
+        ],
+        $this->workspaceReview->getAvailableTransitions($workspace, $this->currentUser),
+      )),
+      'scheduledPublishAt' => $scheduled_at !== NULL ? (int) $scheduled_at : NULL,
+      'scheduledPublishError' => $workspace->get('canvas_scheduled_publish_error')->value,
+    ];
+  }
 
   /**
    * Implements hook_canvas_workspace_staged_write().

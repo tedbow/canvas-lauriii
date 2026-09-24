@@ -100,6 +100,7 @@ services:
   Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer: { }
   Drupal\canvas\AutoSave\Workspace\DeferredAutoSaveFlusher: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave: { }
+  Drupal\canvas\Workspace\WorkspaceNormalizer: { }
   Drupal\canvas\Workspace\WorkspaceReview: { }
   Drupal\canvas\Workspace\CanvasWorkspacePublisher: { }
   Drupal\canvas\Workspace\WorkspaceScheduledPublish: { }
