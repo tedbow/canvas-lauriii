@@ -11,7 +11,6 @@ use Drupal\canvas\Plugin\Field\FieldType\ComponentTreeItem;
 use Drupal\canvas\Validation\ConstraintPropertyPathTranslatorTrait;
 use Drupal\canvas\Workspace\CanvasWorkspacePublisher;
 use Drupal\canvas\Workspace\WorkspacePublishValidationException;
-use Drupal\canvas\Workspace\WorkspaceReview;
 use Drupal\Core\Cache\CacheableJsonResponse;
 use Drupal\Core\Cache\CacheableMetadata;
 use Drupal\Core\Config\ConfigFactoryInterface;
@@ -60,7 +59,6 @@ final class ApiAutoSaveController extends ApiControllerBase {
     private readonly ModuleHandlerInterface $moduleHandler,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly CanvasWorkspacePublisher $canvasWorkspacePublisher,
-    private readonly WorkspaceReview $workspaceReview,
   ) {}
 
   /**
@@ -217,20 +215,6 @@ final class ApiAutoSaveController extends ApiControllerBase {
       );
     }
 
-    // Fail fast on the review gate with an actionable message; the
-    // pre-publish subscriber enforces it authoritatively inside the publish.
-    if ($this->workspaceReview->isPublishBlocked($workspace)) {
-      return new JsonResponse(data: [
-        'errors' => [
-          [
-            'detail' => \sprintf('The "%s" workspace requires review: it must be approved before it can be published. Its current review state is "%s".', (string) $workspace->label(), $this->workspaceReview->getStatusLabel($workspace)),
-            'source' => ['pointer' => 'workspace'],
-            'code' => ErrorCodesEnum::WorkspaceNotApproved->value,
-          ],
-        ],
-      ], status: Response::HTTP_CONFLICT);
-    }
-
     try {
       $published_count = $this->canvasWorkspacePublisher->publish($workspace_id, $this->currentUser);
     }
@@ -240,9 +224,9 @@ final class ApiAutoSaveController extends ApiControllerBase {
       return $violations_response;
     }
     catch (WorkspacePublishException $e) {
-      // A pre-publish gate refused the publish (e.g. the review gate raced a
-      // demotion, or content_moderation blocking draft moderation states):
-      // a client-resolvable conflict, not a server error.
+      // A pre-publish gate refused the publish (e.g. the canvas_workflows
+      // review gate, or content_moderation blocking draft moderation
+      // states): a client-resolvable conflict, not a server error.
       return new JsonResponse(data: [
         'errors' => [
           [

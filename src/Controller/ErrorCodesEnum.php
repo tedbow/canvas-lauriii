@@ -12,7 +12,6 @@ enum ErrorCodesEnum: int {
   case ItemEntityUpdatedExternally = 4;
   case NoActiveConflictMatchingConflictId = 5;
   case AutoSaveItemNotFound = 6;
-  case WorkspaceNotApproved = 7;
   case EntityLockedInAnotherWorkspace = 8;
 
   public function getMessage(): string {
@@ -31,7 +30,6 @@ enum ErrorCodesEnum: int {
       // - somebody else resolved the conflict + published the auto-save
       // - somebody else deleted the auto-save
       self::AutoSaveItemNotFound => 'No auto-save item found to resolve a conflict on.',
-      self::WorkspaceNotApproved => 'The workspace must be approved before it can be published.',
       self::EntityLockedInAnotherWorkspace => 'This content has pending changes in another workspace.',
     };
   }
