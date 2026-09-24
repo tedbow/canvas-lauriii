@@ -1091,7 +1091,7 @@ class AutoSaveManager implements EventSubscriberInterface {
     // Publish-time staging saves the draft itself: the auto-save entry is
     // about to be consumed by the publish, so there is nothing to update —
     // and re-staging it here would write into the workspace mid-publish.
-    if ($this->workspaceReview->isDemotionSuppressed()) {
+    if ($this->workspaceAutoSave->isPublishTimeStaging()) {
       return;
     }
 

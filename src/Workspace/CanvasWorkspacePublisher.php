@@ -35,9 +35,9 @@ use Symfony\Component\Validator\ConstraintViolationListInterface;
  * module applies staged configuration on the pre-publish event, and the
  * post-publish subscriber clears Canvas's staging stores.
  *
- * The review gate is enforced by the pre-publish subscriber, so it also
- * covers publishes triggered from the core Workspaces UI; this service
- * checks it up front only to fail before doing expensive validation.
+ * Pre-publish subscribers (Canvas's snapshot gate, the canvas_workflows
+ * review gate, content_moderation) may still refuse the publish; core raises
+ * their refusal as a WorkspacePublishException.
  *
  * @see \Drupal\canvas\EventSubscriber\AutoSave\AutoSaveWorkspacePublishSubscriber
  * @see \Drupal\workspaces\WorkspacePublisher::publish()
@@ -49,7 +49,6 @@ final class CanvasWorkspacePublisher {
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly AutoSaveManager $autoSaveManager,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
-    private readonly WorkspaceReview $workspaceReview,
     private readonly ModuleHandlerInterface $moduleHandler,
     // Nullable, resolved to NULL until the Workspaces module is installed
     // (before database updates run), so the container can compile.
@@ -74,8 +73,8 @@ final class CanvasWorkspacePublisher {
    * @throws \Drupal\canvas\Workspace\WorkspacePublishValidationException
    *   When any tracked item fails validation or update access.
    * @throws \Drupal\workspaces\WorkspacePublishException
-   *   When core (or a pre-publish subscriber, e.g. the review gate) refuses
-   *   the publish.
+   *   When core (or a pre-publish subscriber, e.g. the canvas_workflows
+   *   review gate) refuses the publish.
    * @throws \Exception
    *   Publishing saves entities and applies staged config, running arbitrary
    *   hooks; anything they throw propagates.
@@ -150,9 +149,9 @@ final class CanvasWorkspacePublisher {
       // becomes a savepoint inside this one.
       $transaction = $this->database->startTransaction();
       try {
-        // Publish-time staging is not an editorial write: it must not demote
-        // the (approved) review state it is about to be gated on.
-        $this->workspaceReview->suppressDemotion(function () use ($snapshot_staged, $workspace): void {
+        // Publish-time staging is not an editorial write: staged-write
+        // listeners (e.g. a review-state demotion) must ignore these saves.
+        $this->workspaceAutoSave->executePublishTimeStaging(function () use ($snapshot_staged, $workspace): void {
           foreach ($snapshot_staged as $entity) {
             $this->stageSnapshotEntity($entity);
           }

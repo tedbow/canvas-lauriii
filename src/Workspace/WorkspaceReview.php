@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\Workspace;
 
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
 use Drupal\canvas\WorkspaceReviewPermissions;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
@@ -48,17 +49,9 @@ final class WorkspaceReview {
   public const string SUBMIT_PERMISSION = 'canvas submit workspace for review';
   public const string APPROVE_PERMISSION = 'canvas approve workspace';
 
-  /**
-   * Whether staged writes currently skip demotion.
-   *
-   * Publish-time staging saves entities into the workspace being published;
-   * those saves are not editorial writes and must not demote the approved
-   * state the publish is gated on.
-   */
-  private bool $demotionSuppressed = FALSE;
-
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly WorkspaceAutoSave $workspaceAutoSave,
   ) {}
 
   /**
@@ -230,7 +223,10 @@ final class WorkspaceReview {
    * not an action of the editor.
    */
   public function demoteOnStagedWrite(WorkspaceInterface $workspace): void {
-    if ($this->demotionSuppressed) {
+    // Publish-time staging saves entities into the workspace being published;
+    // those saves are not editorial writes and must not demote the approved
+    // state the publish is gated on.
+    if ($this->workspaceAutoSave->isPublishTimeStaging()) {
       return;
     }
     if ($this->isInitialState($workspace)) {
@@ -241,35 +237,6 @@ final class WorkspaceReview {
     $workspace->set('canvas_scheduled_publish_at', NULL);
     $workspace->set('canvas_scheduled_publish_by', NULL);
     $workspace->save();
-  }
-
-  /**
-   * Whether publish-time staging is currently running.
-   *
-   * TRUE exactly while CanvasWorkspacePublisher stages and publishes, which
-   * doubles as the "this publish went through the validated Canvas
-   * pipeline" signal for the pre-publish snapshot gate.
-   *
-   * @see \Drupal\canvas\EventSubscriber\AutoSave\AutoSaveWorkspacePublishSubscriber::onPrePublish()
-   */
-  public function isDemotionSuppressed(): bool {
-    return $this->demotionSuppressed;
-  }
-
-  /**
-   * Runs $callable with staged-write demotion suppressed.
-   *
-   * @see ::demoteOnStagedWrite()
-   */
-  public function suppressDemotion(callable $callable): mixed {
-    $previous = $this->demotionSuppressed;
-    $this->demotionSuppressed = TRUE;
-    try {
-      return $callable();
-    }
-    finally {
-      $this->demotionSuppressed = $previous;
-    }
   }
 
 }

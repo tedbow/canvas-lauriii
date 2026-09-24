@@ -133,6 +133,45 @@ final class WorkspaceAutoSave {
   private ?string $uncheckedSwitchWorkspaceId = NULL;
 
   /**
+   * Whether publish-time staging is running.
+   *
+   * @see ::executePublishTimeStaging()
+   */
+  private bool $publishTimeStaging = FALSE;
+
+  /**
+   * Whether publish-time staging is currently running.
+   *
+   * TRUE exactly while CanvasWorkspacePublisher stages snapshot-held drafts
+   * into the workspace and calls Workspace::publish(). Doubles as the "this
+   * publish went through the validated Canvas pipeline" signal for the
+   * pre-publish snapshot gate, and tells staged-write listeners that these
+   * saves are not editorial writes.
+   *
+   * @see \Drupal\canvas\Workspace\CanvasWorkspacePublisher::publish()
+   * @see \Drupal\canvas\EventSubscriber\AutoSave\AutoSaveWorkspacePublishSubscriber::onPrePublish()
+   */
+  public function isPublishTimeStaging(): bool {
+    return $this->publishTimeStaging;
+  }
+
+  /**
+   * Runs $callable with publish-time staging flagged as in progress.
+   *
+   * @see ::isPublishTimeStaging()
+   */
+  public function executePublishTimeStaging(callable $callable): mixed {
+    $previous = $this->publishTimeStaging;
+    $this->publishTimeStaging = TRUE;
+    try {
+      return $callable();
+    }
+    finally {
+      $this->publishTimeStaging = $previous;
+    }
+  }
+
+  /**
    * Whether a bookkeeping switch into this workspace is in progress.
    *
    * @see \Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks::workspaceAccess()

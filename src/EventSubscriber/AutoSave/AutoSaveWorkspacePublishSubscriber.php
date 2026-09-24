@@ -62,7 +62,7 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
     // API calls): letting them proceed would promote the workspace without
     // those drafts and then silently discard them in the post-publish
     // cleanup.
-    if (!$this->workspaceReview->isDemotionSuppressed()
+    if (!$this->workspaceAutoSave->isPublishTimeStaging()
       && $this->workspaceAutoSave->workspaceHasSnapshotRows((string) $workspace->id())) {
       $event->stopPublishing();
       $event->setPublishingStoppedReason(\sprintf(
