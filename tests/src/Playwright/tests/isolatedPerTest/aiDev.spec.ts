@@ -60,10 +60,13 @@ test.describe('AI dev chat', () => {
 
   test('Component agent turns', async ({ page, drupal, canvas, ai }) => {
     // Intercept the dev chat's calls. Counting the requests here is what holds
-    // each turn to the number it should have sent to the backend.
+    // each turn to the number it should have sent to the backend, and the
+    // conversation_id each carries is what ties the turns into one chat.
     let requests = 0;
+    const conversationIds = new Set<unknown>();
     await page.route('**/admin/api/canvas/ai-dev', async (route) => {
       requests += 1;
+      conversationIds.add(route.request().postDataJSON().conversation_id);
       // Hold every request briefly. Playwright waits for a state to arrive and
       // cannot catch one that has already flipped, so without a pause the turn
       // can finish before the running state is ever asserted on.
@@ -163,8 +166,11 @@ test.describe('AI dev chat', () => {
       progressMessage.last().locator('.aiCompletedIcon'),
     ).toBeVisible();
 
-    // Three more requests.
+    // Three more requests, all of one conversation: the backend keeps the
+    // agent's history under that id between the two turns.
     expect(requests).toBe(5);
+    expect(conversationIds.size).toBe(1);
+    expect([...conversationIds][0]).toMatch(/^conv_/);
 
     // The final request's `js_structure` rewrote the code of the component
     // already open in the editor instead of creating another one.
@@ -214,7 +220,7 @@ test.describe('AI dev chat', () => {
     const toolsTrigger = chat.locator('.custom-button');
     const menu = page.getByTestId('canvas-ai-tool-selector');
     const builderRow = menu.getByRole('button', {
-      name: /Dev Page Builder Agent/,
+      name: /Drupal Canvas Page Agent/,
     });
     const pill = page.getByTestId('canvas-ai-active-tool');
     const removeButton = pill.getByRole('button', {
@@ -226,7 +232,7 @@ test.describe('AI dev chat', () => {
     await toolsTrigger.click();
     await builderRow.click();
     await expect(menu).toBeHidden();
-    await expect(pill).toContainText('Drupal Canvas Dev Page Builder Agent');
+    await expect(pill).toContainText('Drupal Canvas Page Agent');
     await expect(removeButton).toBeEnabled();
     await expect(toolsTrigger).toBeEnabled();
 
@@ -365,5 +371,178 @@ test.describe('AI dev chat', () => {
     await expect(
       page.getByRole('textbox', { name: 'Meta description' }),
     ).toHaveValue('Visit the Canvas campus and see the builder in action.');
+  });
+
+  test('Tools dropdown', async ({ page, drupal, canvas, ai }) => {
+    // The body of every request the chat sends, in order: the Tool a message
+    // was sent with travels as its `selected_tool` key.
+    // @see \Drupal\canvas_dev_ai\Controller\CanvasDevAiBuilder::resolveAgentId()
+    const bodies: Record<string, unknown>[] = [];
+    await page.route('**/admin/api/canvas/ai-dev', async (route) => {
+      bodies.push(route.request().postDataJSON());
+      await route.continue();
+    });
+
+    await drupal.login({ username: 'ai_editor', password: 'ai_editor' });
+    await canvas.createCanvas();
+    await ai.openPanel();
+
+    const chat = page.getByTestId('canvas-ai-panel').locator('deep-chat');
+    // The Tools menu trigger is a deep-chat custom button inside its shadow
+    // DOM, which CSS locators pierce.
+    const toolsTrigger = chat.locator('.custom-button');
+    const menu = page.getByTestId('canvas-ai-tool-selector');
+    const rows = menu.getByRole('button');
+    const componentRow = menu.getByRole('button', {
+      name: /Drupal Canvas Component Agent/,
+    });
+    const builderRow = menu.getByRole('button', {
+      name: /Drupal Canvas Page Agent/,
+    });
+    const pill = page.getByTestId('canvas-ai-active-tool');
+    const removeButton = pill.getByRole('button', {
+      name: 'Remove the selected tool',
+    });
+    const answer = chat.locator('.text-message.ai-message-text');
+
+    // The menu lists every agent canvas_dev_ai.settings offers as a Tool, in
+    // the configured order, each with its label and description. Nothing is
+    // selected to begin with.
+    // @see canvas_dev_ai_install()
+    // @see \Drupal\canvas_dev_ai\Hook\CanvasDevAiHooks::jsSettingsAlter()
+    await toolsTrigger.click();
+    await expect(menu).toBeVisible();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText('Drupal Canvas Component Agent');
+    await expect(rows.nth(0)).toContainText(
+      'This agent can manipulate things in Drupal Canvas.',
+    );
+    await expect(rows.nth(1)).toContainText('Drupal Canvas Page Agent');
+    await expect(rows.nth(1)).toContainText(
+      'Builds and extends pages using existing components, edits components already on a page, and sets the page title and description.',
+    );
+    await expect(componentRow).toHaveAttribute('aria-pressed', 'false');
+    await expect(builderRow).toHaveAttribute('aria-pressed', 'false');
+    await expect(pill).toBeHidden();
+    // Escape closes the menu. Clicking the trigger would reopen it: Radix
+    // takes a click in deep-chat's shadow DOM for an outside interaction.
+    await menu.press('Escape');
+    await expect(menu).toBeHidden();
+
+    // With no Tool selected, a message is sent without a `selected_tool` key.
+    // @see modules/canvas_ai/tests/modules/canvas_ai_test/fixtures/what_is_a_cms.json
+    await ai.submitQuery('What is a CMS?');
+    await expect(answer).toHaveCount(1);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toHaveProperty('selected_tool');
+
+    // Selecting a Tool closes the menu and shows the Tool in the pill; the
+    // menu marks it as the pressed row.
+    await toolsTrigger.click();
+    await builderRow.click();
+    await expect(menu).toBeHidden();
+    await expect(pill).toContainText('Drupal Canvas Page Agent');
+    await toolsTrigger.click();
+    await expect(builderRow).toHaveAttribute('aria-pressed', 'true');
+    await expect(componentRow).toHaveAttribute('aria-pressed', 'false');
+    await menu.press('Escape');
+    await expect(menu).toBeHidden();
+
+    // A message sent with a Tool selected carries that Tool's id.
+    await ai.submitQuery('What is a CMS?');
+    await expect(answer).toHaveCount(2);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].selected_tool).toBe('drupal_canvas_page_agent');
+
+    // Selecting a different Tool replaces it in the pill, and in the next
+    // request.
+    await toolsTrigger.click();
+    await componentRow.click();
+    await expect(menu).toBeHidden();
+    await expect(pill).toContainText('Drupal Canvas Component Agent');
+    await expect(pill).not.toContainText('Page Agent');
+    await ai.submitQuery('What is a CMS?');
+    await expect(answer).toHaveCount(3);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[2].selected_tool).toBe('canvas_component_agent');
+
+    // The pill's Remove button clears the selection: the pill is removed, no
+    // row is pressed, and the next request carries no key.
+    await removeButton.click();
+    await expect(pill).toBeHidden();
+    await toolsTrigger.click();
+    await expect(componentRow).toHaveAttribute('aria-pressed', 'false');
+    await expect(builderRow).toHaveAttribute('aria-pressed', 'false');
+    await menu.press('Escape');
+    await expect(menu).toBeHidden();
+    await ai.submitQuery('What is a CMS?');
+    await expect(answer).toHaveCount(4);
+    expect(bodies).toHaveLength(4);
+    expect(bodies[3]).not.toHaveProperty('selected_tool');
+
+    // Selecting the active Tool again clears it the same way.
+    await toolsTrigger.click();
+    await componentRow.click();
+    await expect(pill).toContainText('Drupal Canvas Component Agent');
+    await toolsTrigger.click();
+    await componentRow.click();
+    await expect(menu).toBeHidden();
+    await expect(pill).toBeHidden();
+    await toolsTrigger.click();
+    await expect(componentRow).toHaveAttribute('aria-pressed', 'false');
+    await expect(builderRow).toHaveAttribute('aria-pressed', 'false');
+    await menu.press('Escape');
+    await expect(menu).toBeHidden();
+    await ai.submitQuery('What is a CMS?');
+    await expect(answer).toHaveCount(5);
+    expect(bodies).toHaveLength(5);
+    expect(bodies[4]).not.toHaveProperty('selected_tool');
+  });
+
+  test('No Tools configured', async ({ page, drupal, canvas, ai }) => {
+    const bodies: Record<string, unknown>[] = [];
+    await page.route('**/admin/api/canvas/ai-dev', async (route) => {
+      bodies.push(route.request().postDataJSON());
+      await route.continue();
+    });
+
+    // An administrator turns every Tool off on the Agents & Tools form.
+    // @see \Drupal\canvas_dev_ai\Form\CanvasDevAiAgentSelectionForm
+    await drupal.loginAsAdmin();
+    await page.goto('/admin/config/ai/canvas-ai-agent-selection');
+    await page
+      .getByRole('checkbox', { name: 'Drupal Canvas Component Agent' })
+      .uncheck();
+    await page
+      .getByRole('checkbox', { name: 'Drupal Canvas Page Agent' })
+      .uncheck();
+    await page.getByRole('button', { name: 'Save configuration' }).click();
+    await expect(
+      page.getByText('The configuration options have been saved.'),
+    ).toBeVisible();
+    await drupal.logout();
+
+    await drupal.login({ username: 'ai_editor', password: 'ai_editor' });
+    await canvas.createCanvas();
+    await ai.openPanel();
+
+    const chat = page.getByTestId('canvas-ai-panel').locator('deep-chat');
+    const answer = chat.locator('.text-message.ai-message-text');
+
+    // The chat renders without the Tools menu trigger, so there is no menu
+    // and no pill either.
+    await expect(
+      page.getByRole('textbox', { name: 'Build me a' }),
+    ).toBeVisible();
+    await expect(chat.locator('.custom-button')).toHaveCount(0);
+    await expect(page.getByTestId('canvas-ai-tool-selector')).toBeHidden();
+    await expect(page.getByTestId('canvas-ai-active-tool')).toBeHidden();
+
+    // The chat itself works, and its requests carry no `selected_tool` key.
+    // @see modules/canvas_ai/tests/modules/canvas_ai_test/fixtures/what_is_a_cms.json
+    await ai.submitQuery('What is a CMS?');
+    await expect(answer).toHaveCount(1);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toHaveProperty('selected_tool');
   });
 });

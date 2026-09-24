@@ -16,9 +16,15 @@ services:
   Drupal\canvas_headless\Routing\DetachedPreviewRouteProcessor:
     tags:
       - { name: path_processor_inbound, priority: -1000 }
+  Drupal\canvas_headless\EventSubscriber\PreviewLanguageSubscriber:
+    arguments:
+      $languagePathProcessor: '@?path_processor_language'
   Drupal\canvas_headless\EventSubscriber\CanvasContentResponseSubscriber: {}
   Drupal\canvas_headless\EventSubscriber\DetachedPreviewRouteSubscriber: {}
   Drupal\canvas_headless\CanvasContentEntityRenderer: {}
+  Drupal\canvas_headless\CanvasContentTranslationLinks:
+    arguments:
+      $negotiator: '@?language_negotiator'
   Drupal\canvas_headless\CanvasContentHeadBuilder:
     arguments:
       $metatagManager: '@?metatag.manager'

@@ -27,6 +27,7 @@ export {
   type RedemptionResult,
 } from './flows';
 export { getDraftClient, getPublicClient } from './json-api-client';
+export { createApiPrefixResolver } from './site-data';
 export { fetchPage } from './content-api';
 export {
   isPageRedirect,
@@ -35,6 +36,7 @@ export {
   type CanvasComponentTreeSlot,
   type DrupalRoute,
   type DrupalRouteEntity,
+  type DrupalRouteTranslation,
   type JsonValue,
   type Page,
   type PageHead,

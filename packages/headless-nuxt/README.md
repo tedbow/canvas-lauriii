@@ -17,8 +17,8 @@ Set the `CANVAS_SITE_URL` environment variable to your Drupal site URL.
 ## Usage
 
 **1. nuxt.config.ts** — the module mounts the draft routes and the component
-metadata endpoint, registers the CSP `frame-ancestors` middleware, compiles the
-SDK packages into both the Vue and Nitro builds, and writes the component
+metadata endpoint, registers the CSP `frame-ancestors` response hook, compiles
+the SDK packages into both the Vue and Nitro builds, and writes the component
 manifest at build time:
 
 ```ts
@@ -57,6 +57,26 @@ The module supplies a registry of every discovered component implementation, and
 the renderer consumes it automatically. During development the registry updates
 when components are added, removed, or renamed.
 
+## Editor origins and CSP
+
+By default, `frame-ancestors` admits `'self'`, the `CANVAS_SITE_URL` origin and
+the draft-session editor origin. Set `CANVAS_EDITOR_ORIGINS` to a comma- or
+whitespace-separated list of HTTP(S) URLs to replace both defaults. An empty or
+entirely invalid list admits only `'self'`. Origins are normalized and
+deduplicated; credentials, wildcards and literal IPv6 are rejected. For IPv6,
+use a DNS hostname.
+
+The Nitro `beforeResponse` hook merges CSP, preserving other directives and
+application-owned `frame-ancestors`, including repeated headers. Use
+server-rendered previews. Reconcile later hooks/hosting CSP separately: multiple
+policies intersect. Verify deployed headers. This policy controls embedding, not
+draft authorization.
+
+Both variables are read from server `process.env` per response, not public
+runtime config. Nuxt loads `.env` during dev/build; supply production
+environment values separately. Restart after environment changes, or
+rebuild/redeploy if the Nitro preset or host embeds them.
+
 ## Data access
 
 Data access happens in Nitro server routes, where the draft session cookies
@@ -66,6 +86,14 @@ live: `getClient(event)` returns the draft-aware JSON:API client and
 `useFetch()`, which forwards the request's cookies during SSR. Render
 `page.content` directly and pass the complete `page.head` object reactively to
 `useHead()`. Handle `PageRedirect` before page rendering with `navigateTo()`.
+
+The client's JSON:API prefix is resolved from the site's public site-data
+endpoint (fetched once per server instance), so sites serving JSON:API from a
+non-default prefix (e.g. `/api`) work without configuration. When that endpoint
+is unreachable, the `CANVAS_JSONAPI_PREFIX` environment variable applies, then
+the `/jsonapi` default. `getPublicClient()` and `getDraftClient()` are async for
+the same reason: `await` them like `getClient()`. For full manual control, use
+`JsonApiClient` from `@drupal-api-client/json-api-client` directly.
 
 `fetchEntity(event, { type, id, viewMode })` renders one content entity without
 page-level route or head data. Use it for embedded renders such as teaser cards.

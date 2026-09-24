@@ -28,6 +28,7 @@ use Drupal\canvas\TypedData\BetterEntityDataDefinition;
 use Drupal\canvas_test_code_components\Hook\IslandCastaway;
 use Drupal\Component\Serialization\Json;
 use Drupal\Component\Utility\Crypt;
+use Drupal\Component\Utility\DeprecationHelper;
 use Drupal\Component\Utility\NestedArray;
 use Drupal\content_translation\BundleTranslationSettingsInterface;
 use Drupal\Core\Access\AccessResultForbidden;
@@ -1817,9 +1818,14 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
    * @see https://git.drupalcode.org/project/canvas/-/merge_requests/1332#note_1424036
    */
   private static function expectImagePropsInExampleOrderOn113(int $width, int $height, string $alt): array {
-    return version_compare(\Drupal::VERSION, '11.4', '>=')
-      ? ['alt' => $alt, 'width' => $width, 'height' => $height]
-      : ['width' => $width, 'height' => $height, 'alt' => $alt];
+    // DeprecationHelper treats `11.4-dev` and `11.4.x-dev` as `11.4.0`, while
+    // plain version_compare() sorts them below `11.4`.
+    return DeprecationHelper::backwardsCompatibleCall(
+      \Drupal::VERSION,
+      '11.4',
+      fn () => ['alt' => $alt, 'width' => $width, 'height' => $height],
+      fn () => ['width' => $width, 'height' => $height, 'alt' => $alt],
+    );
   }
 
   /**
@@ -2959,7 +2965,10 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       [
         'image' => [
           'src' => '::SITE_DIR_BASE_URL::/files/image-test.png?alternateWidths=::SITE_DIR_BASE_URL::/files/styles/canvas_parametrized_width--%7Bwidth%7D/public/image-test.png.avif%3Fitok%3DujSynxBM',
-          'alt' => '',
+          // No `alt`: this image has none. The `image` shape requires only
+          // `src`, so it is omitted rather than invented as an empty string.
+          // @see json-schema-definitions://canvas.module/image
+          // @see \Drupal\canvas\PropExpressions\StructuredData\Evaluator::omitEmptyObjectProps()
           'width' => 40,
           'height' => 20,
         ],

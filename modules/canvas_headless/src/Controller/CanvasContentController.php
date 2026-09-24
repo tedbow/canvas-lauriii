@@ -10,6 +10,7 @@ use Drupal\canvas\Entity\PageVariant;
 use Drupal\canvas\Plugin\Canvas\ComponentSource\JsComponent;
 use Drupal\canvas_headless\CanvasContentEntityRenderer;
 use Drupal\canvas_headless\CanvasContentHeadBuilder;
+use Drupal\canvas_headless\CanvasContentTranslationLinks;
 use Drupal\canvas_headless\PreviewTokenInspector;
 use Drupal\canvas_headless\RenderConverter\JsComponentCanvasRenderConverter;
 use Drupal\canvas_headless\Routing\CanvasContentRouteEnhancer;
@@ -40,6 +41,7 @@ final class CanvasContentController {
     private readonly AutoSaveManager $autoSaveManager,
     private readonly CanvasContentEntityRenderer $entityRenderer,
     private readonly CanvasContentHeadBuilder $headBuilder,
+    private readonly CanvasContentTranslationLinks $translationLinks,
     #[Autowire(service: 'custom_elements.canvas_render_converter')]
     private readonly JsComponentCanvasRenderConverter $canvasRenderConverter,
     #[Autowire(service: 'custom_elements.normalizer')]
@@ -88,6 +90,8 @@ final class CanvasContentController {
       \assert($view_mode === NULL || \is_string($view_mode));
     }
 
+    $preview_language = $api_query_parameters[CanvasContentApiRequest::PREVIEW_LANGUAGE_QUERY] ?? NULL;
+    \assert($preview_language === NULL || \is_string($preview_language));
     $component_preview_id = $api_query_parameters[CanvasContentApiRequest::COMPONENT_PREVIEW_QUERY] ?? NULL;
     \assert($component_preview_id === NULL || \is_string($component_preview_id));
     $page_variant_preview_id = $api_query_parameters[CanvasContentApiRequest::PAGE_VARIANT_PREVIEW_QUERY] ?? NULL;
@@ -106,7 +110,7 @@ final class CanvasContentController {
         ->addCacheableDependency($head_result['cacheability']);
     }
     elseif ($is_preview && $page_variant_preview_id !== NULL) {
-      [$build, $render_cacheability] = $this->renderPageVariantPreview($page_variant_preview_id);
+      [$build, $render_cacheability] = $this->renderPageVariantPreview($page_variant_preview_id, $preview_language);
       $head_result = $this->headBuilder->buildFromRoute($request, $route_match);
       $cacheability = (new BubbleableMetadata())
         ->addCacheableDependency($render_cacheability)
@@ -117,6 +121,7 @@ final class CanvasContentController {
         $entity,
         $is_preview,
         $view_mode ?? 'full',
+        $preview_language,
       );
       $head_result = $this->headBuilder->build($rendered_entity);
       $cacheability = (new BubbleableMetadata())
@@ -155,6 +160,7 @@ final class CanvasContentController {
       };
     }
 
+    $language_context = $this->translationLinks->build($rendered_entity, $request, $cacheability);
     $response = new CacheableJsonResponse([
       'content' => $content,
       'head' => $head_result['head'],
@@ -163,7 +169,7 @@ final class CanvasContentController {
         $request_uri,
         $rendered_entity,
         $managed_by_canvas,
-      ),
+      ) + $language_context,
     ]);
     $response->addCacheableDependency($cacheability);
     return $response;
@@ -175,7 +181,7 @@ final class CanvasContentController {
    * @return array{?array, \Drupal\Core\Cache\CacheableMetadata}
    *   The variant render array when headless-compatible and its cacheability.
    */
-  private function renderPageVariantPreview(string $page_variant_id): array {
+  private function renderPageVariantPreview(string $page_variant_id, ?string $preview_language = NULL): array {
     $variant = $this->entityTypeManager
       ->getStorage(PageVariant::ENTITY_TYPE_ID)
       ->load($page_variant_id);
@@ -212,7 +218,7 @@ final class CanvasContentController {
       throw new CacheableAccessDeniedHttpException($cacheability, 'The page variant may not be viewed.');
     }
 
-    $result = $this->entityRenderer->buildPageVariantPreview($variant);
+    $result = $this->entityRenderer->buildPageVariantPreview($variant, $preview_language);
     $build = $result['build'];
     $cacheability = $result['cacheability']
       ->addCacheableDependency($access)
@@ -272,6 +278,7 @@ final class CanvasContentController {
     ContentEntityInterface $stored_entity,
     bool $is_preview,
     string $view_mode = 'full',
+    ?string $preview_language = NULL,
   ): array {
     $entity = $stored_entity;
     $auto_save = NULL;
@@ -302,6 +309,7 @@ final class CanvasContentController {
       $entity,
       $view_mode,
       $is_preview,
+      $preview_language,
     );
     $build = $render_result['build'];
     $cacheability = $render_result['cacheability']
