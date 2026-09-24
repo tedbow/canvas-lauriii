@@ -24,7 +24,6 @@ use Drupal\canvas\Health\HealthCheck;
 use Drupal\canvas\Health\HealthRecords;
 use Drupal\canvas\Plugin\Field\FieldType\ComponentTreeItem;
 use Drupal\canvas\Utility\TypedDataHelper;
-use Drupal\canvas\Workspace\WorkspaceReview;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Component\Utility\SortArray;
 use Drupal\content_moderation\Plugin\Field\ModerationStateFieldItemList;
@@ -43,6 +42,7 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
 use Drupal\Core\Entity\RevisionableInterface;
 use Drupal\Core\Entity\TranslatableInterface;
+use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Field\FieldItemInterface;
 use Drupal\Core\Field\FieldItemListInterface;
@@ -146,7 +146,7 @@ class AutoSaveManager implements EventSubscriberInterface {
     private readonly HealthRecords $healthRecords,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly LegacyAutoSaveMigrator $legacyAutoSaveMigrator,
-    private readonly WorkspaceReview $workspaceReview,
+    private readonly ModuleHandlerInterface $moduleHandler,
   ) {
     $this->autoSaveStore = $keyValueFactory->get(self::AUTO_SAVE_STORE);
     $this->formViolationsStore = $keyValueFactory->get(self::FORM_VIOLATIONS_STORE);
@@ -292,27 +292,26 @@ class AutoSaveManager implements EventSubscriberInterface {
     $this->workspaceAutoSave->persistStagedEntity($entity, $clientId, $immediateWorkspacePersist, $auto_save_data);
     $this->cache->delete($key);
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
-    $this->demoteStagingWorkspaceReviewState();
+    $this->invokeStagedWriteHook();
   }
 
   /**
-   * Demotes the staging workspace to draft after a Canvas staged write.
+   * Invokes hook_canvas_workspace_staged_write() for the staging workspace.
    *
    * Covers the snapshot, buffer, and key-value staging paths, which do not
-   * pass through the workspace-tracked entity save that
-   * WorkspaceAutoSaveRevisionHooks reacts to.
+   * pass through a workspace-tracked entity save that hook_entity_presave()
+   * implementations could react to.
    *
-   * @see \Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks
+   * @see hook_canvas_workspace_staged_write()
    */
-  private function demoteStagingWorkspaceReviewState(): void {
-    if (!$this->entityTypeManager->hasDefinition('workspace')) {
+  private function invokeStagedWriteHook(): void {
+    if (!$this->moduleHandler->hasImplementations('canvas_workspace_staged_write')
+      || !$this->entityTypeManager->hasDefinition('workspace')) {
       return;
     }
     $workspace = $this->entityTypeManager->getStorage('workspace')->load(self::activeWorkspaceId());
-    if ($workspace instanceof FieldableEntityInterface
-      && $workspace->hasField('canvas_workspace_status')) {
-      \assert($workspace instanceof WorkspaceInterface);
-      $this->workspaceReview->demoteOnStagedWrite($workspace);
+    if ($workspace instanceof WorkspaceInterface) {
+      $this->moduleHandler->invokeAll('canvas_workspace_staged_write', [$workspace]);
     }
   }
 

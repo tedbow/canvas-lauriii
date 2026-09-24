@@ -143,5 +143,27 @@ function hook_canvas_importmap_alter(array &$import_maps): void {
 }
 
 /**
+ * Reacts to a Canvas staged write into a workspace.
+ *
+ * Invoked after Canvas persists an auto-save (snapshot row, deferred buffer
+ * row, or key-value entry) into the active workspace. Entity saves that core
+ * tracks in the workspace (node forms, workspace_config rows) do not pass
+ * through here; implement hook_entity_presave() for those. Publish-time
+ * staging is not an editorial write: check
+ * \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::isPublishTimeStaging()
+ * to ignore it.
+ *
+ * @param \Drupal\workspaces\WorkspaceInterface $workspace
+ *   The workspace the write was staged into.
+ *
+ * @see \Drupal\canvas\AutoSave\AutoSaveManager::saveEntity()
+ */
+function hook_canvas_workspace_staged_write(\Drupal\workspaces\WorkspaceInterface $workspace): void {
+  if ($workspace->hasField('my_module_reviewed')) {
+    $workspace->set('my_module_reviewed', FALSE)->save();
+  }
+}
+
+/**
  * @} End of "addtogroup hooks".
  */

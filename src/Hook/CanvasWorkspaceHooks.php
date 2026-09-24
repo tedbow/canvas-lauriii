@@ -21,6 +21,27 @@ use Drupal\workspaces\WorkspaceInterface;
  */
 final class CanvasWorkspaceHooks {
 
+  public function __construct(
+    private readonly WorkspaceReview $workspaceReview,
+  ) {}
+
+  /**
+   * Implements hook_canvas_workspace_staged_write().
+   *
+   * An approval covers a specific content state, not future edits: any
+   * Canvas staged write demotes the workspace to its initial review state.
+   *
+   * @see \Drupal\canvas\Workspace\WorkspaceReview::demoteOnStagedWrite()
+   */
+  #[Hook('canvas_workspace_staged_write')]
+  public function workspaceStagedWrite(WorkspaceInterface $workspace): void {
+    // The workspace entity may not carry Canvas's base fields yet (update
+    // path mid-flight).
+    if ($workspace->hasField('canvas_workspace_status')) {
+      $this->workspaceReview->demoteOnStagedWrite($workspace);
+    }
+  }
+
   /**
    * Implements hook_entity_base_field_info().
    *
