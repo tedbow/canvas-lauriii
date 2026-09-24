@@ -11,6 +11,7 @@ use Drupal\canvas\Entity\BrandKit;
 use Drupal\Component\Utility\NestedArray;
 use Drupal\Core\Asset\AttachedAssetsInterface;
 use Drupal\Core\Asset\LibraryDependencyResolverInterface;
+use Drupal\Core\Cache\CacheableMetadata;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\DrupalKernelInterface;
 use Drupal\Core\Extension\ThemeInstallerInterface;
@@ -46,6 +47,7 @@ readonly final class ComponentSourceHooks {
 
   const ASSET_LIBRARY_METHOD_MAPPING = [
     'canvas/canvasData.v0.baseUrl' => 'getCanvasDataBaseUrlV0',
+    'canvas/canvasData.v0.langcode' => 'getCanvasDataLangcodeV0',
     'canvas/canvasData.v0.branding' => 'getCanvasDataBrandingV0',
     'canvas/canvasData.v0.breadcrumbs' => 'getCanvasDataBreadcrumbsV0',
     'canvas/canvasData.v0.jsonapiSettings' => 'getCanvasDataJsonApiSettingsV0',
@@ -128,16 +130,24 @@ readonly final class ComponentSourceHooks {
     // TRICKY: the `route` cache context varies also by route parameters, that
     // is unnecessary here, because this only varies by route definition.
     $page['#cache']['contexts'][] = 'route.name';
+    // The generated asset files have a content-dependent hash in their name,
+    // so responses must be invalidated when these config entities change, to
+    // make them refer to the newly generated files.
+    // @see \Drupal\canvas\Entity\AssetLibrary::postSave()
+    $cacheability = CacheableMetadata::createFromRenderArray($page);
     $asset_library = AssetLibrary::load(AssetLibrary::GLOBAL_ID);
     // The `global `asset library is guaranteed to exist, but protect even
     // against the most obscure edge cases. (Also: tests do simulate that!)
     if ($asset_library) {
       $page['#attached']['library'][] = $asset_library->getAssetLibrary($is_preview);
+      $cacheability->addCacheableDependency($asset_library);
     }
     $brand_kit = BrandKit::load(BrandKit::GLOBAL_ID);
     if ($brand_kit) {
       $page['#attached']['library'][] = $brand_kit->getAssetLibrary($is_preview);
+      $cacheability->addCacheableDependency($brand_kit);
     }
+    $cacheability->applyTo($page);
   }
 
   /**
@@ -159,6 +169,12 @@ readonly final class ComponentSourceHooks {
       // Allow overrides: only set if still NULL.
       if (NestedArray::getValue($settings, [...$path, 'baseUrl']) === NULL) {
         $canvasData = array_replace_recursive($canvasData, $this->memoize($request, 'canvas/canvasData.v0.baseUrl'));
+      }
+    }
+    if ($all || \in_array('canvas/canvasData.v0.langcode', $all_attached_asset_libraries, TRUE)) {
+      // Allow overrides: only set if still NULL.
+      if (NestedArray::getValue($settings, [...$path, 'langcode']) === NULL) {
+        $canvasData = array_replace_recursive($canvasData, $this->memoize($request, 'canvas/canvasData.v0.langcode'));
       }
     }
     if ($all || \in_array('canvas/canvasData.v0.branding', $all_attached_asset_libraries, TRUE)) {

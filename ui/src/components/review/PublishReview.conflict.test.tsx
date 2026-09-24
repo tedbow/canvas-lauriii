@@ -48,7 +48,7 @@ const renderReview = (
     onPublishClick: vi.fn(),
     onDiscardClick: vi.fn(),
     onResolveConflict: vi.fn(),
-    onReviewSelectedChanges: vi.fn(),
+    onViewClick: vi.fn(),
     isViewChangeAvailable: (change: UnpublishedChange) =>
       change.entity_type === 'canvas_page' && !change.hasConflict,
     isPublishing: false,
@@ -71,7 +71,7 @@ describe('PublishReview conflict UI', () => {
     conflictUxEnabled = true;
   });
 
-  it('skips conflicted rows when selecting all', async () => {
+  it('marks conflicted rows and counts them in the banner', async () => {
     const user = userEvent.setup();
     renderReview([
       baseChange,
@@ -89,126 +89,28 @@ describe('PublishReview conflict UI', () => {
     expect(screen.getByTestId('conflict-banner')).toHaveTextContent(
       '1 conflict to resolve',
     );
-    expect(screen.getByLabelText('Select change Page 2')).toBeDisabled();
     expect(screen.getByTestId('change-conflict-icon')).toBeInTheDocument();
-
-    await user.click(screen.getByTestId('canvas-publish-review-select-all'));
-    expect(screen.getByText('1 of 2 changes selected')).toBeInTheDocument();
+    expect(screen.getByText('2 unpublished changes')).toBeInTheDocument();
   });
 
-  it('auto-unselects a row that becomes conflicted', async () => {
-    const user = userEvent.setup();
-    const { rerender } = renderReview([baseChange]);
-
-    await user.click(screen.getByTestId('canvas-publish-review'));
-    await user.click(screen.getByLabelText('Select change Page 1'));
-    expect(screen.getByText('1 of 1 changes selected')).toBeInTheDocument();
-
-    const store = makeStore();
-    rerender(
-      <AppWrapper store={store} location="/" path="*">
-        <PublishReview
-          changes={[{ ...baseChange, hasConflict: true }]}
-          conflictCount={1}
-          errors={undefined}
-          onOpenChangeCallback={vi.fn()}
-          onPublishClick={vi.fn()}
-          onDiscardClick={vi.fn()}
-          onResolveConflict={vi.fn()}
-          isPublishing={false}
-          isDiscarding={false}
-          isUpdating={false}
-        />
-      </AppWrapper>,
-    );
-
-    expect(screen.getByText('0 of 1 changes selected')).toBeInTheDocument();
-    expect(screen.getByLabelText('Select change Page 1')).toBeDisabled();
-    expect(
-      screen.getByTestId('canvas-publish-review-select-all'),
-    ).toBeDisabled();
-  });
-
-  it('removes selected changes that disappear from the pending list', async () => {
-    const user = userEvent.setup();
-    const secondChange = {
-      ...baseChange,
-      pointer: 'canvas_page:2:en',
-      label: 'Page 2',
-      entity_id: 2,
-    };
-    const { props, rerender } = renderReview([baseChange, secondChange]);
-
-    await user.click(screen.getByTestId('canvas-publish-review'));
-    await user.click(screen.getByTestId('canvas-publish-review-select-all'));
-
-    expect(screen.getByText('2 of 2 changes selected')).toBeInTheDocument();
-
-    const store = makeStore();
-    rerender(
-      <AppWrapper store={store} location="/" path="*">
-        <PublishReview {...props} changes={[baseChange]} conflictCount={0} />
-      </AppWrapper>,
-    );
-
-    expect(screen.getByText('1 of 1 changes selected')).toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole('button', { name: 'Publish 1 selected' }),
-    );
-
-    expect(props.onPublishClick).toHaveBeenCalledWith([baseChange]);
-  });
-
-  it('clears selected rows when the review is closed without publishing', async () => {
-    const user = userEvent.setup();
-    const { props } = renderReview([baseChange]);
-
-    await user.click(screen.getByTestId('canvas-publish-review'));
-    await user.click(screen.getByLabelText('Select change Page 1'));
-    expect(screen.getByText('1 of 1 changes selected')).toBeInTheDocument();
-
-    await user.click(screen.getByLabelText('Close'));
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId('canvas-publish-reviews-content'),
-      ).not.toBeInTheDocument();
-    });
-
-    expect(props.onPublishClick).not.toHaveBeenCalled();
-
-    await user.click(screen.getByTestId('canvas-publish-review'));
-    expect(screen.getByText('0 of 1 changes selected')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'No items selected' }),
-    ).toBeDisabled();
-  });
-
-  it('publishes the latest pending change when a selected row updates', async () => {
+  it('shows the published state once the pending changes clear after publishing', async () => {
     const user = userEvent.setup();
     const { props, rerender } = renderReview([baseChange]);
 
     await user.click(screen.getByTestId('canvas-publish-review'));
-    await user.click(screen.getByLabelText('Select change Page 1'));
-    expect(screen.getByText('1 of 1 changes selected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Publish now' }));
 
-    const updatedChange = {
-      ...baseChange,
-      data_hash: 'hash-2',
-      updated: 1_777_000_001,
-    };
+    expect(props.onPublishClick).toHaveBeenCalledWith();
+
     const store = makeStore();
     rerender(
       <AppWrapper store={store} location="/" path="*">
-        <PublishReview {...props} changes={[updatedChange]} />
+        <PublishReview {...props} changes={[]} conflictCount={0} />
       </AppWrapper>,
     );
 
-    await user.click(
-      screen.getByRole('button', { name: 'Publish 1 selected' }),
-    );
-
-    expect(props.onPublishClick).toHaveBeenCalledWith([updatedChange]);
+    expect(screen.getByRole('button', { name: 'Published' })).toBeDisabled();
+    expect(screen.getByText('All changes published!')).toBeInTheDocument();
   });
 
   it('closes the review and resolves the first conflicted row from the banner', async () => {
@@ -247,13 +149,10 @@ describe('PublishReview conflict UI', () => {
     expect(
       screen.queryByTestId('change-conflict-icon'),
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Select change Page 1')).toBeEnabled();
-
-    await user.click(screen.getByTestId('canvas-publish-review-select-all'));
-    expect(screen.getByText('1 of 1 changes selected')).toBeInTheDocument();
+    expect(screen.getByText('1 unpublished change')).toBeInTheDocument();
   });
 
-  it('reviews the currently selected reviewable changes', async () => {
+  it('opens the side-by-side review for a viewable change from the row menu', async () => {
     const user = userEvent.setup();
     const { props } = renderReview([
       baseChange,
@@ -268,25 +167,21 @@ describe('PublishReview conflict UI', () => {
 
     await user.click(screen.getByTestId('canvas-publish-review'));
 
-    const reviewSelected = screen.getByRole('button', {
-      name: 'Review selected changes',
+    const [pageMenu, heroMenu] = screen.getAllByRole('button', {
+      name: 'More options',
     });
-    expect(reviewSelected).toBeDisabled();
 
-    await user.click(screen.getByLabelText('Select change Page 1'));
-    await user.click(screen.getByLabelText('Select change Hero'));
+    // The JS component is not viewable per `isViewChangeAvailable`.
+    await user.click(heroMenu);
+    expect(
+      screen.queryByRole('menuitem', { name: 'Review changes' }),
+    ).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
 
-    expect(reviewSelected).toBeEnabled();
+    await user.click(pageMenu);
+    await user.click(screen.getByRole('menuitem', { name: 'Review changes' }));
 
-    await user.click(reviewSelected);
-
-    expect(props.onReviewSelectedChanges).toHaveBeenCalledWith([
-      baseChange,
-      expect.objectContaining({
-        pointer: 'js_component:hero:en',
-      }),
-    ]);
-    expect(props.onOpenChangeCallback).toHaveBeenLastCalledWith(false);
+    expect(props.onViewClick).toHaveBeenCalledWith(baseChange);
   });
 
   it('hides the side-by-side review action when conflict UX is disabled', async () => {
@@ -295,9 +190,13 @@ describe('PublishReview conflict UI', () => {
     renderReview([baseChange]);
 
     await user.click(screen.getByTestId('canvas-publish-review'));
+    await user.click(screen.getByRole('button', { name: 'More options' }));
 
     expect(
-      screen.queryByRole('button', { name: 'Review selected changes' }),
+      screen.queryByRole('menuitem', { name: 'Review changes' }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: 'Discard changes' }),
+    ).toBeInTheDocument();
   });
 });

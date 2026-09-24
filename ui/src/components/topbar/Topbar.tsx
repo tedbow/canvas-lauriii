@@ -13,6 +13,7 @@ import PreviewControls from '@/components/PreviewControls';
 import UnpublishedChanges from '@/components/review/UnpublishedChanges';
 import ContentPreviewSelector from '@/components/templates/ContentPreviewSelector';
 import UndoRedo from '@/components/UndoRedo';
+import WorkspaceSwitcher from '@/components/workspaces/WorkspaceSwitcher';
 import NotificationBell from '@/features/notifications/NotificationBell';
 import PreviewWidthSelector from '@/features/pagePreview/PreviewWidthSelector';
 import {
@@ -52,15 +53,10 @@ const Topbar = () => {
   const canvasSettings = getCanvasSettings();
   const headlessSettings = useCanvasHeadlessSettings();
   const isPagePreview = location.pathname.startsWith('/preview/');
-  const isTranslatedTemplate =
-    location.pathname.startsWith('/preview/template/') &&
-    new URLSearchParams(location.search).has('language');
   const isFrontendEmbedded =
     headlessSettings !== undefined &&
     Boolean(entityType) &&
-    (isEditor ||
-      isTemplateEditorContext ||
-      (isPagePreview && !isTranslatedTemplate));
+    (isEditor || isTemplateEditorContext || isPagePreview);
 
   const isTranslationEnabled =
     canvasSettings?.contentTranslationEnabled ||
@@ -129,6 +125,7 @@ const Topbar = () => {
               )}
             </div>
             <div className={styles.previewCenter}>
+              <WorkspaceSwitcher />
               <PageInfo />
             </div>
             <div className={styles.previewRight}>
@@ -181,6 +178,7 @@ const Topbar = () => {
               )}
             </Flex>
             <Flex align="center" justify="center" gap="2">
+              <WorkspaceSwitcher />
               <PageInfo />
               {isTemplateEditorContext && (
                 <ContentPreviewSelector

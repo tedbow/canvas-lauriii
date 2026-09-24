@@ -14,7 +14,8 @@ hooks, and configuration may change without a deprecation path.
 - A frontend app built on the Drupal Canvas Headless SDK. The SDK ships as the workspace package
   `@drupal-canvas/headless` (framework-agnostic core) plus one adapter per framework —
   `@drupal-canvas/headless-next` (Next.js), `@drupal-canvas/headless-astro` (Astro),
-  `@drupal-canvas/headless-nuxt` (Nuxt), and `@drupal-canvas/headless-tanstack-start` (TanStack Start) — with
+  `@drupal-canvas/headless-nuxt` (Nuxt), `@drupal-canvas/headless-tanstack-start` (TanStack Start),
+  and `@drupal-canvas/headless-angular` (Angular) — with
   `@drupal-canvas/headless-react` as the shared React binding.
 
 ## Setup
@@ -58,6 +59,28 @@ hook documentation, including the site-policy `_alter` hook.
 are supported; fragments are rejected. File URLs in content responses are absolute so they resolve from the
 headless frontend rather than from the Drupal origin implicitly.
 
+### Read-only preview language
+
+Canvas's language selector passes the selected language through the embedded
+read-only draft session for pages, content templates, and page templates. The
+SDK's `fetchPage()` forwards it only while the draft session is live. It does
+not change the editable editor iframe or add a public frontend language option.
+
+The content endpoint honors this `language` hint only for preview-scoped tokens.
+When negotiation must change, it sends one private, non-cacheable HTTP 302 back
+to the same-origin content endpoint with the language-specific `requestUri` and
+preview context. `fetchPage()` follows this transport redirect with the same
+credential; it is not a frontend navigation result. A fresh request uses the
+site's language-switch URL/query negotiation before routing and rendering,
+including translation access checks, per-language page auto-saves, and template
+translation overrides merged onto draft trees. If negotiation still does not
+match after that hop, the endpoint returns 404 rather than redirecting again. A configured language
+without a translation retains Drupal's fallback; an unknown language returns 400
+when minting an assertion and 404 from the content endpoint.
+
+As with coupled previews, interface and content negotiation are expected to agree.
+Cross-domain language negotiation is not supported for this internal preview hint.
+
 ## Canvas entity endpoint
 
 `GET /canvas/content-api/entity?type={entityType}&id={id}` renders one
@@ -85,6 +108,8 @@ content-template view mode, for example
 Canvas does not manage the requested entity and view mode.
 
 ### Content response
+
+This example requests French, but renders English because the French translation is unavailable.
 
 ```text
 {
@@ -114,11 +139,17 @@ Canvas does not manage the requested entity and view mode.
   },
   "route": {
     "name": "entity.canvas_page.canonical",
-    "requestUri": "/page/1",
+    "requestUri": "/fr/page/1",
     "params": {
       "canvas_page": "1"
     },
     "managedByCanvas": true,
+    "negotiatedLanguage": "fr",
+    "translations": [
+      { "langcode": "en", "name": "English", "nativeName": "English", "url": "/contact", "translationAvailable": true, "current": false, "external": false },
+      { "langcode": "fr", "name": "French", "nativeName": "Français", "url": "/fr/page/1", "translationAvailable": false, "current": true, "external": false },
+      { "langcode": "es", "name": "Spanish", "nativeName": "Español", "url": "/es/contact", "translationAvailable": true, "current": false, "external": false }
+    ],
     "entity": {
       "entityType": "canvas_page",
       "bundle": "canvas_page",
@@ -136,6 +167,20 @@ roots in its `default` slot. Routes Canvas does not manage and managed routes wi
 
 `head` is compatible with the [Unhead](https://unhead.unjs.io/) package. It always contains `title` and may also
 contain `meta`, `link`, and `script`. Canonical links are omitted because the frontend owns its public URLs.
+
+`route.negotiatedLanguage` is the negotiated content-language ID. `route.translations` lists every enabled
+language, matching Code Components' `getPageData().mainEntity.translations`: `langcode`, localized `name`,
+`nativeName`, `url`, `translationAvailable`, and `current`. Missing and denied translations both report
+`translationAvailable: false`, with the established Code Component fallback URL semantics, not a guarantee
+of access. `current` follows `route.negotiatedLanguage`; `route.entity.langcode` identifies the rendered
+language. Monolingual sites and routes without a canonical content entity return an empty list.
+
+A non-external `url` is a site-relative Drupal request URI, with the installation base path removed and the
+language prefix or query preserved. External URLs remain absolute and are **not valid `fetchPage` input**;
+this does not add SDK support for domain negotiation. Frontends map entries to their own public URLs.
+The headless-only `external` flag and URL processing support Drupal request URIs: configured negotiation
+priority and explicit query-language selection are preserved, while editor-only preview settings are omitted.
+See [multilingual examples](../../docs/user/src/content/docs/headless/multilingual-sites.mdx#translation-links).
 
 ### Redirect response
 

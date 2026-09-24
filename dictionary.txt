@@ -5,6 +5,7 @@ adrs
 agentic
 aiwizard
 alternatewidths
+amateescu
 apikey
 astrojs
 atrule
@@ -34,6 +35,7 @@ CODEOWNERS
 codespaces
 cookieless
 cqmr
+CRDT
 cset
 csstree
 cycache
@@ -48,6 +50,7 @@ devizzent
 dhta
 diaclone
 demi
+discardable
 domcontentloaded
 drupalcode
 drupaldev
@@ -57,6 +60,7 @@ echoai
 endapply
 entityviewdisplay
 Español
+Espinola
 esque
 extralight
 extensionless
@@ -71,6 +75,7 @@ gerbeaud
 gesturechange
 gestureend
 gesturestart
+Glaman
 granularities
 greppable
 heredocs
@@ -107,7 +112,10 @@ leftbar
 liftup
 lightningcss
 Linkit
+Loro
+macrotask
 Mautic
+Mercure
 metacharacter
 metatag
 microlink
@@ -123,6 +131,7 @@ nums
 Nygard
 Nygard's
 OPENCOLLECTIVE
+openspec
 outro
 parallelizable
 personalizable
@@ -153,6 +162,7 @@ pubout
 Qqtnj
 rdndmb
 rearchitected
+reentrancy
 recomputations
 redoable
 redocly
@@ -165,12 +175,17 @@ reparse
 reparsed
 requiredness
 rescanning
+retargeted
+retag
+retagging
+retags
 rgba
 RGBA
 rightbar
 rightclick
 roundtripped
 rtkq
+rumgr
 scriptification
 scriptified
 scriptify
@@ -196,6 +211,7 @@ SVAY
 tamperable
 targetable
 testid
+Timmanee
 tmgmt
 toctou
 toolset
@@ -207,17 +223,22 @@ tseslint
 turbopack
 unbuilt
 unifont
+unreviewed
 Unifont
 ultrawide
 uncollapse
 uncollapsed
 uncollapses
+unconfigured
+unfork
+unforking
 unhydrated
 unlayered
 unloadable
 unmixable
 unmodeled
 unparseable
+unconstructed
 unrenderable
 unpartitioned
 unrooted
@@ -242,6 +263,13 @@ WSODs
 wght
 xmdi
 ymls
+
+# Angular package format, compiler output, and hydration terminology
+fesm
+packagr
+projectable
+ɵɵdefine
+ɵɵng
 
 # Coding agent list maintained in packages/create/src/lib/agents.ts
 adal
@@ -284,3 +312,4 @@ wrappable
 xclip
 xsel
 zencoder
+unflushed

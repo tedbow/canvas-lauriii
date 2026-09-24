@@ -25,6 +25,10 @@ final class BrandKitValidationTest extends BetterConfigEntityValidationTestBase 
     'canvas',
     'file',
     'user',
+    // Canvas's dependencies (see canvas.info.yml): the review workflow it
+    // ships requires both.
+    'workspaces',
+    'workflows',
   ];
 
   /**

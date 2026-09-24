@@ -198,6 +198,7 @@ canvas.api.config.list: &config_list_route
   methods: [GET]
 
 # Specialized version of the `canvas.api.config.list` for ContentTemplates.
+
 canvas.api.config.list.content_template:
   <<: *config_list_route
   path: '/canvas/api/v0/config/content_template'
@@ -213,6 +214,7 @@ canvas.api.config.list.content_template:
 
 # Return an actionable 410 response to clients that still use Page Regions.
 # @todo Remove the Page Region 410 routes and related compatibility handling in Canvas 2.0.0.
+
 canvas.api.config.page_region.gone.collection:
   path: '/canvas/api/v0/config/page_region'
   defaults:
@@ -305,6 +307,7 @@ canvas.api.content.auto-save.patch:
   methods: [PATCH]
 
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.create:
   path: '/canvas/api/v0/content/{entity_type}'
   defaults:
@@ -317,6 +320,7 @@ canvas.api.content.create:
     canvas_external_api: true
   methods: ['POST']
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.delete:
   path: '/canvas/api/v0/content/canvas_page/{canvas_page}'
   defaults:
@@ -333,6 +337,7 @@ canvas.api.content.delete:
     canvas_external_api: true
   methods: ['DELETE']
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.get:
   path: '/canvas/api/v0/content/canvas_page/{canvas_page}'
   defaults:
@@ -349,6 +354,7 @@ canvas.api.content.get:
     canvas_external_api: true
   methods: [GET]
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.get.by_uuid:
   path: '/canvas/api/v0/content/canvas_page/by-uuid/{canvas_page}'
   defaults:
@@ -365,6 +371,7 @@ canvas.api.content.get.by_uuid:
     canvas_external_api: true
   methods: [GET]
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.langcode.patch:
   path: '/canvas/api/v0/content/canvas_page/{canvas_page}/langcode'
   defaults:
@@ -380,6 +387,7 @@ canvas.api.content.langcode.patch:
   methods: [PATCH]
 
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.list:
   path: '/canvas/api/v0/content/{entity_type}'
   defaults:
@@ -393,6 +401,7 @@ canvas.api.content.list:
     # Indicate that external applications may use this route. For authentication, see `modules/canvas_oauth/README.md`.
     canvas_external_api: true
 # @todo https://www.drupal.org/i/3498525 should generalize this to all eligible content entity types by using a route callback
+
 canvas.api.content.patch:
   path: '/canvas/api/v0/content/canvas_page/{canvas_page}'
   defaults:
@@ -468,6 +477,7 @@ canvas.api.form.component_instance: &component_instance_form_route
     - POST
 
 # Specialized version of the `canvas.api.form.component_instance` route, with one additional route parameter.
+
 canvas.api.form.component_instance.content_template:
   <<: *component_instance_form_route
   path: '/canvas/api/v0/form/component-instance/content_template/{entity}/{preview_entity}'
@@ -485,6 +495,7 @@ canvas.api.form.component_instance.content_template:
 
 # Specialized version of the `canvas.api.form.component_instance` route for
 # Pattern config entities. Patterns render standalone, so no preview entity.
+
 canvas.api.form.component_instance.pattern:
   <<: *component_instance_form_route
   path: '/canvas/api/v0/form/component-instance/pattern/{entity}'
@@ -560,6 +571,7 @@ canvas.api.layout.get: &layout_get_route
   methods: [GET]
 
 # Specialized version of the `canvas.api.layout.get` route, with one additional route parameter.
+
 canvas.api.layout.get.content_template:
   <<: *layout_get_route
   path: '/canvas/api/v0/layout-content-template/{entity}/{preview_entity}'
@@ -579,6 +591,7 @@ canvas.api.layout.get.content_template:
 # Specialized version of the `canvas.api.layout.get` route for Pattern config
 # entities. Patterns render standalone (no preview entity), so this route locks
 # `entity` to `pattern` and takes no extra param.
+
 canvas.api.layout.get.pattern:
   <<: *layout_get_route
   path: '/canvas/api/v0/layout-pattern/{entity}'
@@ -605,6 +618,7 @@ canvas.api.layout.patch: &layout_patch_route
   methods: [PATCH]
 
 # Specialized version of the `canvas.api.layout.patch` route, with one additional route parameter.
+
 canvas.api.layout.patch.content_template:
   <<: *layout_patch_route
   path: '/canvas/api/v0/layout-content-template/{entity}/{preview_entity}'
@@ -619,6 +633,7 @@ canvas.api.layout.patch.content_template:
 # Specialized version of the `canvas.api.layout.patch` route for Pattern config
 # entities. Patterns render standalone (no preview entity), so this route locks
 # `entity` to `pattern` and takes no extra param.
+
 canvas.api.layout.patch.pattern:
   <<: *layout_patch_route
   path: '/canvas/api/v0/layout-pattern/{entity}'
@@ -647,6 +662,7 @@ canvas.api.layout.post: &layout_post_route
   methods: [POST]
 
 # Specialized version of the `canvas.api.layout.post` route, with one additional route parameter.
+
 canvas.api.layout.post.content_template:
   <<: *layout_post_route
   path: '/canvas/api/v0/layout-content-template/{entity}/{preview_entity}'
@@ -660,6 +676,7 @@ canvas.api.layout.post.content_template:
 # Specialized version of the `canvas.api.layout.post` route for Pattern config
 # entities. Unlike ContentTemplates, Patterns render standalone (no preview
 # entity), so this route locks `entity` to `pattern` and takes no extra param.
+
 canvas.api.layout.post.pattern:
   <<: *layout_post_route
   path: '/canvas/api/v0/layout-pattern/{entity}'
@@ -765,6 +782,7 @@ canvas.api.settings.default_page_variant.get:
     _format: 'json'
     canvas_external_api: true
   methods: [GET]
+
 canvas.api.settings.default_page_variant.set:
   path: '/canvas/api/v0/settings/default-page-variant'
   defaults:
@@ -783,8 +801,7 @@ canvas.api.site_data:
   defaults:
     _controller: 'Drupal\canvas\Controller\SiteDataController::get'
   requirements:
-    _canvas_authentication_required: TRUE
-    _canvas_ui_access: 'TRUE'
+    _access: 'TRUE'
     _format: 'json'
   methods: [GET]
   options:
@@ -926,6 +943,98 @@ canvas.api.usage.component.list:
     _format: 'json'
   methods: [GET]
 
+canvas.api.workspaces.activate:
+  path: '/canvas/api/v0/workspaces/{workspace}/activate'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::activate'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [POST]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
+canvas.api.workspaces.create:
+  path: '/canvas/api/v0/workspaces'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::create'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [POST]
+  options:
+    _format: 'json'
+
+canvas.api.workspaces.delete:
+  path: '/canvas/api/v0/workspaces/{workspace}'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::delete'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [DELETE]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
+canvas.api.workspaces.list:
+  path: '/canvas/api/v0/workspaces'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::list'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: ['GET']
+  options:
+    _format: 'json'
+
+canvas.api.workspaces.schedule:
+  path: '/canvas/api/v0/workspaces/{workspace}/schedule'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::schedule'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [POST]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
+canvas.api.workspaces.status:
+  path: '/canvas/api/v0/workspaces/{workspace}/status'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::status'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [POST]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
+canvas.api.workspaces.unschedule:
+  path: '/canvas/api/v0/workspaces/{workspace}/schedule'
+  defaults:
+    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::unschedule'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [DELETE]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
 canvas.boot.app:
   # Deep links into an extension's own client-side routes
   # (e.g. /canvas/app/foo/reports) also boot this route: the inbound path
@@ -980,6 +1089,7 @@ canvas.component.status:
     _title: 'Components status'
   requirements:
     _permission: 'administer themes'
+
 entity.canvas_page.add_page:
   path: '/admin/content/pages/add'
   defaults:
@@ -990,6 +1100,7 @@ entity.canvas_page.add_page:
     _csrf_token: 'TRUE'
   options:
     _admin_route: TRUE
+
 entity.component.audit:
   path: '/admin/appearance/component/{component}/audit'
   defaults:
@@ -998,6 +1109,7 @@ entity.component.audit:
   requirements:
     _canvas_authentication_required: TRUE
     _entity_access: 'component.audit'
+
 entity.component.delete_form:
   path: '/admin/appearance/component/delete/{component}'
   defaults:
@@ -1005,6 +1117,7 @@ entity.component.delete_form:
     _title: 'Delete component'
   requirements:
     _entity_access: 'component.delete'
+
 entity.component.disable:
   path: '/admin/appearance/component/{component}/disable'
   defaults:
@@ -1014,6 +1127,7 @@ entity.component.disable:
     _canvas_authentication_required: TRUE
     _entity_access: 'component.disable'
     _csrf_token: 'TRUE'
+
 entity.component.enable:
   path: '/admin/appearance/component/{component}/enable'
   defaults:
@@ -1024,6 +1138,7 @@ entity.component.enable:
     _entity_access: 'component.enable'
     _csrf_token: 'TRUE'
 # @todo Remove this once linking to the Canvas Content Template editor UI is possible in https://www.drupal.org/i/3551708
+
 entity.content_template.edit_form:
   path: '/admin/structure/content-template/{content_template}'
   defaults:
@@ -1037,6 +1152,7 @@ entity.content_template.edit_form:
         type: entity:content_template
     _admin_route: TRUE
 # @todo Remove this once linking to the Canvas Page Variant editor UI is possible
+
 entity.page_variant.edit_form:
   path: '/admin/structure/page-variant/{page_variant}'
   defaults:

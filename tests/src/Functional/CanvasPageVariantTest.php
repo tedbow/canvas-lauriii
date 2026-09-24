@@ -150,6 +150,8 @@ class CanvasPageVariantTest extends FunctionalTestBase {
     Role::load('canvaspageadmin')
       ?->grantPermission(Page::EDIT_PERMISSION)
         ->grantPermission(PageVariant::ADMIN_PERMISSION)
+        // Canvas API requests run inside the Canvas workspace.
+        ->grantPermission('view any workspace')
         ->save();
     $this->rebuildContainer();
     $this->generateComponentConfig();
@@ -618,6 +620,11 @@ class CanvasPageVariantTest extends FunctionalTestBase {
     // @see \Drupal\canvas\EventSubscriber\PageVariantSelectorSubscriber
     if ($this->container->get(ModuleHandlerInterface::class)->moduleExists('canvas')) {
       $expected_baseline_cache_tags[] = 'config:canvas.settings';
+      // Every front-end page also depends on the global asset library and
+      // brand kit, whose generated files it refers to.
+      // @see \Drupal\canvas\Hook\ComponentSourceHooks::pageAttachments()
+      $expected_baseline_cache_tags[] = 'config:canvas.asset_library.global';
+      $expected_baseline_cache_tags[] = 'config:canvas.brand_kit.global';
     }
     $expected_dependency_cacheability = new CacheableMetadata();
     array_walk(
@@ -670,6 +677,13 @@ class CanvasPageVariantTest extends FunctionalTestBase {
       'user.permissions',
       'user.roles:authenticated',
     ], $expected_additional_cache_contexts);
+    // Once the canvas module (and with it, workspaces) is installed, core
+    // workspaces adds the required 'workspace' cache context to every render
+    // array.
+    // @see \Drupal\workspaces\WorkspacesServiceProvider
+    if ($this->container->get(ModuleHandlerInterface::class)->moduleExists('workspaces')) {
+      $expected_cache_contexts[] = 'workspace';
+    }
     $optimized_cache_contexts = $this->container->get(CacheContextsManager::class)->optimizeTokens($expected_cache_contexts);
     $this->assertCacheContexts($optimized_cache_contexts, include_default_contexts: FALSE);
     $this->assertSession()->responseHeaderEquals('X-Drupal-Cache-Max-Age', '-1 (Permanent)');

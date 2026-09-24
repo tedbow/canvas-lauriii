@@ -1,13 +1,21 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { Option } from 'commander';
-import yaml from 'js-yaml';
 import { parse } from '@babel/parser';
 import * as p from '@clack/prompts';
-import { discoverCanvasProject } from '@drupal-canvas/discovery';
+import {
+  discoverCanvasProject,
+  loadComponentsMetadata,
+  transformColorExamplesInProps,
+} from '@drupal-canvas/discovery';
 import { resolveHostGlobalCssPath } from '@drupal-canvas/vite-compat';
 
 import { ensureConfig, getConfig } from '../config';
+import {
+  planColorPull,
+  readBrandKitColorsFile,
+  writeBrandKitColorsConfig,
+} from '../lib/colors/color-pull.js';
 import {
   buildExistingVariantKeys,
   pullFonts,
@@ -26,6 +34,7 @@ import { printCommandIntro } from '../utils/command-intro';
 import { appendCommandSummarySection } from '../utils/command-summary';
 import { contentTemplateToAuthored } from '../utils/content-templates';
 import { ensureTailwindImportAtTop } from '../utils/ensure-global-css-tailwind-import';
+import { mergePackageJsonDependencies } from '../utils/merge-package-json';
 import { pageVariantToAuthoredSpec } from '../utils/page-variants';
 import { pageToAuthoredSpec } from '../utils/pages';
 import { stripProjectedContentEntityReferencePropKeys } from '../utils/process-component-files';
@@ -33,8 +42,10 @@ import {
   COMMAND_RESULT_REPORT_OPTIONS,
   reportResults,
 } from '../utils/report-results';
+import { dumpMetadataWithComments } from '../utils/yaml-comments.js';
 
 import type {
+  ComponentMetadata,
   DiscoveredComponent,
   DiscoveredContentTemplate,
   DiscoveredPage,
@@ -46,7 +57,11 @@ import type {
 } from '@drupal-canvas/ui/types/CodeComponent';
 import type { Command } from 'commander';
 import type { ApiService } from '../services/api';
-import type { Component } from '../types/Component';
+import type {
+  BrandKitColorEntry,
+  ColorFolderEntry,
+  Component,
+} from '../types/Component';
 import type { ContentTemplateListItem } from '../types/ContentTemplate';
 import type { Metadata } from '../types/Metadata';
 import type { PageListItem } from '../types/Page';
@@ -228,10 +243,28 @@ export function buildSkippedLocalOnlyPullResources(
   ];
 }
 
+/**
+ * Shared mutable reference for brand kit colors, populated during
+ * brand kit task prepare() and used during component task execute().
+ */
+interface BrandKitColorsRef {
+  colors: BrandKitColorEntry[];
+}
+
+/**
+ * Shared ref populated by the brand kit task prepare() and used during
+ * component task execute() for folder-aware color prop comments.
+ */
+interface ColorFolderRef {
+  folders: ColorFolderEntry[];
+}
+
 export function createComponentsPullTask(
   apiService: ApiService,
   componentDir: string,
   skipOverwrite: boolean,
+  brandKitColorsRef: BrandKitColorsRef,
+  colorFolderRef: ColorFolderRef,
 ): PullTask {
   let components: Record<string, Component> = {};
   const localComponentMap = new Map<string, DiscoveredComponent>();
@@ -239,16 +272,25 @@ export function createComponentsPullTask(
   let preferJsxForNewComponents = false;
 
   function buildMetadata(component: Component): Metadata {
+    // Build UUID → BrandKitColorEntry map from the shared ref.
+    const colorsByUuid = new Map(
+      brandKitColorsRef.colors.map((c) => [c.id, c]),
+    );
+
     const metadata: Metadata = {
       name: component.name,
       machineName: component.machineName,
       status: component.status,
       required: component.required || [],
-      props: {
-        properties: stripProjectedContentEntityReferencePropKeys(
-          component.props || {},
-        ),
-      },
+      props: transformColorExamplesInProps(
+        {
+          properties: stripProjectedContentEntityReferencePropKeys(
+            component.props || {},
+          ),
+        },
+        colorsByUuid,
+        'toVarKey',
+      ) as Metadata['props'],
       slots: Array.isArray(component.slots) ? {} : component.slots || {},
       dataDependencies: component.dataDependencies?.entityFields
         ? { entityFields: component.dataDependencies.entityFields }
@@ -263,8 +305,12 @@ export function createComponentsPullTask(
     paths: { metadataPath: string; jsPath: string; cssPath: string },
   ): Promise<void[]> {
     const metadata = buildMetadata(component);
+    const yamlWithComments = dumpMetadataWithComments(
+      metadata,
+      colorFolderRef.folders,
+    );
     const writes: Promise<void>[] = [
-      fs.writeFile(paths.metadataPath, yaml.dump(metadata), 'utf-8'),
+      fs.writeFile(paths.metadataPath, yamlWithComments, 'utf-8'),
     ];
 
     if (component.sourceCodeJs) {
@@ -446,8 +492,10 @@ export function createPagesPullTask(
   apiService: ApiService,
   pagesDir: string,
   skipOverwrite: boolean,
+  componentDir?: string,
 ): PullTask {
   let pages: Record<string, PageListItem> = {};
+  let componentMetadata: ComponentMetadata[] = [];
   const localPageMap = new Map<string, DiscoveredPage>();
   const localPageSlugMap = new Map<string, DiscoveredPage>();
 
@@ -477,8 +525,13 @@ export function createPagesPullTask(
     async prepare(): Promise<PullTaskPrepareResult> {
       const [fetchedPages, discoveryResult] = await Promise.all([
         apiService.listPages(),
-        discoverCanvasProject({ pagesRoot: pagesDir }),
+        discoverCanvasProject({
+          pagesRoot: pagesDir,
+          ...(componentDir ? { componentRoot: componentDir } : {}),
+        }),
       ]);
+
+      componentMetadata = await loadComponentsMetadata(discoveryResult);
 
       pages = fetchedPages;
 
@@ -540,7 +593,9 @@ export function createPagesPullTask(
             continue;
           }
 
-          const localData = pageToAuthoredSpec(fullPage);
+          const localData = pageToAuthoredSpec(fullPage, {
+            componentMetadata,
+          });
 
           const fileName = getPageSlug(page);
           const filePath =
@@ -575,8 +630,10 @@ export function createContentTemplatesPullTask(
   apiService: ApiService,
   contentTemplatesDir: string,
   skipOverwrite: boolean,
+  componentDir?: string,
 ): PullTask {
   let templates: Record<string, ContentTemplateListItem> = {};
+  let componentMetadata: ComponentMetadata[] = [];
   const localById = new Map<string, DiscoveredContentTemplate>();
 
   return {
@@ -586,9 +643,13 @@ export function createContentTemplatesPullTask(
     async prepare(): Promise<PullTaskPrepareResult> {
       const [fetchedTemplates, discoveryResult] = await Promise.all([
         apiService.listContentTemplates(),
-        discoverCanvasProject({ contentTemplatesRoot: contentTemplatesDir }),
+        discoverCanvasProject({
+          contentTemplatesRoot: contentTemplatesDir,
+          ...(componentDir ? { componentRoot: componentDir } : {}),
+        }),
       ]);
 
+      componentMetadata = await loadComponentsMetadata(discoveryResult);
       templates = fetchedTemplates;
 
       for (const discovered of discoveryResult.contentTemplates) {
@@ -627,7 +688,10 @@ export function createContentTemplatesPullTask(
 
           const fullTemplate = await apiService.getContentTemplate(listItem.id);
 
-          const authored = contentTemplateToAuthored(fullTemplate);
+          const authored = contentTemplateToAuthored(
+            fullTemplate,
+            componentMetadata,
+          );
 
           const filePath =
             discovered?.path ??
@@ -675,9 +739,11 @@ export function createPageTemplatesPullTask(
   apiService: ApiService,
   pageTemplatesDir: string,
   skipOverwrite: boolean,
+  componentDir?: string,
 ): PullTask {
   let pageVariants: Record<string, PageVariant> = {};
   let defaultVariantId: string | null = null;
+  let componentMetadata: ComponentMetadata[] = [];
   const localPageTemplateMap = new Map<string, DiscoveredPageTemplate>();
 
   return {
@@ -688,9 +754,13 @@ export function createPageTemplatesPullTask(
       const [fetched, defaultVariant, discoveryResult] = await Promise.all([
         apiService.listPageVariants(),
         apiService.getDefaultPageVariant(),
-        discoverCanvasProject({ pageTemplatesRoot: pageTemplatesDir }),
+        discoverCanvasProject({
+          pageTemplatesRoot: pageTemplatesDir,
+          ...(componentDir ? { componentRoot: componentDir } : {}),
+        }),
       ]);
 
+      componentMetadata = await loadComponentsMetadata(discoveryResult);
       pageVariants = fetched;
       defaultVariantId = defaultVariant.default_page_variant;
       for (const discovered of discoveryResult.pageTemplates) {
@@ -755,6 +825,7 @@ export function createPageTemplatesPullTask(
           const localData = pageVariantToAuthoredSpec(
             variant,
             variant.id === defaultVariantId,
+            componentMetadata,
           );
           const filePath =
             discovered?.path ??
@@ -855,9 +926,9 @@ export function createAssetsPullTask(
     async execute(): Promise<PullTaskResult> {
       const results: Result[] = [];
       const notes: string[] = [];
-      // Set when the pulled `package.json` is newly created or its content
-      // differs from what was on disk, so the user is reminded to reinstall
-      // dependencies. An identical overwrite raises no note.
+      // Set when the pulled `package.json` is newly created or gains added
+      // dependencies, so the user is reminded to reinstall. A no-op merge (no
+      // missing dependencies) raises no note.
       let packageJsonChanged = false;
       if (globalCss) {
         try {
@@ -891,23 +962,51 @@ export function createAssetsPullTask(
               success: true,
               details: [{ content: 'Skipped (already exists)' }],
             });
-          } else {
-            // Compare against the on-disk file (if any) before overwriting, so
-            // the dependency-install reminder only fires on a real change.
-            const previous = packageJsonExists
-              ? await fs.readFile(packageJsonPath, 'utf-8').catch(() => null)
-              : null;
-            packageJsonChanged = previous !== packageJson;
+          } else if (!packageJsonExists) {
+            // No local file to preserve: write the pulled manifest verbatim.
             await fs.writeFile(packageJsonPath, packageJson, 'utf-8');
+            packageJsonChanged = true;
             results.push({ itemName: 'package.json', success: true });
+          } else {
+            // A local file exists: preserve it and only add dependencies it is
+            // missing, so project-owned fields (scripts, metadata) survive.
+            const local = await fs.readFile(packageJsonPath, 'utf-8');
+            const { output, added } = mergePackageJsonDependencies(
+              local,
+              packageJson,
+            );
+            if (output === null) {
+              results.push({
+                itemName: 'package.json',
+                success: true,
+                details: [{ content: 'No changes' }],
+              });
+            } else {
+              await fs.writeFile(packageJsonPath, output, 'utf-8');
+              packageJsonChanged = true;
+              for (const name of added) {
+                results.push({
+                  itemName: name,
+                  itemType: 'Dependency',
+                  success: true,
+                  details: [{ content: 'Added' }],
+                });
+              }
+            }
           }
         } catch (error) {
+          // A malformed local `package.json` fails only this item; the rest of
+          // the pull continues. The local file is left untouched.
           const errorMessage =
             error instanceof Error ? error.message : String(error);
           results.push({
             itemName: 'package.json',
             success: false,
-            details: [{ content: errorMessage }],
+            details: [
+              {
+                content: `Could not merge dependencies: ${errorMessage}. Fix the local package.json and pull again.`,
+              },
+            ],
           });
         }
       }
@@ -1005,56 +1104,99 @@ export function createAssetsPullTask(
   };
 }
 
-export function createFontsPullTask(
+export function createBrandKitPullTask(
   apiService: ApiService,
   projectRoot: string,
+  skipOverwrite: boolean = false,
+  brandKitColorsRef: BrandKitColorsRef,
+  colorFolderRef: ColorFolderRef,
 ): PullTask {
   let totalFontVariants = 0;
   let newCount = 0;
   let existingCount = 0;
+  let remoteColors: BrandKitColorEntry[] = [];
 
   return {
     startLabel: 'Pulling brand kit',
     stopLabel: 'Pulled brand kit',
 
     async prepare(): Promise<PullTaskPrepareResult> {
-      const [brandKit, brandKitConfig] = await Promise.all([
+      const [brandKit, brandKitConfig, folders] = await Promise.all([
         apiService.getBrandKit(),
         readBrandKitConfig(projectRoot),
+        apiService.getFolders(),
       ]);
 
+      // Populate the shared ref so component pull can resolve color examples.
+      remoteColors = brandKit.colors ?? [];
+      brandKitColorsRef.colors = remoteColors;
+
+      // Populate the shared ref so component pull can add folder comments.
+      const colorFolders = folders.filter((f) => f.type === 'color');
+      colorFolderRef.folders = colorFolders;
+
+      const summaryLines: string[] = [];
       const remoteFonts = brandKit.fonts ?? [];
       totalFontVariants = remoteFonts.length;
-      if (totalFontVariants === 0) {
-        return { summaryLines: [], localOnlyCount: 0 };
-      }
+      if (totalFontVariants > 0) {
+        const existingKeys = buildExistingVariantKeys(
+          brandKitConfig?.families ?? [],
+        );
 
-      const existingKeys = buildExistingVariantKeys(
-        brandKitConfig?.families ?? [],
-      );
-
-      existingCount = remoteFonts.filter((e) =>
-        existingKeys.has(
-          variantKey(e.family, e.weight ?? '400', e.style ?? 'normal'),
-        ),
-      ).length;
-      newCount = remoteFonts.filter(
-        (e) =>
-          e.url &&
-          !existingKeys.has(
+        existingCount = remoteFonts.filter((e) =>
+          existingKeys.has(
             variantKey(e.family, e.weight ?? '400', e.style ?? 'normal'),
           ),
-      ).length;
+        ).length;
+        newCount = remoteFonts.filter(
+          (e) =>
+            e.url &&
+            !existingKeys.has(
+              variantKey(e.family, e.weight ?? '400', e.style ?? 'normal'),
+            ),
+        ).length;
 
-      const fontVariantSummary = formatSummaryLine(
-        'brand kit',
-        totalFontVariants,
-        newCount,
-        existingCount,
-        'font variant',
+        summaryLines.push(
+          formatSummaryLine(
+            'brand kit',
+            totalFontVariants,
+            newCount,
+            existingCount,
+            'font variant',
+          ),
+        );
+      }
+
+      // remoteColors already populated from brandKit.colors above.
+      const colorPlan = planColorPull(
+        remoteColors,
+        await readBrandKitColorsFile(projectRoot),
+        { skipOverwrite },
       );
+      if (remoteColors.length > 0) {
+        summaryLines.push(
+          formatSummaryLine(
+            'brand kit colors',
+            remoteColors.length,
+            colorPlan.added.length,
+            colorPlan.unchanged + colorPlan.updated.length,
+            'color',
+          ),
+        );
+      } else if (
+        colorPlan.changed ||
+        colorPlan.localOnly.length > 0 ||
+        colorPlan.duplicates.length > 0
+      ) {
+        // No colors to pull, but the local file still has color entries to
+        // report or tidy — schedule the task so that work happens.
+        summaryLines.push(
+          `brand kit colors: 0 pull (${colorPlan.localOnly.length + colorPlan.duplicates.length} local-only)`,
+        );
+      }
+
       return {
-        summaryLines: [fontVariantSummary],
+        summaryLines,
         localOnlyCount: 0,
       };
     },
@@ -1064,6 +1206,7 @@ export function createFontsPullTask(
       const result = await pullFonts(apiService, projectRoot, config.fonts);
 
       const results: Result[] = [];
+      const notes: string[] = [];
 
       for (const entry of result.downloaded) {
         results.push({
@@ -1088,10 +1231,55 @@ export function createFontsPullTask(
         await updateBrandKitConfig(projectRoot, result.downloaded);
       }
 
+      // Colors: server colors in palette order, hand-formatted entries kept
+      // verbatim, local-only entries preserved and reported.
+      const colorPlan = planColorPull(
+        remoteColors,
+        await readBrandKitColorsFile(projectRoot),
+        { skipOverwrite },
+      );
+      for (const itemName of colorPlan.added) {
+        results.push({
+          itemName,
+          success: true,
+          details: [{ content: 'Added' }],
+        });
+      }
+      for (const itemName of colorPlan.updated) {
+        results.push({
+          itemName,
+          success: true,
+          details: [{ content: 'Updated' }],
+        });
+      }
+      if (colorPlan.unchanged > 0) {
+        results.push({
+          itemName: 'colors',
+          success: true,
+          details: [
+            { content: `Skipped ${colorPlan.unchanged} (already in file)` },
+          ],
+        });
+      }
+      if (colorPlan.changed) {
+        await writeBrandKitColorsConfig(projectRoot, colorPlan.colors);
+      }
+      if (colorPlan.localOnly.length > 0) {
+        notes.push(
+          `${colorPlan.localOnly.length} ${pluralizeLabel(colorPlan.localOnly.length, 'color')} in canvas.brand-kit.json ${colorPlan.localOnly.length === 1 ? 'is' : 'are'} not on the site and ${colorPlan.localOnly.length === 1 ? 'was' : 'were'} kept: ${colorPlan.localOnly.join(', ')}. Run \`canvas push\` to create them.`,
+        );
+      }
+      if (colorPlan.duplicates.length > 0) {
+        notes.push(
+          `Removed ${colorPlan.duplicates.length} duplicate color ${pluralizeLabel(colorPlan.duplicates.length, 'entry', 'entries')} from canvas.brand-kit.json (the first entry for each variable was kept): ${colorPlan.duplicates.map((key) => `"${key}"`).join(', ')}.`,
+        );
+      }
+
       return {
         results,
         title: 'Pulled brand kit',
-        label: 'Font variant',
+        label: 'Item',
+        notes: notes.length > 0 ? notes : undefined,
       };
     },
   };
@@ -1137,11 +1325,15 @@ export function pullCommand(program: Command): void {
     .addOption(
       new Option(
         '--include-brand-kit [enabled]',
-        'Include brand kit (fonts) in the pull operation',
+        'Include brand kit (fonts and colors) in the pull operation',
       )
         .preset('true')
         .argParser(parseBooleanOption)
         .default(undefined),
+    )
+    .option(
+      '--no-include-brand-kit',
+      'Exclude brand kit (fonts and colors) from the pull operation',
     )
     .option('-d, --dir <directory>', 'Component directory')
     .option('-y, --yes', 'Skip all confirmation prompts')
@@ -1166,6 +1358,12 @@ export function pullCommand(program: Command): void {
         const includesPageTemplates = config.includePageTemplates;
         const includesBrandKit = config.includeBrandKit;
 
+        // Shared ref to pass brand kit colors from brand kit task to component task.
+        const brandKitColorsRef: BrandKitColorsRef = { colors: [] };
+
+        // Shared ref to pass color folders from brand kit task to component task.
+        const colorFolderRef: ColorFolderRef = { folders: [] };
+
         // Build pull tasks.
         const projectRoot = process.cwd();
         const tasks: PullTask[] = [
@@ -1173,6 +1371,8 @@ export function pullCommand(program: Command): void {
             apiService,
             config.componentDir,
             options.skipOverwrite ?? false,
+            brandKitColorsRef,
+            colorFolderRef,
           ),
           createAssetsPullTask(
             apiService,
@@ -1183,7 +1383,15 @@ export function pullCommand(program: Command): void {
         ];
 
         if (includesBrandKit) {
-          tasks.push(createFontsPullTask(apiService, projectRoot));
+          tasks.push(
+            createBrandKitPullTask(
+              apiService,
+              projectRoot,
+              options.skipOverwrite ?? false,
+              brandKitColorsRef,
+              colorFolderRef,
+            ),
+          );
         }
 
         if (includesPages) {
@@ -1192,6 +1400,7 @@ export function pullCommand(program: Command): void {
               apiService,
               config.pagesDir,
               options.skipOverwrite ?? false,
+              config.componentDir,
             ),
           );
         }
@@ -1202,6 +1411,7 @@ export function pullCommand(program: Command): void {
               apiService,
               config.pageTemplatesDir,
               options.skipOverwrite ?? false,
+              config.componentDir,
             ),
           );
         }
@@ -1212,6 +1422,7 @@ export function pullCommand(program: Command): void {
               apiService,
               path.resolve(projectRoot, config.contentTemplatesDir),
               options.skipOverwrite ?? false,
+              config.componentDir,
             ),
           );
         }

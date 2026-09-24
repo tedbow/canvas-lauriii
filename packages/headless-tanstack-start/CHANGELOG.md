@@ -1,5 +1,54 @@
 # @drupal-canvas/headless-tanstack-start
 
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [e1fae30]
+  - @drupal-canvas/headless@0.9.0
+  - @drupal-canvas/headless-react@0.4.3
+
+## 0.6.1
+
+### Patch Changes
+
+- 252aa34: Unify the request-time `frame-ancestors` policy across framework
+  adapters. When `CANVAS_EDITOR_ORIGINS` is unset, admit `'self'`, the valid
+  `CANVAS_SITE_URL` origin and the draft-session editor origin. An explicit
+  whitespace- or comma-separated list replaces both defaults; empty or invalid
+  configuration never restores them.
+
+  Normalize and deduplicate sources centrally. Reject credentialed/non-HTTP(S)
+  URLs, wildcard or delimiter-bearing hosts, and literal IPv6 addresses. DNS
+  hostnames resolving to IPv6 remain supported. Application-owned
+  `frame-ancestors` stays authoritative; other CSP directives are preserved. The
+  Astro and TanStack Vite integrations also load `CANVAS_EDITOR_ORIGINS` from
+  environment files, including explicit empty values.
+
+  This changes embedding policy only, not draft authentication or message trust.
+
+- Updated dependencies [252aa34]
+  - @drupal-canvas/headless@0.8.0
+  - @drupal-canvas/headless-react@0.4.2
+
+## 0.6.0
+
+### Minor Changes
+
+- 98b764a: Automatically discover the site's JSON:API prefix so sites using a
+  non-default prefix (e.g. `/api`) work without configuration.
+
+  `getPublicClient()` and `getDraftClient()` are now async — `await` them like
+  `getClient()`.
+
+### Patch Changes
+
+- Updated dependencies [98b764a]
+- Updated dependencies [fc2cbd1]
+- Updated dependencies [bde9b02]
+  - @drupal-canvas/headless@0.7.0
+  - @drupal-canvas/headless-react@0.4.1
+
 ## 0.5.0
 
 ### Minor Changes

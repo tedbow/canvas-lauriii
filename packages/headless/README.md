@@ -17,6 +17,39 @@ use a framework adapter instead of this package directly:
 - `@drupal-canvas/headless-astro` (Astro)
 - `@drupal-canvas/headless-nuxt` (Nuxt)
 - `@drupal-canvas/headless-tanstack-start` (TanStack Start)
+- `@drupal-canvas/headless-angular` (Angular)
+
+## Editor origins and CSP
+
+All adapters use the same `frame-ancestors` resolver:
+
+| `CANVAS_EDITOR_ORIGINS`                  | Sources (when the app does not already set `frame-ancestors`)                   |
+| ---------------------------------------- | ------------------------------------------------------------------------------- |
+| Unset                                    | `'self'` + `CANVAS_SITE_URL` origin + draft-session editor origin, when present |
+| Set                                      | `'self'` + valid origins from this setting only                                 |
+| Set to an empty or entirely invalid list | `'self'` only; neither default is restored                                      |
+
+`CANVAS_EDITOR_ORIGINS` is a whitespace- or comma-separated list, for example
+`https://cms.example, https://staging.example:8443`. Values are normalized to
+scheme, host and port, and deduplicated. Only HTTP(S) URLs without credentials
+and with concrete DNS hostnames or IPv4 literals are accepted. Wildcards, policy
+delimiters in hosts and literal IPv6 addresses are rejected. For IPv6, use a DNS
+hostname; hostnames resolving to IPv6 remain supported. The same validation
+applies to both default origins.
+
+The adapters preserve all policies already present on the response and leave an
+application-owned `frame-ancestors` authoritative. Multiple CSP policies
+intersect; adding another header cannot relax an existing restriction. Reconcile
+any separately configured CDN/hosting CSP with the application policy.
+
+The resolver reads server `process.env` on every call, not from public/client
+configuration. Environment delivery depends on the framework and deployment: see
+the adapter README. Restart a running server after changing its environment;
+rebuild/redeploy when configuration is embedded by the bundler or host. Changing
+an environment file alone does not update an already running production server.
+
+This is an embedding policy, **not authorization**. Draft authentication, token
+exchange, PKCE, editor identity pinning and postMessage checks are unchanged.
 
 ## Rendered pages
 
@@ -50,6 +83,24 @@ framework's redirect primitive.
 
 During an authorized draft session, the same call uses available content drafts.
 Public calls use stored content.
+
+`page.route.negotiatedLanguage` identifies the negotiated content language.
+`page.route.translations` lists every enabled language as
+`{ langcode, name, nativeName, url, translationAvailable, current, external }`.
+Names, availability, requested-language `current`, and fallback URL semantics
+match Code Components' `getPageData().mainEntity.translations`. Missing and
+denied translations both report `translationAvailable: false`; their URLs do not
+guarantee access. `route.entity.langcode` remains the rendered language, which
+can differ from the negotiated language on fallback. Monolingual sites and
+routes without a canonical content entity return an empty list.
+
+Non-external URLs are site-relative Drupal request URIs without the installation
+base path. For available translations, pass them unchanged to `fetchPage`,
+preserving language prefixes and query strings. External URLs remain absolute
+and are not valid `fetchPage` input; the SDK does not thereby support Drupal
+domain negotiation. Map entries to public URLs in the frontend. See the
+[multilingual guide](../../docs/user/src/content/docs/headless/multilingual-sites.mdx#translation-links)
+for a language-switcher example.
 
 Use `fetchEntity({ type, id, viewMode })` when the current request should render
 one specific content entity in a specific content-template view mode, such as
