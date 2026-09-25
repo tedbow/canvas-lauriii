@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Drupal\canvas_workflows\Hook;
 
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
-use Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
 use Drupal\canvas_workflows\WorkspaceReview;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityInterface;
@@ -147,19 +146,25 @@ final class CanvasWorkflowsHooks {
       return [];
     }
     $fields = [];
+    // No stored defaults: a workspace row only carries values this module
+    // wrote, so the Main workspace stays free of module data and the module
+    // remains uninstallable (core refuses to uninstall a module whose base
+    // fields on another module's entity type hold data).
+    // @see \Drupal\Core\Field\FieldModuleUninstallValidator
+    //
     // A state ID of the workspace's review workflow. A plain string, not a
     // list: the valid values are whatever states the workflow defines. Empty
     // resolves to the workflow's initial state.
     // @see \Drupal\canvas_workflows\WorkspaceReview::getStatus()
     $fields['canvas_workspace_status'] = BaseFieldDefinition::create('string')
       ->setLabel(new TranslatableMarkup('Review state'))
-      ->setDescription(new TranslatableMarkup('The Canvas review state of the workspace.'))
-      ->setDefaultValue(WorkspaceReview::STATUS_DRAFT);
+      ->setDescription(new TranslatableMarkup('The Canvas review state of the workspace.'));
 
+    // Empty resolves to the workflow this module ships.
+    // @see \Drupal\canvas_workflows\WorkspaceReview::getWorkflow()
     $fields['canvas_review_workflow'] = BaseFieldDefinition::create('string')
       ->setLabel(new TranslatableMarkup('Review workflow'))
-      ->setDescription(new TranslatableMarkup("The workflow whose states and transitions govern this workspace's review process."))
-      ->setDefaultValue(WorkspaceReviewWorkflowType::DEFAULT_WORKFLOW_ID);
+      ->setDescription(new TranslatableMarkup("The workflow whose states and transitions govern this workspace's review process."));
 
     $fields['canvas_require_review'] = BaseFieldDefinition::create('boolean')
       ->setLabel(new TranslatableMarkup('Require review before publishing'))
@@ -192,7 +197,9 @@ final class CanvasWorkflowsHooks {
    *
    * The Main workspace is the scratch space and publishes without review;
    * named workspaces require review by default, matching the designed flow
-   * where "Send for review" is the primary action.
+   * where "Send for review" is the primary action. Workspaces that existed
+   * before this module was installed store no value and do not require
+   * review until a site builder enables it on the workspace form.
    *
    * Referenced by name in the canvas_require_review field definition.
    *
@@ -200,7 +207,9 @@ final class CanvasWorkflowsHooks {
    */
   // @phpstan-ignore shipmonk.deadMethod
   public static function defaultRequireReview(WorkspaceInterface $workspace): array {
-    return [['value' => $workspace->id() !== AutoSaveWorkspace::ID]];
+    // The Main workspace stores no value: empty resolves to FALSE.
+    // @see \Drupal\canvas_workflows\WorkspaceReview::requiresReview()
+    return $workspace->id() === AutoSaveWorkspace::ID ? [] : [['value' => TRUE]];
   }
 
 }
