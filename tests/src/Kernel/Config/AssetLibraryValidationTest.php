@@ -23,10 +23,8 @@ class AssetLibraryValidationTest extends BetterConfigEntityValidationTestBase {
   protected static $modules = [
     'canvas',
     'file',
-    // Canvas's dependencies (see canvas.info.yml): the review workflow it
-    // ships requires both.
+    // Canvas's dependency (see canvas.info.yml).
     'workspaces',
-    'workflows',
   ];
 
   /**

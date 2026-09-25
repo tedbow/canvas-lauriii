@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas;
+namespace Drupal\canvas_workflows;
 
-use Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
+use Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
 use Drupal\Core\DependencyInjection\ContainerInjectionInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
@@ -17,8 +17,8 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  * workflows get transition-level access control: "use {workflow} transition
  * {transition}".
  *
- * @see \Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType
- * @see \Drupal\canvas\Workspace\WorkspaceReview
+ * @see \Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType
+ * @see \Drupal\canvas_workflows\WorkspaceReview
  */
 final class WorkspaceReviewPermissions implements ContainerInjectionInterface {
 

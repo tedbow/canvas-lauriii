@@ -40,10 +40,8 @@ class FolderValidationTest extends BetterConfigEntityValidationTestBase {
     'ckeditor5',
     'editor',
     'user',
-    // Canvas's dependencies (see canvas.info.yml): the review workflow it
-    // ships requires both.
+    // Canvas's dependency (see canvas.info.yml).
     'workspaces',
-    'workflows',
   ];
 
   protected function setUp(): void {

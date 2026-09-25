@@ -77,7 +77,6 @@ abstract class CanvasKernelTestBase extends KernelTestBase {
     'options',
     'path',
     'workspaces',
-    'workflows',
     // Canvas' indirect dependencies.
     'filter',
     'media',

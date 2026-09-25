@@ -6,9 +6,6 @@ namespace Drupal\canvas\Controller;
 
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\Workspace\WorkspaceNormalizer;
-use Drupal\canvas\Workspace\WorkspaceReview;
-use Drupal\canvas\Workspace\WorkspaceReviewAccessException;
-use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Component\Transliteration\TransliterationInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;
@@ -38,11 +35,9 @@ final class ApiWorkspaceController extends ApiControllerBase {
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly WorkspaceNormalizer $normalizer,
-    private readonly WorkspaceReview $workspaceReview,
     private readonly AccountInterface $currentUser,
     #[Autowire(service: 'transliteration')]
     private readonly TransliterationInterface $transliteration,
-    private readonly TimeInterface $time,
     // Nullable, resolved to NULL until the Workspaces module is installed
     // (before database updates run), so the container can compile. The
     // routes are unreachable until then.
@@ -103,9 +98,6 @@ final class ApiWorkspaceController extends ApiControllerBase {
       'label' => $label,
       'uid' => $this->currentUser->id(),
     ]);
-    if (\array_key_exists('requireReview', $body) && \is_bool($body['requireReview'])) {
-      $workspace->set('canvas_require_review', $body['requireReview']);
-    }
     $violations = $workspace->validate();
     if ($violations->count() > 0) {
       throw new BadRequestHttpException((string) $violations->get(0)->getMessage());
@@ -142,82 +134,6 @@ final class ApiWorkspaceController extends ApiControllerBase {
     $wm = $this->workspaceManager();
     $wm->setActiveWorkspace($workspace);
     return new JsonResponse(data: $this->normalizer->normalize($workspace, (string) $workspace->id()), status: Response::HTTP_OK);
-  }
-
-  /**
-   * Executes a review workflow transition on the workspace.
-   *
-   * The body's "transition" is a transition ID of the workspace's review
-   * workflow. The legacy aliases "submit" and "reject" map onto the shipped
-   * workflow's transition IDs.
-   */
-  public function status(WorkspaceInterface $workspace, Request $request): JsonResponse {
-    $body = \json_decode($request->getContent(), TRUE);
-    $transition_id = \is_array($body) ? (string) ($body['transition'] ?? '') : '';
-    if ($transition_id === '') {
-      throw new BadRequestHttpException('A non-empty "transition" is required.');
-    }
-    $transition_id = match ($transition_id) {
-      'submit' => 'submit_for_review',
-      'reject' => 'send_back',
-      default => $transition_id,
-    };
-    if (!$workspace->access('view', $this->currentUser)) {
-      throw new AccessDeniedHttpException('You do not have permission to act on this workspace.');
-    }
-    try {
-      $this->workspaceReview->transition($workspace, $transition_id, $this->currentUser);
-    }
-    catch (WorkspaceReviewAccessException $e) {
-      throw new AccessDeniedHttpException($e->getMessage(), $e);
-    }
-    catch (\InvalidArgumentException $e) {
-      throw new ConflictHttpException($e->getMessage(), $e);
-    }
-    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_OK);
-  }
-
-  /**
-   * Schedules the workspace to publish at a given time.
-   */
-  public function schedule(WorkspaceInterface $workspace, Request $request): JsonResponse {
-    if (!$workspace->access('publish', $this->currentUser)) {
-      throw new AccessDeniedHttpException('You do not have permission to publish this workspace.');
-    }
-    $body = \json_decode($request->getContent(), TRUE);
-    $publish_at = \is_array($body) ? $body['publishAt'] ?? NULL : NULL;
-    if (!\is_int($publish_at)) {
-      throw new BadRequestHttpException('An integer "publishAt" timestamp is required.');
-    }
-    if ($publish_at <= $this->time->getRequestTime()) {
-      throw new BadRequestHttpException('The "publishAt" timestamp must be in the future.');
-    }
-    // Scheduling inherits the review gate: a review-required workspace must
-    // already be approved, exactly as if it were being published now.
-    if ($this->workspaceReview->isPublishBlocked($workspace)) {
-      throw new ConflictHttpException(\sprintf(
-        'The workspace must be approved before it can be scheduled; its review state is "%s".',
-        $this->workspaceReview->getStatusLabel($workspace),
-      ));
-    }
-    $workspace->set('canvas_scheduled_publish_at', $publish_at);
-    $workspace->set('canvas_scheduled_publish_by', $this->currentUser->id());
-    $workspace->set('canvas_scheduled_publish_error', NULL);
-    $workspace->save();
-    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_OK);
-  }
-
-  /**
-   * Cancels the workspace's scheduled publish.
-   */
-  public function unschedule(WorkspaceInterface $workspace): JsonResponse {
-    if (!$workspace->access('publish', $this->currentUser)) {
-      throw new AccessDeniedHttpException('You do not have permission to publish this workspace.');
-    }
-    $workspace->set('canvas_scheduled_publish_at', NULL);
-    $workspace->set('canvas_scheduled_publish_by', NULL);
-    $workspace->save();
-    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_OK);
   }
 
   /**

@@ -1,0 +1,10 @@
+services:
+  _defaults:
+    autoconfigure: true
+    autowire: true
+  Drupal\canvas_workflows\WorkspaceReview: { }
+  Drupal\canvas_workflows\WorkspaceScheduledPublish: { }
+  Drupal\canvas_workflows\Controller\ApiWorkspaceReviewController: { }
+  Drupal\canvas_workflows\EventSubscriber\WorkspaceReviewPublishSubscriber:
+    tags:
+      - { name: event_subscriber }

@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas\Hook;
+namespace Drupal\canvas_workflows\Hook;
 
-use Drupal\canvas\Workspace\WorkspaceScheduledPublish;
+use Drupal\canvas_workflows\WorkspaceScheduledPublish;
 use Drupal\Core\Hook\Attribute\Hook;
 
 /**
  * Cron hook publishing workspaces whose scheduled time has passed.
  *
- * @see \Drupal\canvas\Workspace\WorkspaceScheduledPublish
+ * @see \Drupal\canvas_workflows\WorkspaceScheduledPublish
  */
 class WorkspaceScheduledPublishCronHook {
 

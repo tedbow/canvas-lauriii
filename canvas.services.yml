@@ -101,9 +101,7 @@ services:
   Drupal\canvas\AutoSave\Workspace\DeferredAutoSaveFlusher: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave: { }
   Drupal\canvas\Workspace\WorkspaceNormalizer: { }
-  Drupal\canvas\Workspace\WorkspaceReview: { }
   Drupal\canvas\Workspace\CanvasWorkspacePublisher: { }
-  Drupal\canvas\Workspace\WorkspaceScheduledPublish: { }
   Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator: {}
   Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository: { }
   Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks: {}

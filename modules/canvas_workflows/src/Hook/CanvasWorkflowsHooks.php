@@ -2,30 +2,91 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas\Hook;
+namespace Drupal\canvas_workflows\Hook;
 
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
-use Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
-use Drupal\canvas\Workspace\WorkspaceReview;
+use Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
+use Drupal\canvas_workflows\WorkspaceReview;
+use Drupal\Core\Entity\ContentEntityInterface;
+use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeInterface;
 use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\Hook\Attribute\Hook;
+use Drupal\Core\Hook\Order\OrderAfter;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
+use Drupal\workspaces\Hook\EntityOperations;
 use Drupal\workspaces\WorkspaceInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
- * Adds Canvas's review and scheduling base fields to the workspace entity.
+ * Hook implementations for the Canvas Workflows module.
  *
- * @see \Drupal\canvas\Workspace\WorkspaceReview
- * @see \Drupal\canvas\Workspace\WorkspaceScheduledPublish
+ * Adds the review and scheduling base fields to the workspace entity, exposes
+ * the review state through the Canvas workspace API, and demotes a
+ * workspace's review state whenever work is staged into it.
+ *
+ * @see \Drupal\canvas_workflows\WorkspaceReview
+ * @see \Drupal\canvas_workflows\WorkspaceScheduledPublish
  */
-final class CanvasWorkspaceHooks {
+final class CanvasWorkflowsHooks {
 
   public function __construct(
     private readonly WorkspaceReview $workspaceReview,
     private readonly AccountInterface $currentUser,
+    /**
+     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
+     */
+    #[Autowire(service: 'workspaces.manager')]
+    private readonly ?object $workspaceManager = NULL,
+    /**
+     * @var \Drupal\workspaces\WorkspaceInformationInterface|null
+     */
+    #[Autowire(service: 'workspaces.information')]
+    private readonly ?object $workspaceInformation = NULL,
   ) {}
+
+  /**
+   * Implements hook_entity_presave().
+   *
+   * Demotes the active workspace to its initial review state when this save
+   * stages work in it. Covers non-Canvas writes too (node forms,
+   * workspace_config rows for config edits): anything core tracks in the
+   * workspace is a staged write. Canvas's own snapshot/buffer staging
+   * demotes via hook_canvas_workspace_staged_write().
+   *
+   * Runs after the Workspaces module has decided the save is a pending
+   * revision.
+   *
+   * @see \Drupal\canvas_workflows\WorkspaceReview::demoteOnStagedWrite()
+   * @see ::workspaceStagedWrite()
+   */
+  #[Hook('entity_presave', order: new OrderAfter(classesAndMethods: [[EntityOperations::class, 'entityPresave']]))]
+  public function demoteReviewStateOnStagedWrite(EntityInterface $entity): void {
+    if ($this->workspaceManager === NULL || $this->workspaceInformation === NULL) {
+      return;
+    }
+    // Demotion saves the workspace itself, which re-enters this hook.
+    if ($entity instanceof WorkspaceInterface) {
+      return;
+    }
+    if (!$entity instanceof ContentEntityInterface || $entity->isSyncing()) {
+      return;
+    }
+    if (!$this->workspaceManager->hasActiveWorkspace()) {
+      return;
+    }
+    // Only writes the workspace actually captures demote it: supported
+    // entity types are tracked as pending revisions, and workspace_config
+    // rows carry config staged by the workspace_config module.
+    if (!$this->workspaceInformation->isEntitySupported($entity)
+      && $entity->getEntityTypeId() !== 'workspace_config') {
+      return;
+    }
+    /** @var \Drupal\workspaces\WorkspaceInterface $active */
+    $active = $this->workspaceManager->getActiveWorkspace();
+    $this->workspaceStagedWrite($active);
+  }
 
   /**
    * Implements hook_canvas_workspace_normalize_alter().
@@ -63,12 +124,13 @@ final class CanvasWorkspaceHooks {
    * An approval covers a specific content state, not future edits: any
    * Canvas staged write demotes the workspace to its initial review state.
    *
-   * @see \Drupal\canvas\Workspace\WorkspaceReview::demoteOnStagedWrite()
+   * @see \Drupal\canvas_workflows\WorkspaceReview::demoteOnStagedWrite()
+   * @see hook_canvas_workspace_staged_write()
    */
   #[Hook('canvas_workspace_staged_write')]
   public function workspaceStagedWrite(WorkspaceInterface $workspace): void {
-    // The workspace entity may not carry Canvas's base fields yet (update
-    // path mid-flight).
+    // The workspace entity may not carry this module's base fields yet
+    // (module install in progress).
     if ($workspace->hasField('canvas_workspace_status')) {
       $this->workspaceReview->demoteOnStagedWrite($workspace);
     }
@@ -88,7 +150,7 @@ final class CanvasWorkspaceHooks {
     // A state ID of the workspace's review workflow. A plain string, not a
     // list: the valid values are whatever states the workflow defines. Empty
     // resolves to the workflow's initial state.
-    // @see \Drupal\canvas\Workspace\WorkspaceReview::getStatus()
+    // @see \Drupal\canvas_workflows\WorkspaceReview::getStatus()
     $fields['canvas_workspace_status'] = BaseFieldDefinition::create('string')
       ->setLabel(new TranslatableMarkup('Review state'))
       ->setDescription(new TranslatableMarkup('The Canvas review state of the workspace.'))

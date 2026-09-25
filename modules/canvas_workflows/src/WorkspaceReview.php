@@ -2,11 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas\Workspace;
+namespace Drupal\canvas_workflows;
 
 use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
-use Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
-use Drupal\canvas\WorkspaceReviewPermissions;
+use Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\workflows\TransitionInterface;
@@ -26,8 +25,8 @@ use Drupal\workspaces\WorkspaceInterface;
  * The publish gate lives in AutoSaveWorkspacePublishSubscriber so every
  * publish surface (Canvas API, core Workspaces UI, cron) passes through it.
  *
- * @see \Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType
- * @see \Drupal\canvas\EventSubscriber\AutoSave\AutoSaveWorkspacePublishSubscriber
+ * @see \Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType
+ * @see \Drupal\canvas_workflows\EventSubscriber\WorkspaceReviewPublishSubscriber
  */
 final class WorkspaceReview {
 
@@ -37,17 +36,6 @@ final class WorkspaceReview {
   public const string STATUS_DRAFT = 'draft';
   public const string STATUS_IN_REVIEW = 'in_review';
   public const string STATUS_APPROVED = 'approved';
-
-  /**
-   * Legacy permissions, replaced by per-transition workflow permissions.
-   *
-   * Kept only for the update-path mapping onto the new permissions.
-   *
-   * @see \Drupal\canvas\WorkspaceReviewPermissions
-   * @see canvas_post_update_0033_review_workflow_permissions()
-   */
-  public const string SUBMIT_PERMISSION = 'canvas submit workspace for review';
-  public const string APPROVE_PERMISSION = 'canvas approve workspace';
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
@@ -180,7 +168,7 @@ final class WorkspaceReview {
    * @throws \InvalidArgumentException
    *   When the transition does not exist or does not apply to the current
    *   state.
-   * @throws \Drupal\canvas\Workspace\WorkspaceReviewAccessException
+   * @throws \Drupal\canvas_workflows\WorkspaceReviewAccessException
    *   When the account lacks the transition's permission.
    */
   public function transition(WorkspaceInterface $workspace, string $transition_id, AccountInterface $account): void {

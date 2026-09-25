@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas\Plugin\WorkflowType;
+namespace Drupal\canvas_workflows\Plugin\WorkflowType;
 
-use Drupal\canvas\Form\WorkspaceReviewStateForm;
+use Drupal\canvas_workflows\Form\WorkspaceReviewStateForm;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\workflows\Attribute\WorkflowType;
 use Drupal\workflows\Plugin\WorkflowTypeBase;
@@ -17,7 +17,7 @@ use Drupal\workflows\Plugin\WorkflowTypeBase;
  * initial state that staged writes demote to. Canvas ships a default
  * workflow (draft → in review → approved) of this type.
  *
- * @see \Drupal\canvas\Workspace\WorkspaceReview
+ * @see \Drupal\canvas_workflows\WorkspaceReview
  */
 #[WorkflowType(
   id: 'canvas_workspace_review',

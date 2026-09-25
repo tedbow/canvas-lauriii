@@ -2,16 +2,15 @@
 
 declare(strict_types=1);
 
-namespace Drupal\Tests\canvas\Kernel\Workspace;
+namespace Drupal\Tests\canvas_workflows\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
-use Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
-use Drupal\canvas\Workspace\WorkspaceEntityLockedException;
-use Drupal\canvas\Workspace\WorkspaceReview;
-use Drupal\canvas\Workspace\WorkspaceReviewAccessException;
-use Drupal\canvas\Workspace\WorkspaceScheduledPublish;
-use Drupal\canvas\WorkspaceReviewPermissions;
+use Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
+use Drupal\canvas_workflows\WorkspaceReview;
+use Drupal\canvas_workflows\WorkspaceReviewAccessException;
+use Drupal\canvas_workflows\WorkspaceReviewPermissions;
+use Drupal\canvas_workflows\WorkspaceScheduledPublish;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountProxyInterface;
@@ -22,15 +21,16 @@ use Drupal\user\Entity\User;
 use Drupal\workflows\Entity\Workflow;
 use Drupal\workspaces\Entity\Workspace;
 use Drupal\workspaces\WorkspaceManagerInterface;
+use Drupal\workspaces\WorkspacePublishException;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The workspace review workflow, scheduling, and cross-workspace locks.
+ * The workspace review workflow and scheduled publishing.
  *
- * @coversDefaultClass \Drupal\canvas\Workspace\WorkspaceReview
+ * @coversDefaultClass \Drupal\canvas_workflows\WorkspaceReview
  */
 #[Group('canvas')]
-#[Group('canvas_auto_save')]
+#[Group('canvas_workflows')]
 final class WorkspaceReviewTest extends CanvasKernelTestBase {
 
   use UserCreationTrait;
@@ -38,10 +38,14 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
   protected static $modules = [
     'field',
     'entity_test',
+    'workflows',
+    'canvas_workflows',
   ];
 
   protected function setUp(): void {
     parent::setUp();
+    // The shipped review workflow.
+    $this->installConfig(['canvas_workflows']);
     // Workspaces wraps the alias manager, so path_alias storage must exist
     // for entity saves inside workspaces.
     $this->installEntitySchema('path_alias');
@@ -294,48 +298,50 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
   }
 
   /**
-   * A staged write for an entity owned by another workspace is rejected.
+   * The review gate stops core publish of an unapproved workspace.
    */
-  public function testCrossWorkspaceLock(): void {
+  public function testCoreWorkspacePublishGatedOnReview(): void {
+    $workspace = Workspace::create([
+      'id' => 'gated',
+      'label' => 'Gated',
+      'canvas_require_review' => TRUE,
+    ]);
+    $workspace->save();
+
     $entity = EntityTestMulRevPub::create(['name' => 'live', 'status' => TRUE]);
     $entity->save();
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $workspace_manager */
     $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
     $auto_save_manager = $this->container->get(AutoSaveManager::class);
     self::assertInstanceOf(AutoSaveManager::class, $auto_save_manager);
-
-    $workspace_manager->executeInWorkspace('campaign', function () use ($entity, $auto_save_manager): void {
+    $workspace_manager->executeInWorkspace('gated', function () use ($entity, $auto_save_manager): void {
       $draft = clone $entity;
-      $draft->set('name', 'campaign draft');
+      $draft->set('name', 'gated draft');
       $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
     });
 
-    // The same entity cannot be staged in the Main workspace while the
-    // campaign owns it.
     try {
-      $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, function () use ($entity, $auto_save_manager): void {
-        $draft = clone $entity;
-        $draft->set('name', 'main draft');
-        $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
-      });
-      $this->fail('A staged write for an entity owned by another workspace must throw.');
+      $workspace->publish();
+      $this->fail('Publishing an unapproved review-required workspace must throw.');
     }
-    catch (WorkspaceEntityLockedException $e) {
-      self::assertSame('campaign', $e->workspaceId);
-      self::assertSame('Campaign', $e->workspaceLabel);
+    catch (WorkspacePublishException $e) {
+      self::assertStringContainsString('requires review', $e->getMessage());
     }
+    $live = $this->container->get(EntityTypeManagerInterface::class)->getStorage('entity_test_mulrevpub')->loadUnchanged((string) $entity->id());
+    self::assertInstanceOf(EntityTestMulRevPub::class, $live);
+    self::assertSame('live', $live->get('name')->value);
 
-    // Discarding the owning workspace's staging releases the entity.
-    $workspace_manager->executeInWorkspace('campaign', static function () use ($entity, $auto_save_manager): void {
-      $auto_save_manager->delete($entity);
-    });
-    $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, function () use ($entity, $auto_save_manager): void {
-      $draft = clone $entity;
-      $draft->set('name', 'main draft');
-      $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
-    });
-    $main_staged = $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, static fn () => $auto_save_manager->getAutoSaveEntity($entity));
-    self::assertFalse($main_staged->isEmpty());
+    // Approving unlocks the same publish.
+    $workspace->set('canvas_workspace_status', 'approved');
+    $workspace->save();
+    $workspace->publish();
+    $live = $this->container->get(EntityTypeManagerInterface::class)->getStorage('entity_test_mulrevpub')->loadUnchanged((string) $entity->id());
+    self::assertInstanceOf(EntityTestMulRevPub::class, $live);
+    self::assertSame('gated draft', $live->get('name')->value);
+    // Publishing completes a named workspace: it is deleted. The Main
+    // workspace is the one permanent workspace.
+    self::assertNull($this->container->get(EntityTypeManagerInterface::class)->getStorage('workspace')->loadUnchanged('gated'));
+    self::assertNotNull($this->container->get(EntityTypeManagerInterface::class)->getStorage('workspace')->loadUnchanged(AutoSaveWorkspace::ID));
   }
 
 }

@@ -993,47 +993,8 @@ canvas.api.workspaces.list:
   options:
     _format: 'json'
 
-canvas.api.workspaces.schedule:
-  path: '/canvas/api/v0/workspaces/{workspace}/schedule'
-  defaults:
-    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::schedule'
-  requirements:
-    _canvas_authentication_required: TRUE
-    _canvas_ui_access: 'TRUE'
-  methods: [POST]
-  options:
-    parameters:
-      workspace:
-        type: entity:workspace
-    _format: 'json'
 
-canvas.api.workspaces.status:
-  path: '/canvas/api/v0/workspaces/{workspace}/status'
-  defaults:
-    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::status'
-  requirements:
-    _canvas_authentication_required: TRUE
-    _canvas_ui_access: 'TRUE'
-  methods: [POST]
-  options:
-    parameters:
-      workspace:
-        type: entity:workspace
-    _format: 'json'
 
-canvas.api.workspaces.unschedule:
-  path: '/canvas/api/v0/workspaces/{workspace}/schedule'
-  defaults:
-    _controller: 'Drupal\canvas\Controller\ApiWorkspaceController::unschedule'
-  requirements:
-    _canvas_authentication_required: TRUE
-    _canvas_ui_access: 'TRUE'
-  methods: [DELETE]
-  options:
-    parameters:
-      workspace:
-        type: entity:workspace
-    _format: 'json'
 
 canvas.boot.app:
   # Deep links into an extension's own client-side routes

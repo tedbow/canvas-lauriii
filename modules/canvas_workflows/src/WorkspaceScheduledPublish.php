@@ -2,8 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas\Workspace;
+namespace Drupal\canvas_workflows;
 
+use Drupal\canvas\Workspace\CanvasWorkspacePublisher;
+use Drupal\canvas\Workspace\WorkspacePublishValidationException;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Session\AccountInterface;

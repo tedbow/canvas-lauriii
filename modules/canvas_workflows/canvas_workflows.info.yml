@@ -1,0 +1,14 @@
+name: Drupal Canvas Workflows
+type: module
+description: 'Adds a review workflow and scheduled publishing to Drupal Canvas workspaces.'
+package: Drupal Canvas
+core_version_requirement: ^11.3
+php: 8.3
+dependencies:
+  - canvas:canvas
+  # The review process (states, transitions, publish approval) is defined as
+  # a workflow of the canvas_workspace_review type.
+  # @see \Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType
+  - drupal:workflows
+  # Review state and schedule are base fields on the workspace entity.
+  - drupal:workspaces

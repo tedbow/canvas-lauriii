@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Drupal\canvas\Form;
+namespace Drupal\canvas_workflows\Form;
 
-use Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
+use Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\workflows\Plugin\WorkflowTypeStateFormBase;
 use Drupal\workflows\StateInterface;
@@ -12,7 +12,7 @@ use Drupal\workflows\StateInterface;
 /**
  * Per-state settings for the Canvas workspace review workflow type.
  *
- * @see \Drupal\canvas\Plugin\WorkflowType\WorkspaceReviewWorkflowType
+ * @see \Drupal\canvas_workflows\Plugin\WorkflowType\WorkspaceReviewWorkflowType
  */
 final class WorkspaceReviewStateForm extends WorkflowTypeStateFormBase {
 

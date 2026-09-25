@@ -2,7 +2,7 @@ langcode: en
 status: true
 dependencies:
   module:
-    - canvas
+    - canvas_workflows
 id: canvas_workspace_review
 label: 'Workspace review'
 type: canvas_workspace_review

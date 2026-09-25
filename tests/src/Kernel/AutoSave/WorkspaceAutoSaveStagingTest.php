@@ -14,6 +14,7 @@ use Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider;
 use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
 use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\Page;
+use Drupal\canvas\Workspace\WorkspaceEntityLockedException;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Entity\EntityConstraintViolationListInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
@@ -27,7 +28,6 @@ use Drupal\Tests\user\Traits\UserCreationTrait;
 use Drupal\user\Entity\User;
 use Drupal\workspaces\Entity\Workspace;
 use Drupal\workspaces\WorkspaceManagerInterface;
-use Drupal\workspaces\WorkspacePublishException;
 use Drupal\workspaces\WorkspaceTrackerInterface;
 use PHPUnit\Framework\Attributes\Group;
 use Symfony\Component\Validator\ConstraintViolation;
@@ -360,7 +360,7 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     $plain = $this->createUser(['view any workspace', 'edit any workspace']);
     self::assertInstanceOf(User::class, $plain);
     self::assertTrue($workspace->access('view', $plain));
-    self::assertTrue($workspace->access('publish', $plain), 'Core workspace permissions grant publish access; the review gate, not access control, guards unreviewed publishes.');
+    self::assertTrue($workspace->access('publish', $plain), 'Publish follows core workspace permissions.');
 
     $admin = $this->createUser(['administer workspaces']);
     self::assertInstanceOf(User::class, $admin);
@@ -371,9 +371,9 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
   /**
    * Core workspace-level publishing publishes the Main workspace.
    *
-   * Phase 2 removes the Phase 1 publish blockers: the Main workspace does
-   * not require review, so Workspace::publish() promotes its staged
-   * revisions and the post-publish subscriber clears Canvas staging.
+   * Phase 2 removes the Phase 1 publish blockers: Workspace::publish()
+   * promotes the staged revisions and the post-publish subscriber clears
+   * Canvas staging.
    */
   public function testCoreWorkspacePublishPublishesMainWorkspace(): void {
     $entity = EntityTestMulRevPub::create(['name' => 'live', 'status' => TRUE]);
@@ -391,51 +391,6 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     self::assertSame('staged draft', $live->get('name')->value);
     self::assertTrue($this->autoSaveManager()->getAutoSaveEntity($entity)->isEmpty(), 'Staging is cleared by the publish.');
     self::assertSame(0, $this->trackedRevisionCount('entity_test_mulrevpub', (string) $entity->id()));
-  }
-
-  /**
-   * The review gate stops core publish of an unapproved workspace.
-   */
-  public function testCoreWorkspacePublishGatedOnReview(): void {
-    $workspace = Workspace::create([
-      'id' => 'gated',
-      'label' => 'Gated',
-      'canvas_require_review' => TRUE,
-    ]);
-    $workspace->save();
-
-    $entity = EntityTestMulRevPub::create(['name' => 'live', 'status' => TRUE]);
-    $entity->save();
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $workspace_manager */
-    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
-    $workspace_manager->executeInWorkspace('gated', function () use ($entity): void {
-      $draft = clone $entity;
-      $draft->set('name', 'gated draft');
-      $this->autoSaveManager()->saveEntity($draft, immediateWorkspacePersist: TRUE);
-    });
-
-    try {
-      $workspace->publish();
-      $this->fail('Publishing an unapproved review-required workspace must throw.');
-    }
-    catch (WorkspacePublishException $e) {
-      self::assertStringContainsString('requires review', $e->getMessage());
-    }
-    $live = $this->container->get(EntityTypeManagerInterface::class)->getStorage('entity_test_mulrevpub')->loadUnchanged((string) $entity->id());
-    self::assertInstanceOf(EntityTestMulRevPub::class, $live);
-    self::assertSame('live', $live->get('name')->value);
-
-    // Approving unlocks the same publish.
-    $workspace->set('canvas_workspace_status', 'approved');
-    $workspace->save();
-    $workspace->publish();
-    $live = $this->container->get(EntityTypeManagerInterface::class)->getStorage('entity_test_mulrevpub')->loadUnchanged((string) $entity->id());
-    self::assertInstanceOf(EntityTestMulRevPub::class, $live);
-    self::assertSame('gated draft', $live->get('name')->value);
-    // Publishing completes a named workspace: it is deleted. The Main
-    // workspace is the one permanent workspace.
-    self::assertNull($this->container->get(EntityTypeManagerInterface::class)->getStorage('workspace')->loadUnchanged('gated'));
-    self::assertNotNull($this->container->get(EntityTypeManagerInterface::class)->getStorage('workspace')->loadUnchanged(AutoSaveWorkspace::ID));
   }
 
   /**
@@ -496,6 +451,51 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     self::assertGreaterThan($live_changed, $reloaded_live->getChangedTime());
     $violations = $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, static fn () => $edit->validate());
     self::assertCount(1, $entity_changed_violations($violations), 'An edit based on an outdated Live entity is still a conflict.');
+  }
+
+  /**
+   * A staged write for an entity owned by another workspace is rejected.
+   */
+  public function testCrossWorkspaceLock(): void {
+    Workspace::create(['id' => 'campaign', 'label' => 'Campaign'])->save();
+    $entity = EntityTestMulRevPub::create(['name' => 'live', 'status' => TRUE]);
+    $entity->save();
+    /** @var \Drupal\workspaces\WorkspaceManagerInterface $workspace_manager */
+    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
+    $auto_save_manager = $this->autoSaveManager();
+
+    $workspace_manager->executeInWorkspace('campaign', function () use ($entity, $auto_save_manager): void {
+      $draft = clone $entity;
+      $draft->set('name', 'campaign draft');
+      $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
+    });
+
+    // The same entity cannot be staged in the Main workspace while the
+    // campaign owns it.
+    try {
+      $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, function () use ($entity, $auto_save_manager): void {
+        $draft = clone $entity;
+        $draft->set('name', 'main draft');
+        $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
+      });
+      $this->fail('A staged write for an entity owned by another workspace must throw.');
+    }
+    catch (WorkspaceEntityLockedException $e) {
+      self::assertSame('campaign', $e->workspaceId);
+      self::assertSame('Campaign', $e->workspaceLabel);
+    }
+
+    // Discarding the owning workspace's staging releases the entity.
+    $workspace_manager->executeInWorkspace('campaign', static function () use ($entity, $auto_save_manager): void {
+      $auto_save_manager->delete($entity);
+    });
+    $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, function () use ($entity, $auto_save_manager): void {
+      $draft = clone $entity;
+      $draft->set('name', 'main draft');
+      $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
+    });
+    $main_staged = $workspace_manager->executeInWorkspace(AutoSaveWorkspace::ID, static fn () => $auto_save_manager->getAutoSaveEntity($entity));
+    self::assertFalse($main_staged->isEmpty());
   }
 
 }

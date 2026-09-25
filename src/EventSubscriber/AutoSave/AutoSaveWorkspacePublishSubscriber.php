@@ -6,7 +6,6 @@ namespace Drupal\canvas\EventSubscriber\AutoSave;
 
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
-use Drupal\canvas\Workspace\WorkspaceReview;
 use Drupal\workspaces\Event\WorkspacePostPublishEvent;
 use Drupal\workspaces\Event\WorkspacePrePublishEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -14,14 +13,17 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 /**
  * Guards and finalizes workspace publishes for Canvas.
  *
- * Pre-publish: enforces the review gate — a review-required workspace must
- * be approved. Because core dispatches this event inside every publish
- * (Canvas API, core Workspaces UI, cron), no surface can bypass the gate.
+ * Pre-publish: refuses publishes that would silently discard snapshot-held
+ * drafts. Because core dispatches this event inside every publish (Canvas
+ * API, core Workspaces UI, cron), no surface can bypass the gate.
  *
  * Post-publish: clears every Canvas staging store for the workspace, then
  * deletes the workspace — a published workspace is a completed unit of work.
- * The Main workspace is the one permanent workspace: it survives its
- * publishes with its schedule consumed and its review state reset.
+ * The Main workspace is the one permanent workspace and survives its
+ * publishes.
+ *
+ * Further gates (e.g. the canvas_workflows review gate) are separate
+ * subscribers.
  *
  * @see \Drupal\canvas\Workspace\CanvasWorkspacePublisher
  * @see \Drupal\workspaces\WorkspacePublisher::publish()
@@ -30,12 +32,14 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
 
   public function __construct(
     private readonly WorkspaceAutoSave $workspaceAutoSave,
-    private readonly WorkspaceReview $workspaceReview,
   ) {}
 
   public static function getSubscribedEvents(): array {
     return [
-      WorkspacePrePublishEvent::class => 'onPrePublish',
+      // Core's stopPublishing() does not stop propagation, and the
+      // workspace_config module applies staged configuration at priority 0
+      // without checking for a stopped publish: gates must run first.
+      WorkspacePrePublishEvent::class => ['onPrePublish', 100],
       // After core's association cleanup (priority -500), which resolves the
       // workspace tree and must still find the workspace.
       // @see \Drupal\workspaces\WorkspaceTracker::getSubscribedEvents()
@@ -45,15 +49,6 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
 
   public function onPrePublish(WorkspacePrePublishEvent $event): void {
     $workspace = $event->getWorkspace();
-    if ($this->workspaceReview->isPublishBlocked($workspace)) {
-      $event->stopPublishing();
-      $event->setPublishingStoppedReason(\sprintf(
-        'The "%s" workspace requires review: it must be approved before it can be published. Its current review state is "%s".',
-        (string) $workspace->label(),
-        $this->workspaceReview->getStatusLabel($workspace),
-      ));
-      return;
-    }
     // Snapshot-held drafts (code editor working copies, payloads the storage
     // layer rejected) are invisible to core's publish. Only the Canvas
     // publisher stages them into the workspace — or refuses when they are
@@ -76,15 +71,7 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
     $workspace = $event->getWorkspace();
     $this->workspaceAutoSave->clearWorkspaceStores((string) $workspace->id());
     if ($workspace->id() === AutoSaveWorkspace::ID) {
-      // The Main workspace is permanent: a publish consumes the approval and
-      // any schedule, and the next editing cycle starts over. An empty state
-      // resolves to the review workflow's initial state.
-      // @see \Drupal\canvas\Workspace\WorkspaceReview::getStatus()
-      $workspace->set('canvas_workspace_status', NULL);
-      $workspace->set('canvas_scheduled_publish_at', NULL);
-      $workspace->set('canvas_scheduled_publish_by', NULL);
-      $workspace->set('canvas_scheduled_publish_error', NULL);
-      $workspace->save();
+      // The Main workspace is permanent: the next editing cycle starts over.
       return;
     }
     // A named workspace is a unit of work; publishing completes it. Its
