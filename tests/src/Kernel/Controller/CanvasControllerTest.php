@@ -584,6 +584,7 @@ final class CanvasControllerTest extends CanvasKernelTestBase {
         'extensionsAvailable' => FALSE,
         'aiExtensionAvailable' => FALSE,
         'personalizationExtensionAvailable' => FALSE,
+        'workflowsExtensionAvailable' => FALSE,
       ],
     ];
     yield 'ai' => [
@@ -607,11 +608,19 @@ final class CanvasControllerTest extends CanvasKernelTestBase {
         'extensionsAvailable' => TRUE,
       ],
     ];
+    yield 'workflows' => [
+      ['workflows', 'canvas_workflows'],
+      [
+        'aiExtensionAvailable' => FALSE,
+        'workflowsExtensionAvailable' => TRUE,
+      ],
+    ];
     yield 'all' => [
-      ['canvas_ai', 'canvas_personalization'],
+      ['canvas_ai', 'canvas_personalization', 'workflows', 'canvas_workflows'],
       [
         'aiExtensionAvailable' => TRUE,
         'personalizationExtensionAvailable' => TRUE,
+        'workflowsExtensionAvailable' => TRUE,
       ],
     ];
   }

@@ -151,6 +151,8 @@ HTML;
     $ai_extension_available = $this->moduleHandler->moduleExists('canvas_ai');
     // ⚠️ This is highly experimental and *will* be refactored.
     $personalization_extension_available = $this->moduleHandler->moduleExists('canvas_personalization');
+    // Review workflow and scheduled publishing UI for workspaces.
+    $workflows_extension_available = $this->moduleHandler->moduleExists('canvas_workflows');
     $system_site_config = $this->configFactory->get('system.site');
     $entity_types_with_keys = [];
     $entity_type_labels = [];
@@ -267,6 +269,7 @@ HTML;
             'pageExtensions' => $page_extensions,
             'aiExtensionAvailable' => $ai_extension_available,
             'personalizationExtensionAvailable' => $personalization_extension_available,
+            'workflowsExtensionAvailable' => $workflows_extension_available,
           // Allow for perfect component previews, by letting the client side
           // know what global assets to load in component preview <iframe>s.
           // @see ui/src/components/ComponentPreview.tsx
