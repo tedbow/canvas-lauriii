@@ -1,0 +1,107 @@
+openapi: 3.1.0
+
+info:
+  title: Drupal Canvas Workflows
+  description: |
+    API spec for the Canvas Workflows sub-module: review workflow transitions and scheduled publishing for
+    workspaces. These routes (`canvas_workflows.api.*`) extend the Canvas workspace API documented in the
+    main openapi.yml; responses reuse its `Workspace` schema, to which this module adds the `status`,
+    `statusLabel`, `statusIsApproved`, `statusIsInitial`, `requireReview`, `availableTransitions`,
+    `scheduledPublishAt` and `scheduledPublishError` keys.
+  version: 0.x
+
+# Same as the main spec: the Canvas UI authenticates with Drupal's session cookie.
+security: []
+
+# @see https://spec.openapis.org/oas/v3.1.0.html#paths-object
+# @see https://spec.openapis.org/oas/v3.1.0.html#path-item-object
+paths:
+  /canvas/api/v0/workspaces/{workspace}/schedule:
+    parameters:
+      - $ref: '../../openapi.yml#/components/parameters/workspace'
+    delete:
+      summary: Cancel the workspace's scheduled publish
+      responses:
+        '200':
+          description: The workspace, no longer scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yml#/components/schemas/Workspace'
+        '401':
+          $ref: '../../openapi.yml#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '../../openapi.yml#/components/responses/AuthenticationErrorResponse'
+    post:
+      summary: Schedule the workspace to publish at a given time
+      description: A review-required workspace must already be approved, exactly as if it were being published now.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - publishAt
+              additionalProperties: false
+              properties:
+                publishAt:
+                  type: integer
+                  description: Unix timestamp; must be in the future.
+            examples:
+              example:
+                value:
+                  publishAt: 1800000000
+      responses:
+        '200':
+          description: The scheduled workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yml#/components/schemas/Workspace'
+        '400':
+          description: The "publishAt" timestamp is missing, not an integer, or not in the future.
+        '401':
+          $ref: '../../openapi.yml#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '../../openapi.yml#/components/responses/AuthenticationErrorResponse'
+        '409':
+          description: The workspace's review state does not allow publishing.
+  /canvas/api/v0/workspaces/{workspace}/status:
+    parameters:
+      - $ref: '../../openapi.yml#/components/parameters/workspace'
+    post:
+      summary: Execute a review workflow transition on the workspace
+      description: The transition must apply to the workspace's current review state, and the user needs the transition's permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - transition
+              additionalProperties: false
+              properties:
+                transition:
+                  type: string
+                  description: A transition ID of the workspace's review workflow.
+            examples:
+              example:
+                value:
+                  transition: submit_for_review
+      responses:
+        '200':
+          description: The workspace after the transition.
+          content:
+            application/json:
+              schema:
+                $ref: '../../openapi.yml#/components/schemas/Workspace'
+        '400':
+          description: The "transition" is missing.
+        '401':
+          $ref: '../../openapi.yml#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '../../openapi.yml#/components/responses/AuthenticationErrorResponse'
+        '409':
+          description: The transition is not available from the workspace's current review state.

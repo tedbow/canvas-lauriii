@@ -37,7 +37,7 @@ flowchart TB
     end
 
     subgraph HTTP["Canvas HTTP API (canvas.api.* routes)"]
-        wsCtl["ApiWorkspaceController<br>list, create, delete, activate,<br>review transitions, schedule"]
+        wsCtl["ApiWorkspaceController<br>list, create, delete, activate<br>(canvas_workflows adds<br>review transitions, schedule)"]
         layoutCtl["ApiLayoutController<br>(edit + preview)"]
         autoSaveCtl["ApiAutoSaveController<br>(pending list, publish, discard)"]
     end
@@ -57,7 +57,7 @@ flowchart TB
 
     subgraph Publish["Workspace publish"]
         publisher["CanvasWorkspacePublisher<br>validate every tracked item,<br>stage snapshot drafts,<br>Workspace::publish() in one transaction"]
-        gate["AutoSaveWorkspacePublishSubscriber<br>pre-publish: review-workflow gate +<br>snapshot-draft gate (all surfaces)<br>post-publish: clear staging stores,<br>delete named workspace / reset Main"]
+        gate["AutoSaveWorkspacePublishSubscriber<br>pre-publish: snapshot-draft gate (all surfaces)<br>post-publish: clear staging stores,<br>delete named workspace<br>(canvas_workflows adds the review gate<br>and resets Main's review state)"]
     end
 
     live["Live<br>default revisions + live configuration"]
@@ -84,11 +84,12 @@ Publishing completes a workspace: core promotes every tracked revision
 (sibling translations and dependent path aliases included), the
 `workspace_config` pre-publish subscriber applies staged configuration, and
 the post-publish subscriber clears every Canvas staging store for the
-workspace — then deletes a named workspace (its content is live) or resets
-the Main workspace's review state and schedule. Publishes from any surface
-(Canvas API, core Workspaces UI, cron) pass the same pre-publish gates: a
+workspace — then deletes a named workspace (its content is live); the Main
+workspace is permanent. Publishes from any surface (Canvas API, core
+Workspaces UI, cron) pass the same pre-publish gates: a workspace with
+snapshot-held drafts can only be published by the Canvas publisher, which
+stages them first, and — with the optional `canvas_workflows` sub-module — a
 review-required workspace must sit in an approved-for-publishing workflow
-state, and a workspace with snapshot-held drafts can only be published by
-the Canvas publisher, which stages them first. Discard clears staging per
+state. Discard clears staging per
 translation group, and dependent staged entities such as URL aliases follow
 their host through both.

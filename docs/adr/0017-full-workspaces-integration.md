@@ -8,6 +8,20 @@ Issue: <https://www.drupal.org/project/canvas/issues/3588540>
 
 Proposed
 
+Amended 2026-09-25: decisions 4 and 5 (review workflow, scheduled
+publishing), the review and schedule parts of decision 7, and the related
+parts of decision 8 and consequence 11 now describe the optional
+`canvas_workflows` sub-module (`modules/canvas_workflows`), not the `canvas`
+module. The `canvas` module keeps the base Workspaces integration and exposes
+three extension points the sub-module uses: `hook_canvas_workspace_staged_write()`
+(a Canvas staged write into a workspace), `hook_canvas_workspace_normalize_alter()`
+(the workspace API representation), and
+`WorkspaceAutoSave::isPublishTimeStaging()` (the publish-time staging latch).
+Without the sub-module, workspaces publish without review and cannot be
+scheduled. The unreleased `canvas_update_11203` and
+`canvas_post_update_0033_review_workflow_permissions` were dropped; the
+sub-module's base fields and shipped workflow install with the module.
+
 Amends [ADR 14](0014-stage-autosaves-in-a-dedicated-workspace.md): the
 publish half of that decision (per-item publish, workspace publish blocked)
 is superseded; its staging mechanics are retained per workspace.
@@ -189,10 +203,9 @@ unit of review and publish.
     review states and transitions are config, access is per-transition, and
     the shipped three-step workflow is only a default. The Canvas UI renders
     transitions dynamically from the API, so a reshaped workflow needs no UI
-    change. The cost is a hard dependency on the Workflows module, config
-    schema for the workflow type, and an update path that converts the
-    status field to a plain string and remaps the two legacy review
-    permissions onto per-transition ones. A workspace whose stored state its
+    change. The cost is a dependency on the Workflows module and config
+    schema for the workflow type, both carried by the `canvas_workflows`
+    sub-module rather than by `canvas` itself (see the amendment above). A workspace whose stored state its
     workflow no longer defines resolves to the workflow's initial state
     (mirroring content_moderation), so editing or swapping workflows cannot
     strand a workspace.

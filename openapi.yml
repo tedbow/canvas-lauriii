@@ -4225,14 +4225,10 @@ paths:
                 label:
                   type: string
                   description: Human-readable label; must be non-empty.
-                requireReview:
-                  type: boolean
-                  description: Whether publishing this workspace requires review approval.
             examples:
               example:
                 value:
                   label: Spring campaign
-                  requireReview: true
       responses:
         '201':
           description: The created workspace.
@@ -4278,95 +4274,6 @@ paths:
           $ref: '#/components/responses/UnauthorizedErrorResponse'
         '403':
           $ref: '#/components/responses/AuthenticationErrorResponse'
-  /canvas/api/v0/workspaces/{workspace}/schedule:
-    parameters:
-      - $ref: '#/components/parameters/workspace'
-    delete:
-      summary: Cancel the workspace's scheduled publish
-      responses:
-        '200':
-          description: The workspace, no longer scheduled.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Workspace'
-        '401':
-          $ref: '#/components/responses/UnauthorizedErrorResponse'
-        '403':
-          $ref: '#/components/responses/AuthenticationErrorResponse'
-    post:
-      summary: Schedule the workspace to publish at a given time
-      description: A review-required workspace must already be approved, exactly as if it were being published now.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - publishAt
-              additionalProperties: false
-              properties:
-                publishAt:
-                  type: integer
-                  description: Unix timestamp; must be in the future.
-            examples:
-              example:
-                value:
-                  publishAt: 1800000000
-      responses:
-        '200':
-          description: The scheduled workspace.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Workspace'
-        '400':
-          description: The "publishAt" timestamp is missing, not an integer, or not in the future.
-        '401':
-          $ref: '#/components/responses/UnauthorizedErrorResponse'
-        '403':
-          $ref: '#/components/responses/AuthenticationErrorResponse'
-        '409':
-          description: The workspace's review state does not allow publishing.
-  /canvas/api/v0/workspaces/{workspace}/status:
-    parameters:
-      - $ref: '#/components/parameters/workspace'
-    post:
-      summary: Execute a review workflow transition on the workspace
-      description: The legacy aliases "submit" and "reject" map onto the shipped workflow's "submit_for_review" and "send_back" transitions.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - transition
-              additionalProperties: false
-              properties:
-                transition:
-                  type: string
-                  description: A transition ID of the workspace's review workflow.
-            examples:
-              example:
-                value:
-                  transition: submit_for_review
-      responses:
-        '200':
-          description: The workspace after the transition.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Workspace'
-        '400':
-          description: The "transition" is missing.
-        '401':
-          $ref: '#/components/responses/UnauthorizedErrorResponse'
-        '403':
-          $ref: '#/components/responses/AuthenticationErrorResponse'
-        '409':
-          description: The transition is not available from the workspace's current review state.
 # @see https://spec.openapis.org/oas/v3.1.0.html#components-object
 components:
   # @see https://spec.openapis.org/oas/v3.1.0.html#schema-object
@@ -6270,20 +6177,15 @@ components:
             description: Optional label for the component instance.
     Workspace:
       type: object
-      description: The client-side representation of one workspace.
+      description: |
+        The client-side representation of one workspace. Sub-modules add keys through
+        hook_canvas_workspace_normalize_alter(); the review and schedule keys are present only when the
+        canvas_workflows module is installed (see modules/canvas_workflows/openapi.yml).
       required:
         - id
         - label
         - isDefault
         - isActive
-        - status
-        - statusLabel
-        - statusIsApproved
-        - statusIsInitial
-        - requireReview
-        - availableTransitions
-        - scheduledPublishAt
-        - scheduledPublishError
         - pendingChangesCount
         - access
       additionalProperties: false
@@ -6302,22 +6204,22 @@ components:
           description: Whether this workspace is active for the current user.
         status:
           type: string
-          description: The review workflow state ID.
+          description: The review workflow state ID. Present only when the canvas_workflows module is installed.
         statusLabel:
           type: string
-          description: The review workflow state label.
+          description: The review workflow state label. Present only when the canvas_workflows module is installed.
         statusIsApproved:
           type: boolean
-          description: Whether the review state allows publishing.
+          description: Whether the review state allows publishing. Present only when the canvas_workflows module is installed.
         statusIsInitial:
           type: boolean
-          description: Whether the review state is the workflow's initial state.
+          description: Whether the review state is the workflow's initial state. Present only when the canvas_workflows module is installed.
         requireReview:
           type: boolean
-          description: Whether publishing requires review approval.
+          description: Whether publishing requires review approval. Present only when the canvas_workflows module is installed.
         availableTransitions:
           type: array
-          description: Review workflow transitions the current user may execute.
+          description: Review workflow transitions the current user may execute. Present only when the canvas_workflows module is installed.
           items:
             type: object
             required:
@@ -6331,10 +6233,10 @@ components:
                 type: string
         scheduledPublishAt:
           type: [ integer, "null" ]
-          description: Unix timestamp of the scheduled publish, or null.
+          description: Unix timestamp of the scheduled publish, or null. Present only when the canvas_workflows module is installed.
         scheduledPublishError:
           type: [ string, "null" ]
-          description: The error from the last failed scheduled publish, or null.
+          description: The error from the last failed scheduled publish, or null. Present only when the canvas_workflows module is installed.
         pendingChangesCount:
           type: integer
           description: Approximate number of entities with pending changes in this workspace.
