@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AppWrapper from '@tests/vitest/components/AppWrapper';
@@ -12,6 +12,13 @@ import type { UnpublishedChange } from '@/types/Review';
 
 vi.mock('@/features/conflict/conflictUtils', () => ({
   isConflictUxEnabled: () => false,
+}));
+
+let workflowsEnabled = true;
+
+vi.mock('@/components/workspaces/utils', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isWorkspaceWorkflowsEnabled: () => workflowsEnabled,
 }));
 
 vi.mock('@/components/PermissionCheck', () => ({
@@ -97,6 +104,38 @@ const openReview = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe('PublishReview workspace states', () => {
+  beforeEach(() => {
+    workflowsEnabled = true;
+  });
+
+  it('offers plain publishing without the workflows module', async () => {
+    workflowsEnabled = false;
+    const user = userEvent.setup();
+    const { props } = renderReview({
+      ...inReviewWorkspace,
+      scheduledPublishError: 'Publishing failed because of a conflict.',
+    });
+    await openReview(user);
+
+    // Review data the server might still send is ignored: no badge, no
+    // transition buttons, no schedule dropdown, no schedule error.
+    expect(
+      screen.queryByTestId('canvas-workspace-status-badge'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Approve' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'More publish options' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Publishing failed because of a conflict.'),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Publish now' }));
+    expect(props.onPublishClick).toHaveBeenCalledWith();
+  });
+
   it('shows the workspace label and a draft badge in the header', async () => {
     const user = userEvent.setup();
     renderReview(baseWorkspace);

@@ -25,16 +25,19 @@ export interface Workspace {
   label: string;
   isDefault: boolean;
   isActive: boolean;
-  status: WorkspaceStatus;
-  statusLabel: string;
-  statusIsApproved: boolean;
-  statusIsInitial: boolean;
-  requireReview: boolean;
-  availableTransitions: WorkspaceTransition[];
-  scheduledPublishAt: number | null;
-  scheduledPublishError: string | null;
   pendingChangesCount: number;
   access: WorkspaceAccess;
+  // The keys below are present only when the canvas_workflows module is
+  // installed.
+  // @see isWorkspaceWorkflowsEnabled()
+  status?: WorkspaceStatus;
+  statusLabel?: string;
+  statusIsApproved?: boolean;
+  statusIsInitial?: boolean;
+  requireReview?: boolean;
+  availableTransitions?: WorkspaceTransition[];
+  scheduledPublishAt?: number | null;
+  scheduledPublishError?: string | null;
 }
 
 export interface WorkspacesListResponse {
@@ -44,7 +47,6 @@ export interface WorkspacesListResponse {
 
 export interface CreateWorkspaceArg {
   label: string;
-  requireReview?: boolean;
 }
 
 export const workspacesApi = createApi({

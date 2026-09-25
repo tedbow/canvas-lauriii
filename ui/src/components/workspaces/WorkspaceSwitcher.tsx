@@ -20,7 +20,10 @@ import {
 } from '@radix-ui/themes';
 
 import Dialog from '@/components/Dialog';
-import { formatScheduledDate } from '@/components/workspaces/utils';
+import {
+  formatScheduledDate,
+  isWorkspaceWorkflowsEnabled,
+} from '@/components/workspaces/utils';
 import WorkspaceStatusBadge from '@/components/workspaces/WorkspaceStatusBadge';
 import {
   useActivateWorkspaceMutation,
@@ -37,6 +40,7 @@ import styles from './WorkspaceSwitcher.module.css';
 
 const WorkspaceSwitcher = () => {
   const workspacesSettings = getWorkspacesSettings();
+  const workflowsEnabled = isWorkspaceWorkflowsEnabled();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -207,14 +211,15 @@ const WorkspaceSwitcher = () => {
                     {workspace.label}
                   </Text>
                   <WorkspaceStatusBadge workspace={workspace} />
-                  {workspace.scheduledPublishAt && (
+                  {workflowsEnabled && workspace.scheduledPublishAt && (
                     <Text size="1" className={styles.scheduledDate}>
                       {formatScheduledDate(workspace.scheduledPublishAt)}
                     </Text>
                   )}
                 </button>
                 {((!workspace.isDefault && workspace.access.delete) ||
-                  (workspace.scheduledPublishAt &&
+                  (workflowsEnabled &&
+                    workspace.scheduledPublishAt &&
                     workspace.access.publish)) && (
                   <DropdownMenu.Root>
                     <DropdownMenu.Trigger>
@@ -228,7 +233,8 @@ const WorkspaceSwitcher = () => {
                       </IconButton>
                     </DropdownMenu.Trigger>
                     <DropdownMenu.Content>
-                      {workspace.scheduledPublishAt &&
+                      {workflowsEnabled &&
+                        workspace.scheduledPublishAt &&
                         workspace.access.publish && (
                           <DropdownMenu.Item
                             onSelect={() => handleCancelSchedule(workspace)}

@@ -107,6 +107,11 @@ vi.mock('@/features/conflict/conflictUtils', () => ({
   isConflictUxEnabled: () => mocks.conflictUxEnabled,
 }));
 
+vi.mock('@/components/workspaces/utils', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isWorkspaceWorkflowsEnabled: () => true,
+}));
+
 vi.mock('@/services/brandKit', () => ({
   brandKitApi: {
     util: {

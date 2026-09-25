@@ -27,7 +27,10 @@ import Dialog from '@/components/Dialog';
 import PermissionCheck from '@/components/PermissionCheck';
 import ReviewErrors from '@/components/review/ReviewErrors';
 import { getReviewGroupKey } from '@/components/review/utils';
-import { formatScheduledDate } from '@/components/workspaces/utils';
+import {
+  formatScheduledDate,
+  isWorkspaceWorkflowsEnabled,
+} from '@/components/workspaces/utils';
 import WorkspaceStatusBadge from '@/components/workspaces/WorkspaceStatusBadge';
 import { Divider } from '@/features/code-editor/component-data/FormElement';
 import { isConflictUxEnabled } from '@/features/conflict/conflictUtils';
@@ -102,6 +105,9 @@ const PublishReview: React.FC<PublishReviewProps> = ({
   pageStatusMap,
 }) => {
   const conflictUxEnabled = isConflictUxEnabled();
+  // Review transitions and scheduling exist only with the canvas_workflows
+  // module; without it the panel offers plain publishing.
+  const workflowsEnabled = isWorkspaceWorkflowsEnabled();
   // State to manage the open/close state of the popover
   const [internalOpen, setInternalOpen] = useState<boolean>(false);
   const isOpen = controlledOpen ?? internalOpen;
@@ -223,8 +229,11 @@ const PublishReview: React.FC<PublishReviewProps> = ({
     setScheduleValue('');
   };
 
-  const isScheduled = !!workspace?.scheduledPublishAt;
-  const needsReview = !!workspace?.requireReview;
+  const isScheduled = workflowsEnabled && !!workspace?.scheduledPublishAt;
+  const needsReview = workflowsEnabled && !!workspace?.requireReview;
+  const availableTransitions = workflowsEnabled
+    ? (workspace?.availableTransitions ?? [])
+    : [];
   // Without workspace data the panel falls back to plain publishing.
   const canPublish = !workspace || workspace.access.publish;
 
@@ -262,7 +271,7 @@ const PublishReview: React.FC<PublishReviewProps> = ({
     // current state, filtered server-side to what the user may execute. The
     // first (lowest-weight) transition is the primary action.
     if (workspace && needsReview && !workspace.statusIsApproved) {
-      const [primary, ...secondary] = workspace.availableTransitions;
+      const [primary, ...secondary] = availableTransitions;
       if (!primary) {
         return (
           <Button size="1" variant="solid" disabled>
@@ -300,7 +309,7 @@ const PublishReview: React.FC<PublishReviewProps> = ({
     }
 
     // Publishable state: publish now, with schedule and review options in a
-    // split-button dropdown when workspace data is available.
+    // split-button dropdown when the workflows module provides them.
     return (
       <PermissionCheck hasPermission="publishChanges">
         <Button
@@ -317,7 +326,7 @@ const PublishReview: React.FC<PublishReviewProps> = ({
             {(isPublishing || hasPublished) && <CheckIcon />}
           </Spinner>
         </Button>
-        {workspace && (
+        {workspace && workflowsEnabled && (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
               <IconButton
@@ -336,7 +345,7 @@ const PublishReview: React.FC<PublishReviewProps> = ({
               >
                 Schedule publish
               </DropdownMenu.Item>
-              {workspace.availableTransitions.map((transition) => (
+              {availableTransitions.map((transition) => (
                 <DropdownMenu.Item
                   key={transition.id}
                   onSelect={() => onTransitionStatus?.(transition.id)}
@@ -388,7 +397,7 @@ const PublishReview: React.FC<PublishReviewProps> = ({
               </Box>
             </Flex>
             <Divider />
-            {workspace?.scheduledPublishAt && (
+            {isScheduled && workspace?.scheduledPublishAt && (
               <Box px="4" py="3">
                 <Flex align="center" justify="between" gap="2">
                   <Text size="1">
@@ -409,7 +418,7 @@ const PublishReview: React.FC<PublishReviewProps> = ({
                 </Flex>
               </Box>
             )}
-            {workspace?.scheduledPublishError && (
+            {workflowsEnabled && workspace?.scheduledPublishError && (
               <Box px="4" py="3">
                 <Callout.Root color="red" size="1">
                   <Callout.Icon>

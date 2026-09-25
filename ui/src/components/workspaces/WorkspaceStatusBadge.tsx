@@ -1,6 +1,8 @@
 import { ExclamationTriangleIcon } from '@radix-ui/react-icons';
 import { Badge, Flex, Tooltip } from '@radix-ui/themes';
 
+import { isWorkspaceWorkflowsEnabled } from '@/components/workspaces/utils';
+
 import type { Workspace } from '@/services/workspacesApi';
 
 // The trigger fallback from drupalSettings only knows about the default flag,
@@ -22,6 +24,10 @@ interface WorkspaceStatusBadgeProps {
 }
 
 const WorkspaceStatusBadge = ({ workspace }: WorkspaceStatusBadgeProps) => {
+  // Review state and schedule exist only with the canvas_workflows module.
+  if (!isWorkspaceWorkflowsEnabled()) {
+    return null;
+  }
   // The badge color keys off what the state means for publishing (its ID is
   // workflow-specific): green when approved, amber while under way, gray for
   // the initial state of a non-default workspace.
