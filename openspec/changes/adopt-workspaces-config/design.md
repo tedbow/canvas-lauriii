@@ -8,27 +8,31 @@ Workspaces Config provenance: split out of Workspaces Extra, maintainers amatees
 
 Delivery: implementation happens on branch `3588540-workspaces-config`, forked from `3588540-stage-canvas-auto-saves` and pushed to issue 3588540. That branch carries these specs in-repo under `openspec/changes/adopt-workspaces-config/` (full target-state specs, not deltas), the amended ADR 0014, and the updated architecture diagram.
 
+Scope update (2026-09-30): ADR 0017 landed on the same branch before the config persist path was implemented. It superseded two assumptions this change was written against: staging is no longer confined to `canvas_default` (it follows the negotiated active workspace, with `canvas_default` as the Main workspace fallback), and publish is no longer per item (the workspace is the unit of publish, and Workspaces Config applies staged configuration at the pre-publish event). Meanwhile `workspace_config` was enabled and Canvas API config writes started staging into the active workspace, but config *auto-saves* still land in the snapshot store on every write and only become workspace-scoped configuration at publish. The effect is visible on any non-Canvas route rendered inside a workspace: a content template created there resolves as the disabled, empty entity it was created as, so the site falls back to the core display. This design is updated to the ADR 0017 model so the remaining tasks implement the decision as it now stands.
+
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Valid config auto-saves staged as workspace-scoped configuration in `canvas_default` via Workspaces Config.
+- Valid config auto-saves staged as workspace-scoped configuration in the active workspace (the Main workspace `canvas_default` when none is negotiated) via Workspaces Config.
 - The fallback store becomes an invalid-data store holding only what no primary store can persist; the one-store-per-target invariant preserved.
-- No observable editor behavior change: same auto-save read API, same per-item publish, same validation lifecycle, no hot-path latency regression.
-- Storage that Phase 2 can adopt unchanged.
+- No observable editor behavior change inside Canvas: same auto-save read API, same validation lifecycle, no hot-path latency regression.
+- Staged configuration is effective on every route rendered inside the workspace, not only Canvas preview routes: a content template drafted in a workspace changes how entities render on the site while that workspace is active.
 
 **Non-Goals:**
 
-- Exposing workspaces or staged config outside Canvas routes (Phase 2).
+- Scoping cache-tag invalidation per workspace. Staged configuration writes invalidate the same tags as Live writes (D6); narrowing that is a separate change.
 - Staging config entity types Canvas does not manage (sites can enable Workspaces Config for those themselves).
-- Scheduling, moderation, or any other Phase 2 concern.
-- Getting `workspaces_config` a stable release (worth raising upstream, not a blocker here).
+- Review, scheduling, or anything else ADR 0017 assigns to `canvas_workflows`.
+- Getting `workspace_config` a stable release (worth raising upstream, not a blocker here).
 
 ## Decisions
 
 ### D1: Workspaces Config is the staging store for valid config auto-saves
 
-The config persist path attempts a workspace-scoped config write first. Success means the staged values live as real config attached to `canvas_default`; loading that config with the staging workspace active yields staged values, loading it outside yields live values. The auto-save read API resolves config from this store the same way it resolves content from workspace revisions today.
+The config persist path attempts a workspace-scoped config write first: a plain entity save executed inside the active workspace, which Workspaces Config intercepts and stores in that workspace's partition. Success means the staged values live as real config attached to the active workspace; loading that config with the workspace active yields staged values, loading it outside yields live values, and configuration that was created inside the workspace and has no Live copy is absent outside it. The auto-save read API resolves config from this store the same way it resolves content from workspace revisions.
+
+Every staged write persists this way, not only the create. A config entity created through the Canvas API inside a workspace and then edited in the editor has its current draft in workspace-scoped configuration at all times, so any consumer loading that config inside the workspace (entity view builders, Views, page variant resolution, the editor's own preview) sees the same state without special-casing.
 
 Rejected alternative: keep Canvas config in the Phase 1 payload store and let sites run Workspaces Config beside it for everything else, configured to ignore Canvas-owned config. Two storages for the same problem, permanent divergence risk, and a guaranteed migration in Phase 2.
 
@@ -38,9 +42,11 @@ Rejected alternative: keep Canvas config in the Phase 1 payload store and let si
 
 This resolves Phase 1's open question "should the snapshot entity also serve as the Phase 2 per-workspace config staging store": no, Workspaces Config does.
 
-### D3: Publish and validation keep their Phase 1 shape
+### D3: Publish is the workspace publish; config rides on it
 
-Per-item Canvas publish, all-or-nothing per request, no workspace-level publish. The only change is the source: config items are built from workspace-scoped config (or the invalid-data store for invalid entries), validated as typed configuration before any live write, then applied to live configuration. Discard additionally clears the workspace-scoped config for discarded items.
+Superseding the original D3 (per-item publish) per ADR 0017. The workspace is the unit of publish. Before core `Workspace::publish()` runs, Canvas validates every item tracked in the workspace: content through entity validation plus recorded form violations, config through typed configuration validation of the workspace-scoped values. Invalid-data store entries are staged into the workspace first (a config save inside the workspace, or a pending revision for content) so that one store holds the publish source; an entry the storage layer still rejects is a publish blocker reported as a per-item violation. Workspaces Config then applies the staged configuration to Live at its pre-publish event and core promotes the tracked revisions, both inside one database transaction on Canvas-triggered paths. Discard removes the workspace-scoped configuration for the discarded item (deleting it when it has no Live copy, otherwise resetting it to the Live values) alongside every other staging store.
+
+The "created disabled" rule for content templates is retired. It existed so that a template created directly in Live could not take over rendering before its first publish. With creation itself staged, Live is untouched until publish, so a template created inside a workspace stages in its rendering-effective state and no publish-time status flip is needed. The editor-preview special case that force-enabled disabled templates goes with it.
 
 ### D4: The invalid-data-only dirty-state edge case becomes explicit spec
 
@@ -48,12 +54,28 @@ From review: when the first and only staged state of a target sits in the invali
 
 ### D5: Staging writes stay off the hot path
 
-Writing to entity storage is too slow for the hot path of preview-critical editing requests; the deferred write buffer exists for exactly this reason. Routing valid config auto-saves into workspace-scoped configuration must not put synchronous entity-store or config-store writes back on that hot path: PATCH latency must not regress, and the buffer (or an equally cheap write) covers these writes, flushing into workspace-scoped configuration at kernel terminate the same way content flushes into revisions today.
+Writing to entity storage is too slow for the hot path of preview-critical editing requests; the deferred write buffer exists for exactly this reason. Routing valid config auto-saves into workspace-scoped configuration must not put synchronous entity-store or config-store writes back on that hot path: PATCH latency must not regress, and the buffer (or an equally cheap write) covers these writes, flushing into workspace-scoped configuration at kernel terminate the same way content flushes into revisions. Config drafts therefore enter the same deferred flusher as content, which also collapses a request's writes to one config save per target and so one round of cache invalidation per request (D6).
+
+### D6: Staged configuration writes invalidate cache tags exactly like Live writes
+
+Core invalidates a configuration object's cache tag (`config:NAME`) and its entity type's list tag on every save, and Workspaces Config partitions cache *IDs* per workspace, not cache *tags*. A staged config write inside one workspace therefore drops every cache entry carrying that tag in every partition, including Live: render, dynamic page and page cache entries for every entity whose output depends on that configuration (for a content template, every entity of that bundle in that view mode) and anything that listed that entity type. Correctness is unaffected; Live cache hit rate suffers while a template is being edited in any workspace.
+
+Accepted for this change. The invalidation happens once per flushed request (D5), not per PATCH, and it matches how core Workspaces itself treats a content entity saved in a workspace (the entity's own tag is invalidated globally). Narrowing invalidation to the writing workspace, by remapping workspace-safe config tags to a workspace-qualified tag while a workspace is active and tagging in-workspace renders accordingly, is a separate change. It is purely an invalidation-layer concern and does not alter the write path decided here, so it can follow without reworking this change. Global invalidations unrelated to tags, such as `library_info` on code component and asset library saves, are also out of scope here.
+
+### D7: Base copy and attribution for workspace-scoped config
+
+Hash comparison (idempotency, dirty state, conflict detection) and the client's auto-save starting point need a stable base that does not move on every staged write. For content that base is the Live revision loaded outside the workspace. For config the base is the Live configuration when one exists; for configuration that was created inside the workspace and has no Live copy, the base is the copy as it was created, whose normalized hash Canvas records in the pending buffer sidecar at that creating write (the default revision Workspaces Config writes for its tracking entity is an empty placeholder, not a usable copy). Loading the workspace-scoped copy itself as the base is wrong: it is the draft, so every re-save would look like a reset to the original values.
+
+Workspaces Config records no editor or edit time per staged config object, so attribution and conflict metadata (client instance, base hash, editor, edit time) live in the pending buffer sidecar keyed by the auto-save key, exactly as for content whose workspace revision cannot carry them.
+
+There is no exclusive-edit lock for configuration. Core's one-workspace-per-entity rule applies to content; Workspaces Config keeps one staged copy per workspace with no cross-workspace ownership, and a Live config write outside any workspace does not fail because a workspace holds a draft. Conflict detection against the base hash (D7, first paragraph) is what surfaces such an outside edit at publish.
 
 ## Risks / Trade-offs
 
-- [`workspaces_config` is a dev module with no release] → Pin to a vetted commit in composer; review on the implementation branch is the evaluation gate. Tag1 production usage mitigates maturity concerns more than the release status suggests.
-- [Behavioral differences between opaque payloads and real config staging (config CRUD events, cache invalidation fire on staged writes)] → Covered by porting the existing config auto-save tests and running the full suite on the implementation branch; any event Canvas must suppress gets an explicit test.
+- [`workspace_config` is a dev module with no release] → Pin to a vetted commit in composer; review on the implementation branch is the evaluation gate. Tag1 production usage mitigates maturity concerns more than the release status suggests.
+- [Behavioral differences between opaque payloads and real config staging: config CRUD events and entity hooks fire on every staged write] → Covered by porting the existing config auto-save tests and running the full suite on the implementation branch; any event Canvas must suppress gets an explicit test. Component generation already runs outside any workspace with a reentrancy guard (ADR 0017, consequence 10).
+- [Cache invalidation fires on every staged write and reaches Live] → Accepted (D6). Bounded to once per flushed request by D5. Scoped invalidation is a follow-up change.
+- [Workspaces Config stores each staged write as a new revision of its tracking entity, with no pruning] → Bounded by D5 to one revision per flushed request per target; if revision volume proves a problem, prune those revisions the way Canvas prunes staged content revisions.
 - [Workspace-scoped config writes are slower than key-value writes] → Covered by D5: buffered writes on preview-critical routes; verify PATCH latency before merge (tasks).
 - [Invalid config states must never hit the config storage layer] → The persist path checks first whether the payload can be persisted and routes failures to the invalid-data store, mirroring the content revision fallback; write-time validation of data semantics remains prohibited.
 - [Module direction is community-owned] → amateescu, S. Lu, and catch drive it; check with Glaman, whose Acquia Source work inspired the Phase 1 config handling, before diverging from module conventions.
@@ -62,11 +84,16 @@ Writing to entity storage is too slow for the hot path of preview-critical editi
 
 - No shipped-site migration: Phase 1 (MR 1056) has not merged, so no site holds Phase 1 config payload rows.
 - The legacy key-value migration (post-update plus lazy) gains a branch: valid config rows stage into workspace-scoped config; rows that cannot persist stage into the invalid-data store. Attribution and timestamps preserved as in Phase 1.
-- Update path additionally enables `workspaces_config`.
+- Update path additionally enables `workspace_config` (done as part of ADR 0017's update path).
+- Snapshot rows that hold valid config drafts at the time this lands are promoted into workspace-scoped configuration of the workspace recorded on the row, on first read or by a post-update pass; the row is deleted once the staged copy is durable.
+
+## Resolved Questions
+
+- *How do Live config writes on `canvas.api.*` routes stay visible to reads taken inside the workspace?* Moot. ADR 0017 removed the Live-write wrappers: while a workspace is active, `canvas.api.config.*` writes stage into it, so reads and writes share one config cache partition. Content deletion remains a Live operation.
+- *Does Workspaces Config support every config operation Canvas stages?* Create, update and delete are supported for workspace-safe config (delete of a workspace-only object removes it; delete of an object that exists in Live stages a delete marker applied at publish). Rename is not an operation Canvas stages for its managed config; a renamed object is a delete plus a create.
+- *Where does per-editor attribution live?* In the pending buffer sidecar (D7).
+- *Should the exclusive-edit story for config match content?* No lock (D7).
 
 ## Open Questions
 
-- How do Live config writes on `canvas.api.*` routes stay visible to reads taken while the auto-save workspace is active? The config endpoints publish to Live and must step outside the workspace to do it, but every read on those routes happens inside the workspace, and the two resolve through different config cache partitions. Found in implementation: with `workspace_config` enabled, a PATCH returns updated values while the following GET still reports the pre-PATCH ones (CanvasConfigEntityHttpApiTest: testPattern, testJavaScriptComponent, testFolder, testContentTemplate). Note the trap: without stepping outside the workspace these tests can pass while the config is only ever staged and never reaches Live. See `\Drupal\canvas\Controller\ApiConfigControllers::executeOutsideWorkspace()`.
-- Does Workspaces Config support every config operation Canvas stages (create, update, delete, rename) for its fixed set of managed config (code components, page regions, templates)?
-- Where does per-editor attribution live for workspace-scoped config writes (Workspaces Config may not record an editor per staged config object; Canvas may need a sidecar or to keep invalid-data-store metadata for attribution)?
-- Should the exclusive-edit story for config match content (is a staged config object protected against live edits outside Canvas, and is that even desirable in Phase 1)?
+- None.

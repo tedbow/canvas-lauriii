@@ -2,29 +2,40 @@
 
 ## Purpose
 
-Define how pending Canvas changes are persisted and read back: the dedicated
-staging workspace, workspace-scoped staging of content and configuration, the
+Define how pending Canvas changes are persisted and read back: the staging
+workspace, workspace-scoped staging of content and configuration, the
 invalid-data store, the deferred write buffer, staging invariants (exactly one
 store holds the current staged state per entity), revision pruning, workspace
 isolation, and migration from the legacy key-value store. Canonical detail
-lives in ADR 0014 in the canvas module. This is the target state after the
+lives in ADR 0014 (staging mechanics) and ADR 0017 (the workspace as the unit
+of publish) in the canvas module. This is the target state after the
 `adopt-workspaces-config` change, merged onto the Phase 1 baseline
-(`stage-auto-saves-in-workspace`, MR 1056, issue 3588540).
+(`stage-auto-saves-in-workspace`, MR 1056, issue 3588540) and realigned with
+ADR 0017.
+
+Throughout this spec, "the staging workspace" means the workspace that core
+Workspaces negotiation resolves as active for the request, falling back to
+the Main workspace (`canvas_default`) when none is negotiated.
 
 ## ADDED Requirements
 
-### Requirement: A dedicated internal staging workspace backs auto-saves
+### Requirement: Staging follows the active workspace
 
-Canvas SHALL stage auto-saves in a single dedicated workspace (`canvas_default`) created during install or update. The workspace is internal infrastructure: it SHALL NOT appear in the core Workspaces UI (switcher, listings), and users SHALL NOT be able to publish, edit, or delete it through core Workspaces surfaces. If the workspace entity does not exist at write time (deleted, or not yet provisioned), the auto-save SHALL be retained in a fallback staging store and remain readable; it MUST NOT fall through to saving the entity in the Live workspace.
+Canvas SHALL stage auto-saves in the active workspace, and SHALL activate the Main workspace (`canvas_default`, created during install or update) when negotiation yields none. Every staging key SHALL be workspace-qualified so that each workspace's staged state is partitioned from every other's. If the active workspace entity no longer exists at write time (deleted mid-session), the auto-save write SHALL fail with an error; it MUST NOT fall through to another workspace or to saving the entity in Live. If the Main workspace has not been provisioned yet (before install or update completes), the auto-save SHALL be retained in a fallback staging store and remain readable.
 
-#### Scenario: Workspace is invisible to the Workspaces UI
+#### Scenario: No workspace negotiated
 
-- **WHEN** a user with Canvas editing permissions opens the core Workspaces switcher or listing
-- **THEN** the staging workspace is not offered
+- **WHEN** an editor opens Canvas with no workspace active in their session
+- **THEN** the Main workspace is activated and their auto-saves stage in it
 
-#### Scenario: Missing workspace never leaks to Live
+#### Scenario: Active workspace deleted mid-session
 
-- **WHEN** the staging workspace entity has been deleted and an auto-save write arrives
+- **WHEN** the workspace an editor's session points at has been deleted and an auto-save write arrives
+- **THEN** the write is rejected with an error, no default (live) revision is created, and nothing is staged in another workspace
+
+#### Scenario: Missing Main workspace never leaks to Live
+
+- **WHEN** the Main workspace has not been provisioned and an auto-save write arrives
 - **THEN** no default (live) revision is created and the draft is still retained and readable in the editor
 
 ### Requirement: Content auto-saves are pending revisions
@@ -38,7 +49,9 @@ Auto-saves of workspace-supported content entities SHALL be persisted as pending
 
 ### Requirement: Valid config auto-saves are staged as workspace-scoped configuration
 
-Config entity auto-saves that can be persisted SHALL be staged as workspace-scoped configuration attached to the staging workspace. Live configuration SHALL remain unchanged until publish. Staged config SHALL be readable through the same auto-save read API as every other staged state, and SHALL resolve as regular configuration when loaded with the staging workspace active: reads inside the workspace context return the staged values, reads outside it return the live values.
+Config entity auto-saves that can be persisted SHALL be staged as workspace-scoped configuration attached to the staging workspace, on every staged write and not only when the entity is created or published. Live configuration SHALL remain unchanged until publish. Staged config SHALL be readable through the same auto-save read API as every other staged state, and SHALL resolve as regular configuration when loaded with the staging workspace active: reads inside the workspace context return the staged values, reads outside it return the live values, and configuration created inside the workspace with no live copy is absent outside it. This resolution SHALL apply to every consumer of configuration inside the workspace (entity view builders, Views, page variant resolution, the editor preview), with no route-specific overlay of drafts.
+
+A content template created inside the staging workspace SHALL be staged in its rendering-effective (enabled) state; Canvas SHALL NOT create it disabled and enable it at publish.
 
 #### Scenario: Config entity auto-save stages workspace-scoped configuration
 
@@ -49,6 +62,11 @@ Config entity auto-saves that can be persisted SHALL be staged as workspace-scop
 
 - **WHEN** a page region staged in the staging workspace is loaded while that workspace is active
 - **THEN** the staged values are returned, and loading the same configuration outside the workspace returns the live values
+
+#### Scenario: Content template drafted in a workspace renders on non-Canvas routes
+
+- **WHEN** an editor creates a content template for a bundle and view mode inside a named workspace, edits its component tree in the editor, and then views a non-Canvas route inside that workspace that renders entities of that bundle in that view mode (for example a listing of teasers)
+- **THEN** those entities render through the template's current staged component tree, and the same route outside the workspace renders them through the core entity display
 
 ### Requirement: An invalid-data store retains every auto-save the primary stores cannot hold
 
@@ -104,7 +122,12 @@ Writing to entity storage is too slow for the hot path of preview-critical editi
 
 ### Requirement: Auto-save writes are idempotent
 
-Re-sending an auto-save payload identical to the currently staged state SHALL be a no-op: it MUST NOT create a new staged revision and MUST NOT discard existing staged state. Detecting "the editor reverted to the canonical values" SHALL compare against the canonical (live) revision, loaded outside the staging workspace.
+Re-sending an auto-save payload identical to the currently staged state SHALL be a no-op: it MUST NOT create a new staged revision and MUST NOT discard existing staged state. Detecting "the editor reverted to the canonical values" SHALL compare against the canonical base: the live revision or live configuration loaded outside the staging workspace, or, for configuration created inside the staging workspace with no live copy, the configuration as it was created. The staged copy itself MUST NOT serve as the base. The auto-save starting point reported to the client SHALL be derived from that base and SHALL NOT change across successive staged writes.
+
+#### Scenario: Successive auto-saves of workspace-created configuration
+
+- **WHEN** an editor creates a content template inside a workspace and auto-saves it several times
+- **THEN** every response reports the same auto-save starting point and none of the auto-saves is treated as a reset to the original values
 
 #### Scenario: Client retry after timeout
 
@@ -141,36 +164,50 @@ Canvas SHALL bound the number of retained staged revisions per entity using log-
 
 ### Requirement: Validation happens only at publish time, uniformly
 
-Auto-save staging SHALL NOT validate data semantics at write time; staging stores accept invalid intermediate states by design (routing a payload between a primary store and the invalid-data store based on whether the storage layer can persist it is not validation). At publish time, every selected item SHALL be validated before any live write occurs: content entities through entity validation plus recorded form violations, config entities through typed configuration validation of the staged payload, wherever it is held. Validation failures SHALL be reported as per-item violation responses grouped by entity, for content and config alike; they MUST NOT surface as unhandled server errors. A validation failure in any selected item SHALL prevent all selected items from being written (all-or-nothing per publish request).
+Auto-save staging SHALL NOT validate data semantics at write time; staging stores accept invalid intermediate states by design (routing a payload between a primary store and the invalid-data store based on whether the storage layer can persist it is not validation). At publish time, every item tracked in the workspace SHALL be validated before any live write occurs: content entities through entity validation plus recorded form violations, config entities through typed configuration validation of the staged values, wherever they are held. Validation failures SHALL be reported as per-item violation responses grouped by entity, for content and config alike; they MUST NOT surface as unhandled server errors. A validation failure in any tracked item SHALL prevent the workspace from being published (all-or-nothing per publish).
 
 #### Scenario: Invalid staged config entity
 
-- **WHEN** a user publishes a selection that includes a staged code component whose payload fails typed configuration validation
-- **THEN** the response lists that item's violations in the standard per-item format and no selected item is written to live
+- **WHEN** a user publishes a workspace that tracks a staged code component whose values fail typed configuration validation
+- **THEN** the response lists that item's violations in the standard per-item format and nothing is written to live
 
 #### Scenario: Validation precedes every live write
 
-- **WHEN** a publish request contains one valid content item and one invalid config item
-- **THEN** the invalid item's violations are reported and the valid item is not published in that request
+- **WHEN** a workspace tracks one valid content item and one invalid config item and the user publishes it
+- **THEN** the invalid item's violations are reported and the valid item is not published either
 
-### Requirement: Publishing selected items does not publish the workspace
+### Requirement: The workspace is the unit of publish
 
-Publishing SHALL use the Canvas publish pipeline: each selected item is validated and access checked individually, content items are saved as new default revisions outside the staging workspace, and config items have their staged values validated and applied to live configuration. The workspace-level publish operation SHALL NOT be used. Publishing SHALL clear every staging store for the published items only, including their workspace-scoped configuration; unselected staged items SHALL remain staged and untouched. Core Workspaces' exclusive-edit validation MUST NOT block Canvas's own publish of a staged entity.
+Publishing SHALL publish the whole active workspace through the core workspace publish operation. Before it runs, Canvas SHALL validate and access check every tracked item, and SHALL stage any invalid-data store entry into the workspace (as a pending revision or workspace-scoped configuration) so that the workspace holds the single publish source; an entry the storage layer still rejects SHALL block the publish as a per-item violation. Staged configuration SHALL be applied to live configuration by Workspaces Config at the pre-publish event, and core SHALL promote the tracked revisions; on Canvas-triggered publishes both SHALL run inside one database transaction. Publishing SHALL clear every staging store for the workspace, including its workspace-scoped configuration. Item-level scoping is achieved by choosing which workspace to work in, not by selecting items at publish.
 
-#### Scenario: Subset publish
+#### Scenario: Workspace publish
 
-- **WHEN** two entities have pending changes and the user publishes only the first
-- **THEN** the first goes live and loses all staged state, and the second remains pending with its staged state intact
+- **WHEN** two entities have pending changes in a workspace and the user publishes it
+- **THEN** both go live and lose all staged state
 
 #### Scenario: Publish releases the entity
 
-- **WHEN** a staged entity is published through Canvas
-- **THEN** its workspace tracking is removed and the entity can again be saved outside Canvas
+- **WHEN** a workspace tracking a staged entity is published
+- **THEN** the entity's workspace tracking is removed and the entity can again be saved outside Canvas
 
-#### Scenario: Publishing a staged config item
+#### Scenario: Publishing staged configuration
 
-- **WHEN** a user publishes a staged page region held as workspace-scoped configuration
-- **THEN** the staged values are applied to live configuration, the staged copy is removed, and other staged items are untouched
+- **WHEN** a workspace holding a page region as workspace-scoped configuration is published
+- **THEN** the staged values are applied to live configuration and the staged copy is removed
+
+#### Scenario: Invalid-data draft blocks publish
+
+- **WHEN** a workspace holds a draft in the invalid-data store that the storage layer still rejects at publish
+- **THEN** the publish is refused with that item's violation and nothing is written to live
+
+### Requirement: Staged configuration writes invalidate cache tags as live writes do
+
+A staged write of workspace-scoped configuration SHALL invalidate the same cache tags a live write of that configuration would (the configuration's own tag and its entity type's list tag). Because cache tags are not partitioned per workspace, cache entries carrying those tags in every partition, including live, are dropped. Canvas SHALL NOT suppress this invalidation. Canvas SHALL bound it by flushing at most one staged write per target per request.
+
+#### Scenario: Live caches after a staged template edit
+
+- **WHEN** an editor auto-saves a content template inside a named workspace
+- **THEN** cached live output of entities rendered through that template is invalidated and is rebuilt from live configuration on the next live request, unchanged in content
 
 ### Requirement: Dependent staged entities follow their host item
 
@@ -192,7 +229,7 @@ Auto-save staging SHALL keep pending changes of different translations of the sa
 
 ### Requirement: Legacy key-value auto-saves migrate losslessly
 
-Existing key-value auto-save rows SHALL migrate into workspace staging lazily on first access and eagerly through a post-update pass. Valid config rows SHALL migrate into workspace-scoped configuration; data that no primary store can hold SHALL migrate into the invalid-data store. Migration SHALL preserve the payload, the owning editor, and the last-edit time, and SHALL remove the key-value row only after the staged copy is durable. Any temporary access relaxation needed to switch workspaces during migration SHALL be confined to the update process and MUST NOT be observable by regular site traffic.
+Existing key-value auto-save rows SHALL migrate into workspace staging lazily on first access and eagerly through a post-update pass. Valid config rows SHALL migrate into workspace-scoped configuration; data that no primary store can hold SHALL migrate into the invalid-data store. Invalid-data store rows that hold valid configuration drafts SHALL likewise be promoted into workspace-scoped configuration of the workspace recorded on the row. Migration SHALL preserve the payload, the owning editor, and the last-edit time, and SHALL remove the source row only after the staged copy is durable. Any temporary access relaxation needed to switch workspaces during migration SHALL be confined to the update process and MUST NOT be observable by regular site traffic.
 
 #### Scenario: Upgrade with pending work
 
@@ -206,7 +243,7 @@ Existing key-value auto-save rows SHALL migrate into workspace staging lazily on
 
 ### Requirement: Discarding clears every staging store
 
-Discarding a pending change SHALL remove its workspace-tracked revisions, workspace-scoped configuration, invalid-data store entries, buffer rows, pruning bookkeeping, and caches. Discarding all pending changes SHALL do the same for every staged entity, including entities staged only as workspace revisions or only as workspace-scoped configuration.
+Discarding a pending change SHALL remove its workspace-tracked revisions, workspace-scoped configuration, invalid-data store entries, buffer rows, pruning bookkeeping, and caches. Workspace-scoped configuration that has no live copy SHALL be deleted; configuration that has one SHALL be reset to the live values. Discarding all pending changes SHALL do the same for every staged entity, including entities staged only as workspace revisions or only as workspace-scoped configuration.
 
 #### Scenario: Discard all
 

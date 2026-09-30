@@ -4,42 +4,55 @@
 
 - [x] 1.1 Fork branch `3588540-workspaces-config` from `3588540-stage-canvas-auto-saves` for issue 3588540 (MR 1056 itself is not diverted)
 - [x] 1.2a Add `drupal/workspace_config` to the module's composer dependencies (project is `workspace_config`, not `workspaces_config`; constraint is `^1.0@dev` — composer only honours a `#<commit>` pin in the root package, so the site pins the commit, not Canvas)
-- [ ] 1.2b Declare `workspace_config` in canvas.info.yml and enable it in the install and update paths (patch ready; parked until 2.7 is resolved, because enabling it turns CanvasConfigEntityHttpApiTest red)
-- [ ] 1.3 Ship these specs under `openspec/changes/adopt-workspaces-config/` in the canvas module repository on the implementation branch
+- [x] 1.2b Declare `workspace_config` in canvas.info.yml and enable it in the install and update paths (done by ADR 0017's update path)
+- [x] 1.3 Ship these specs under `openspec/changes/adopt-workspaces-config/` in the canvas module repository on the implementation branch
+- [x] 1.4 Realign these specs with ADR 0017: staging follows the active workspace, the workspace is the unit of publish, cache invalidation accepted (D6), base copy and attribution decided (D7)
 
-## 2. Config persist path (D1, D2, D5)
+## 2. Config persist path (D1, D2, D5, D7)
 
-- [x] 2.0a Pin auto-save staging bookkeeping (legacy key-value store, pending write buffer, form violations, pruner state) to a key-value factory no workspace overlay decorates: Workspace Config turns every collection into a per-workspace overlay while a workspace is active, so staging rows written inside `canvas_default` would be invisible to the reads, deletes and migrations that run in Live
-- [x] 2.0b Write Live config on `canvas.api.config.*` routes outside the auto-save workspace, so the endpoints keep publishing instead of silently staging once config is workspace-tracked
-- [ ] 2.7 Resolve the config cache partitioning between those Live writes and reads taken inside the workspace (see the first Open Question in design.md); blocks 1.2b
-- [ ] 2.1 Route persistable config auto-saves into workspace-scoped configuration in `canvas_default` via Workspaces Config; verify create, update, delete, and rename coverage for Canvas-managed config (code components, page regions, templates)
-- [ ] 2.2 Repurpose the fallback as the invalid-data store: config persist failures fall back to it; a successful workspace-scoped config persist deletes any invalid-data entry for the target; only Canvas clients load it, never non-Canvas consumers (Views, entity display outside Canvas)
+- [x] 2.0a Pin auto-save staging bookkeeping (legacy key-value store, pending write buffer, form violations, pruner state) to a key-value factory no workspace overlay decorates: Workspace Config turns every collection into a per-workspace overlay while a workspace is active, so staging rows written inside a workspace would be invisible to the reads, deletes and migrations that run in Live
+- [x] 2.0b ~~Write Live config on `canvas.api.config.*` routes outside the auto-save workspace~~ Superseded by ADR 0017: those routes stage into the active workspace; the Live-write wrappers were removed
+- [x] 2.7 ~~Resolve the config cache partitioning between Live writes and in-workspace reads~~ Moot after 2.0b's reversal: reads and writes share the workspace partition
+- [ ] 2.1 Route persistable config auto-saves into workspace-scoped configuration in the active workspace via Workspaces Config: a plain entity save inside the workspace on every staged write, not only at publish; verify create, update and delete coverage for Canvas-managed config (code components, page regions, templates, patterns, folders, asset libraries, brand kits)
+- [ ] 2.2 Repurpose the fallback as the invalid-data store: config persist failures (storage-layer rejection) fall back to it; a successful workspace-scoped config persist deletes any invalid-data entry for the target; only Canvas clients load it, never non-Canvas consumers (Views, entity display outside Canvas)
 - [ ] 2.3 Resolve config reads through buffer, then invalid-data store, then workspace-scoped configuration in the auto-save read API
-- [ ] 2.4 Confirm staged config resolves as regular configuration when the staging workspace is active and as live configuration outside it
-- [ ] 2.5 Decide and implement attribution for workspace-scoped config staging (editor and edit time must survive, per the editing-lifecycle attribution requirement)
+- [ ] 2.4 Confirm staged config resolves as regular configuration when the workspace is active and as live configuration outside it, including on non-Canvas routes (entity view builder, Views, page variant resolution) with no preview-route special-casing
+- [ ] 2.5 Attribution and conflict metadata for workspace-scoped config staging live in the pending buffer sidecar (editor, edit time, client instance, base hash), per the editing-lifecycle attribution requirement (D7)
 - [ ] 2.6 Verify hot-path PATCH latency does not regress: staging writes on preview-critical routes stay buffered (or equally cheap), with no synchronous entity-store or config-store writes (D5)
+- [ ] 2.8 Route config drafts through the deferred flusher so a request produces at most one config save per target, and so one round of cache invalidation (D5, D6)
+- [ ] 2.9 Base copy for hashes, dirty state and the auto-save starting point: Live configuration when it exists; for configuration created inside the workspace, the hash recorded in the sidecar at the creating write. Never the workspace-scoped copy itself (D7)
+- [ ] 2.10 Retire the "created disabled" rule for content templates: a template created inside a workspace stages enabled, no publish-time status flip, and the view builder's force-enable-in-preview special case is removed (D3)
 
 ## 3. Publish, discard, dirty state (D3, D4)
 
-- [ ] 3.1 Publish builds config items from workspace-scoped configuration (or the invalid-data store for invalid entries), validates as typed configuration before any live write, applies to live configuration, and removes the workspace-scoped copy
-- [ ] 3.2 Discard (single and all) clears workspace-scoped configuration alongside every other staging store
-- [ ] 3.3 Derive dirty state for config from the workspace-scoped values; invalid-data-only state whose normalized data equals canonical reports as no pending changes and discards cleanly
+- [ ] 3.1 Workspace publish: validate every tracked config item as typed configuration from its workspace-scoped values before core publish; stage invalid-data store entries into the workspace first and report entries the storage layer still rejects as per-item violations; Workspaces Config applies staged configuration at the pre-publish event
+- [ ] 3.2 Discard (single and all) clears workspace-scoped configuration alongside every other staging store: delete when no Live copy exists, otherwise reset to Live values
+- [ ] 3.3 Derive dirty state for config from the workspace-scoped values against the base of 2.9; invalid-data-only state whose normalized data equals canonical reports as no pending changes and discards cleanly
 
 ## 4. Migration
 
 - [ ] 4.1 Key-value migration (post-update and lazy) stages valid config rows into workspace-scoped configuration, preserving payload, editor, and timestamp
 - [ ] 4.2 Legacy rows that cannot be persisted still migrate into the invalid-data store
+- [ ] 4.3 Snapshot rows holding valid config drafts are promoted into workspace-scoped configuration of the workspace recorded on the row (lazy on first read, eager by post-update), and deleted once the staged copy is durable
 
 ## 5. Docs and diagram
 
 - [x] 5.1 Update the architectural diagram in the canvas module docs for the Workspaces Config storage split
 - [x] 5.2 Add a revision note to ADR 0014 recording the storage decision change and its rationale
+- [x] 5.3 Record in ADR 0017 that staged configuration writes invalidate cache tags globally (accepted) and that content templates are no longer created disabled
+- [ ] 5.4 Once 2.x lands, re-read the diagram and the doc blocks in `AutoSave/Workspace` that still describe config drafts as snapshot rows, and fix them
 
 ## 6. Tests
 
 - [ ] 6.1 Kernel: valid config auto-save stages workspace-scoped configuration, no invalid-data entry, live config unchanged
 - [ ] 6.2 Kernel: invalid config payload falls back to the invalid-data store; a later valid save promotes it and deletes the entry
 - [ ] 6.3 Kernel: staged config resolves inside the workspace context and not outside it
-- [ ] 6.4 Kernel: publish applies staged config to live and clears the workspace-scoped copy; discard removes it without touching live
+- [ ] 6.4 Kernel: workspace publish applies staged config to live and clears the workspace-scoped copy; discard removes it without touching live
 - [ ] 6.5 Kernel: invalid-data-only staged state equal to canonical reports no pending changes and discards without residue
 - [ ] 6.6 Port the existing config auto-save test coverage from MR 1056 and run the full suite on the implementation branch
+- [ ] 6.7 Functional: a content template created and edited inside a named workspace renders entities of that bundle through the template on a non-Canvas route (for example the frontpage view of teasers) while that workspace is active, and through the core display outside it
+- [ ] 6.8 Kernel: successive auto-saves of a config entity created inside a workspace keep the same auto-save starting point and do not report a reset to original values
+
+## 7. Follow-up (separate change)
+
+- [ ] 7.1 Open a change for workspace-scoped cache-tag invalidation of workspace-safe configuration (remap `config:NAME` and list tags to a workspace-qualified tag while a workspace is active; tag in-workspace renders accordingly; decide whether it lives in Canvas or upstream in `workspace_config`). Does not touch the write path decided here

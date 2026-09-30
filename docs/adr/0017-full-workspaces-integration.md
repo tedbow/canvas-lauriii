@@ -22,6 +22,12 @@ scheduled. The unreleased `canvas_update_11203` and
 `canvas_post_update_0033_review_workflow_permissions` were dropped; the
 sub-module's base fields and shipped workflow install with the module.
 
+Amended 2026-09-30: decision 3 now states that config entity auto-saves
+persist as workspace-scoped configuration on every staged write (not only at
+publish), that content templates are no longer created disabled, and how the
+base for hashes and starting points is chosen; consequence 12 records the
+accepted cache-tag invalidation cost.
+
 Amends [ADR 14](0014-stage-autosaves-in-a-dedicated-workspace.md): the
 publish half of that decision (per-item publish, workspace publish blocked)
 is superseded; its staging mechanics are retained per workspace.
@@ -79,10 +85,23 @@ unit of review and publish.
    `canvas.api.config.*` and content create/update/list routes are removed:
    while a workspace is active those writes stage into it, which also
    dissolves the config cache partition split (writes and reads share the
-   workspace partition). Content deletion remains a Live operation — core
-   has no staged deletion. Snapshot rows remain the store for drafts that
-   cannot be persisted (code editor working copies, storage-rejected
-   payloads), now per workspace.
+   workspace partition). Config entity auto-saves stage the same way: every
+   staged write is a config save inside the workspace, so the current draft
+   is the workspace-scoped configuration at all times and resolves as
+   regular configuration for every consumer inside that workspace (entity
+   view builders, Views, page variant resolution, the editor preview), not
+   only on Canvas preview routes. A config entity created inside a workspace
+   exists only there until publish; content templates are therefore no
+   longer created disabled and enabled at publish, since Live is untouched
+   until the workspace publishes. Hashes, dirty state and the client's
+   auto-save starting point are computed against a stable base: the Live
+   configuration when one exists, otherwise the configuration as it was
+   created inside the workspace (recorded alongside the draft's
+   conflict-detection metadata); never the staged copy itself. Content
+   deletion remains a Live operation — core has no staged deletion.
+   Snapshot rows remain the store for drafts that cannot be persisted (code
+   editor working copies, storage-rejected payloads), now per workspace, and
+   are staged into the workspace at publish.
 
 4. **Review process defined as a core workflow.** The review steps are an
    ordinary workflow of a Canvas-provided workflow type
@@ -209,3 +228,21 @@ unit of review and publish.
     workflow no longer defines resolves to the workflow's initial state
     (mirroring content_moderation), so editing or swapping workflows cannot
     strand a workspace.
+12. Staged configuration writes invalidate cache tags exactly as Live writes
+    do. Core invalidates a configuration object's own tag and its entity
+    type's list tag on every save, and `workspace_config` partitions cache
+    identifiers per workspace, not cache tags, so a staged write in one
+    workspace drops every cache entry carrying those tags in every
+    partition, Live included: render, dynamic page and page cache entries
+    for every entity whose output depends on that configuration (for a
+    content template, every entity of that bundle in that view mode).
+    Correctness is unaffected; Live cache hit rate suffers while
+    configuration is being edited in any workspace. Accepted: staged
+    config writes flush at most once per target per request through the
+    deferred flusher, and core Workspaces treats a content entity saved in
+    a workspace the same way (its own tag is invalidated globally).
+    Narrowing invalidation to the writing workspace is an
+    invalidation-layer concern that does not alter this decision's write
+    path and is left to a separate decision. In addition, `workspace_config`
+    stores each staged write as a new revision of its tracking entity with
+    no pruning; the per-request flush bounds that growth.

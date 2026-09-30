@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Define the draft, preview, and publish model shared by everything edited in Canvas. Canonical detail lives in ADR 0014 in the canvas module.
+Define the draft, preview, and publish model shared by everything edited in Canvas. Canonical detail lives in ADR 0014 (staging) and ADR 0017 (workspaces as the unit of publish) in the canvas module.
 
 ## ADDED Requirements
 
 ### Requirement: Edits are continuously auto-saved as pending changes
 
-The Canvas editor SHALL persist changes continuously without an explicit save action. Auto-saved states are intermediate: they MAY be invalid and SHALL be persisted without passing validation; no auto-save SHALL be refused or dropped because its data is invalid. Pending changes SHALL NOT affect live site output. While an entity has pending Canvas changes, validated entity saves outside the Canvas staging workspace (for example the entity's own edit form or validated API writes) are rejected by core Workspaces' exclusive-edit constraint; publishing or discarding the pending change releases the entity. This lock is an accepted Phase 1 consequence and is revisited when Canvas adopts multiple workspaces.
+The Canvas editor SHALL persist changes continuously without an explicit save action. Auto-saved states are intermediate: they MAY be invalid and SHALL be persisted without passing validation; no auto-save SHALL be refused or dropped because its data is invalid. Pending changes SHALL NOT affect live site output. While a content entity has pending Canvas changes in a named workspace, validated saves of it in any other workspace or in live (for example the entity's own edit form or validated API writes) are rejected by core Workspaces' one-workspace-per-entity rule, and Canvas staged writes from another workspace are rejected naming the owning workspace; publishing or discarding the pending change releases the entity. An entity tracked only in the Main workspace remains saveable in live. Configuration has no such lock: each workspace holds its own staged copy, and an outside edit surfaces as a conflict against the draft's base rather than as a rejected save.
 
 #### Scenario: Half-finished work survives
 
@@ -17,26 +17,31 @@ The Canvas editor SHALL persist changes continuously without an explicit save ac
 
 #### Scenario: Outside edit while staged
 
-- **WHEN** a user submits the node edit form for an entity that has pending Canvas changes
-- **THEN** the save is rejected with a message identifying the staging workspace, and succeeds again after the pending change is published or discarded
+- **WHEN** a user submits the node edit form for an entity that has pending Canvas changes in a named workspace, with no workspace or a different workspace active
+- **THEN** the save is rejected with a message identifying the owning workspace, and succeeds again after the pending change is published or discarded
 
 ### Requirement: Preview reflects pending changes
 
-Previewing inside the editor SHALL render the pending (auto-saved) state, composed with the pending state of anything else it depends on (for example page regions and code component working copies).
+Previewing inside the editor SHALL render the pending (auto-saved) state, composed with the pending state of anything else it depends on (for example page regions and code component working copies). Outside the editor, any route rendered while a workspace is active SHALL reflect that workspace's staged content and staged configuration, so the site itself is the workspace's preview; the live site SHALL show none of it.
 
 #### Scenario: Cross-entity preview
 
 - **WHEN** a page and a page region both have pending changes
 - **THEN** the editor preview shows both together while the live site shows neither
 
-### Requirement: Publishing is explicit, per item, and validated
+#### Scenario: Site preview inside a workspace
 
-Publishing SHALL be an explicit step in which the user selects which pending changes to publish. Each selected item SHALL be individually validated and access checked at publish time; only valid items become live.
+- **WHEN** an editor drafts a content template in a named workspace and then browses a listing of that bundle on the site with that workspace active
+- **THEN** the listing renders through the drafted template, and the same listing without the workspace active renders through the core display
 
-#### Scenario: Invalid draft cannot be published
+### Requirement: Publishing is explicit, per workspace, and validated
 
-- **WHEN** a user attempts to publish a pending change that fails validation
-- **THEN** that item is rejected with its validation errors while other selected valid items can still be published
+Publishing SHALL be an explicit step that publishes the active workspace as a whole. Every tracked item SHALL be validated and access checked at publish time; one invalid item SHALL block the publish, with violations reported per item, and discarding that item unblocks it. Scoping what goes live together is done by choosing which workspace to work in.
+
+#### Scenario: Invalid draft blocks the workspace
+
+- **WHEN** a user attempts to publish a workspace that tracks a pending change failing validation
+- **THEN** the publish is refused with that item's validation errors and no tracked item goes live; discarding the item allows the publish to proceed
 
 ### Requirement: Concurrent edits are detected
 
