@@ -513,10 +513,12 @@ class AutoSaveManager implements EventSubscriberInterface {
 
   private function getUnchangedHash(EntityInterface $entity): ?string {
     \assert(!\is_null($entity->id()));
-    // Compare against the Live copy: with the auto-save workspace active, a
-    // plain loadUnchanged() would return the staged revision, making every
-    // re-save of the draft look like a reset to the original values.
-    $original = $this->workspaceAutoSave->loadUnchangedOutsideWorkspace($entity->getEntityTypeId(), $entity->id());
+    // Compare against the saved base: for content entities, with the auto-save
+    // workspace active, a plain loadUnchanged() would return the staged
+    // revision, making every re-save of the draft look like a reset to the
+    // original values.
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::loadUnchangedBase()
+    $original = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), $entity->id());
     if ($original === NULL) {
       return NULL;
     }
@@ -825,7 +827,7 @@ class AutoSaveManager implements EventSubscriberInterface {
 
     // The conflict basis is the Live copy: with the auto-save workspace
     // active, loadUnchanged() would return the staged revision.
-    $entity = $this->workspaceAutoSave->loadUnchangedOutsideWorkspace($entry['entity_type'], $entry['entity_id']);
+    $entity = $this->workspaceAutoSave->loadUnchangedBase($entry['entity_type'], $entry['entity_id']);
     \assert(!\is_null($entity));
 
     // Compare the original_hash in auto-save entry vs latest entity hash.
@@ -897,7 +899,7 @@ class AutoSaveManager implements EventSubscriberInterface {
     $auto_save_data = $this->autoSaveStore->get($key) ?? $this->workspaceAutoSave->getStagedEntryMetadata($key);
     \assert(\is_array($auto_save_data));
     \assert(!$entity->isNew());
-    $stored = $this->workspaceAutoSave->loadUnchangedOutsideWorkspace($entity->getEntityTypeId(), (string) $entity->id());
+    $stored = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), (string) $entity->id());
     \assert(!\is_null($stored));
     $current_hash = self::generateHash(self::normalizeEntity($stored));
     /** @var AutoSaveEntry $auto_save_data */

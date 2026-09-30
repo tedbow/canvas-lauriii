@@ -14,6 +14,7 @@ use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
 use Drupal\Core\Config\ConfigManagerInterface;
 use Drupal\Core\Config\Entity\ConfigEntityInterface;
+use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityChangedInterface;
 use Drupal\Core\Entity\EntityInterface;
@@ -1326,17 +1327,16 @@ final class WorkspaceAutoSave {
   /**
    * Opaque token for concurrent-edit checks.
    *
-   * Always derived from the Live copy: the starting point identifies the base
+   * Always derived from the saved base: the starting point identifies the base
    * an auto-save draft started from, so it must stay stable across successive
    * auto-saves (snapshot rows and pending-buffer tokens change on every save)
    * and only change when the entity itself is saved.
+   *
+   * @see ::loadUnchangedBase()
    */
   public function getAutoSaveStartingPoint(EntityInterface $entity): string|int|null {
     \assert($entity->id() !== NULL);
-    // Load outside the auto-save workspace: with it active, loadUnchanged()
-    // would return the staged revision, shifting the starting point on every
-    // auto-save.
-    $saved_entity = $this->loadUnchangedOutsideWorkspace($entity->getEntityTypeId(), (string) $entity->id());
+    $saved_entity = $this->loadUnchangedBase($entity->getEntityTypeId(), (string) $entity->id());
     \assert($saved_entity instanceof EntityInterface);
     $auto_save_start_revision = $saved_entity instanceof RevisionableInterface
       ? $saved_entity->getRevisionId()
@@ -1348,15 +1348,27 @@ final class WorkspaceAutoSave {
   }
 
   /**
-   * Loads the Live (outside any workspace) unchanged copy of an entity.
+   * Loads the saved copy an auto-save draft is based on.
    *
-   * During Canvas API requests the auto-save workspace is active, so a plain
-   * loadUnchanged() would return the staged revision rather than the Live
-   * base that hashes and starting points must be computed against.
+   * Content entities load outside any workspace: their drafts are staged as
+   * workspace revisions, so with the auto-save workspace active a plain
+   * loadUnchanged() would return the draft itself rather than the Live base
+   * that hashes and starting points must be computed against.
+   *
+   * Config entities load inside the active workspace: their drafts are
+   * snapshot rows or key-value entries, never config writes, so the
+   * in-workspace unchanged copy is the saved base. Loading outside the
+   * workspace would miss config that the Workspace Config module staged in
+   * the workspace and has not published yet (for example, a content template
+   * created in Canvas), which only exists in that workspace's partition.
+   *
+   * @see ::persistConfigSnapshot()
+   * @see \Drupal\canvas\Controller\ApiConfigControllers
    */
-  public function loadUnchangedOutsideWorkspace(string $entityTypeId, string|int $id): ?EntityInterface {
+  public function loadUnchangedBase(string $entityTypeId, string|int $id): ?EntityInterface {
     $storage = $this->entityTypeManager->getStorage($entityTypeId);
-    if ($this->workspaceManager === NULL) {
+    $is_config = $this->entityTypeManager->getDefinition($entityTypeId) instanceof ConfigEntityTypeInterface;
+    if ($is_config || $this->workspaceManager === NULL) {
       return $storage->loadUnchanged($id);
     }
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */

@@ -675,7 +675,7 @@ final class ApiLayoutController {
    * staged revision even when the caller needs the published version.
    */
   private function loadLiveVersion(ContentEntityInterface $entity): ContentEntityInterface {
-    $live = $this->workspaceAutoSave->loadUnchangedOutsideWorkspace($entity->getEntityTypeId(), (string) $entity->id());
+    $live = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), (string) $entity->id());
     if (!$live instanceof ContentEntityInterface) {
       return $entity;
     }

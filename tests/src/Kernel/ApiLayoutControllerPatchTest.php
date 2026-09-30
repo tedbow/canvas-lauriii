@@ -30,6 +30,8 @@ use Drupal\Tests\canvas\TestSite\CanvasTestSetup;
 use Drupal\Tests\canvas\Traits\AutoSaveRequestTestTrait;
 use Drupal\Tests\canvas\Traits\CanvasFieldTrait;
 use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
+use Drupal\workspaces\Entity\Workspace;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
@@ -806,6 +808,85 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
     self::assertCount(1, $finalTree, 'Published node should only have parent after all slots removed');
     self::assertSame($parent_uuid, $finalTree[0]['uuid']);
     self::assertCount(0, $updatedNode->getTypedData()->validate());
+  }
+
+  /**
+   * A content template that exists only in a workspace has a starting point.
+   *
+   * With Workspace Config, a template created while a workspace is active is
+   * staged in that workspace's config partition and is absent from Live until
+   * the workspace is published. Layout GET and PATCH must still resolve its
+   * auto-save starting point, and successive auto-saves must not change it.
+   *
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::loadUnchangedBase()
+   */
+  public function testWorkspaceStagedContentTemplate(): void {
+    $this->setUpCurrentUser([], [
+      'administer url aliases',
+      ContentTemplate::ADMIN_PERMISSION,
+      'edit any article content',
+    ]);
+    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
+    \assert($workspace_manager instanceof WorkspaceManagerInterface);
+    $template_id = 'node.article.teaser';
+    $heading_uuid = '99cca6bb-4b98-42a2-97fe-e7dbc7268c26';
+    Workspace::create(['id' => 'stage', 'label' => 'Stage'])->save();
+
+    $workspace_manager->executeInWorkspace('stage', static function () use ($template_id, $heading_uuid): void {
+      ContentTemplate::create([
+        'id' => $template_id,
+        'content_entity_type_id' => 'node',
+        'content_entity_type_bundle' => 'article',
+        'content_entity_type_view_mode' => 'teaser',
+        'component_tree' => [
+          [
+            'uuid' => $heading_uuid,
+            'component_id' => 'sdc.canvas_test_sdc.heading',
+            'component_version' => '8c01a2bdb897a810',
+            'inputs' => [
+              'text' => 'hello, world!',
+              'element' => 'h1',
+            ],
+          ],
+        ],
+      ])->save();
+      self::assertInstanceOf(ContentTemplate::class, ContentTemplate::load($template_id));
+    });
+    // The template is staged in the workspace only.
+    self::assertNull($workspace_manager->executeOutsideWorkspace(static fn () => ContentTemplate::load($template_id)));
+
+    $this->previewEntity = Node::load(1);
+    $workspace_manager->executeInWorkspace('stage', function () use ($template_id, $heading_uuid): void {
+      $template = ContentTemplate::load($template_id);
+      \assert($template instanceof ContentTemplate);
+      $key = AutoSaveManager::getAutoSaveKey($template);
+      $url = $this->getLayoutUrl($template)->toString();
+      $autoSave = $this->container->get(AutoSaveManager::class);
+      \assert($autoSave instanceof AutoSaveManager);
+
+      $response = $this->parentRequest(Request::create($url));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      $this->assertResponseAutoSaves($response, [$template]);
+      $data = self::decodeResponse($response);
+      $starting_point = $data['autoSaves'][$key]['autoSaveStartingPoint'];
+      self::assertNotEmpty($starting_point);
+      self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
+
+      $model = $data['model'][$heading_uuid];
+      $model['resolved']['text'] = 'Updated heading';
+      $patch = [
+        'model' => $model,
+        'componentType' => 'sdc.canvas_test_sdc.heading@8c01a2bdb897a810',
+        'componentInstanceUuid' => $heading_uuid,
+      ] + $this->getPatchContentsDefaults([$template]);
+      $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch, JSON_THROW_ON_ERROR)));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      self::assertSame($starting_point, self::decodeResponse($response)['autoSaves'][$key]['autoSaveStartingPoint']);
+
+      // The draft exists, and the staged base it started from is unchanged.
+      self::assertFalse($autoSave->getAutoSaveEntity($template)->isEmpty());
+      self::assertSame($starting_point, $autoSave->getClientAutoSaveData($template)['autoSaveStartingPoint']);
+    });
   }
 
 }

@@ -64,7 +64,7 @@ final class EntityFormController extends ControllerBase {
       // Live copy, exactly as this endpoint did before workspace staging.
       // @see \Drupal\workspaces\Negotiator\QueryParameterWorkspaceNegotiator
       // @see \Drupal\Core\Field\WidgetBase::formMultipleElements()
-      $live = $this->workspaceAutoSave->loadUnchangedOutsideWorkspace($entity->getEntityTypeId(), $entity->id());
+      $live = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), $entity->id());
       if ($live instanceof ContentEntityInterface && $entity instanceof ContentEntityInterface && $live->hasTranslation($entity->language()->getId())) {
         $live = $live->getTranslation($entity->language()->getId());
       }
