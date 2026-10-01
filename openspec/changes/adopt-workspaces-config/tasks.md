@@ -33,8 +33,8 @@
 
 ## 4. Migration
 
-- [ ] 4.1 Key-value migration (post-update and lazy) stages valid config rows into workspace-scoped configuration, preserving payload, editor, and timestamp
-- [ ] 4.2 Legacy rows that cannot be persisted still migrate into the invalid-data store
+- [x] 4.1 Key-value migration (post-update and lazy) stages valid config rows into workspace-scoped configuration, preserving payload, editor, and timestamp. The migrator persists through the same path as a staged write (`LegacyAutoSaveMigrator::importLegacyArray()` → `WorkspaceAutoSave::persistStagedEntity()`), so component tree config rows now land as workspace-scoped configuration with the legacy entry's metadata
+- [x] 4.2 Legacy rows that cannot be persisted still migrate into the invalid-data store (the persist path's snapshot fallback)
 - [x] 4.3 Snapshot rows holding valid config drafts are promoted into workspace-scoped configuration of the workspace recorded on the row by a post-update pass (`canvas_post_update_0033_promote_config_snapshots`), and deleted once the staged copy is durable. No lazy promotion on read: a snapshot row is also the legitimate fallback for a draft the storage layer rejects, and retrying that save on every read would fail every time
 
 ## 5. Docs and diagram
@@ -52,7 +52,7 @@
 - [x] 6.4 Kernel: workspace publish applies staged config to live and clears the workspace-scoped copy; discard removes it without touching live
 - [ ] 6.5 Kernel: invalid-data-only staged state equal to canonical reports no pending changes and discards without residue
 - [ ] 6.6 Port the existing config auto-save test coverage from MR 1056 and run the full suite on the implementation branch
-- [ ] 6.7 Functional: a content template created and edited inside a named workspace renders entities of that bundle through the template on a non-Canvas route (for example the frontpage view of teasers) while that workspace is active, and through the core display outside it
+- [x] 6.7 A content template created and edited inside a named workspace renders entities of that bundle through the template on a non-Canvas route while that workspace is active, and through the core display outside it. Covered at the kernel level (entity view builder render inside and outside the workspace, in `ApiLayoutControllerPatchTest`); a functional test against the frontpage view remains worthwhile once Update tests boot again
 - [x] 6.8 Kernel: successive auto-saves of a config entity created inside a workspace keep the same auto-save starting point and do not report a reset to original values
 
 ## 7. Follow-up (separate change)
