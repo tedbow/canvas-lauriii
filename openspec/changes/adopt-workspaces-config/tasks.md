@@ -17,7 +17,7 @@
 - [x] 2.11 Declare page variants workspace-safe from Canvas: the Workspace Config module's built-in list predates page variants, so saving one inside a workspace was refused
 - [x] 2.2 Repurpose the fallback as the invalid-data store: config persist failures (storage-layer rejection, or a type the site has not declared workspace-safe) fall back to it; a successful workspace-scoped config persist deletes any invalid-data entry for the target; only Canvas clients load it, never non-Canvas consumers (Views, entity display outside Canvas)
 - [x] 2.3 Resolve config reads through buffer, then invalid-data store, then workspace-scoped configuration in the auto-save read API
-- [ ] 2.4 Confirm staged config resolves as regular configuration when the workspace is active and as live configuration outside it, including on non-Canvas routes (entity view builder, Views, page variant resolution) with no preview-route special-casing
+- [x] 2.4 Confirm staged config resolves as regular configuration when the workspace is active and as live configuration outside it, including on non-Canvas routes (entity view builder, Views, page variant resolution) with no preview-route special-casing
 - [x] 2.5 Attribution and conflict metadata for workspace-scoped config staging live in the pending buffer sidecar (editor, edit time, client instance, base hash), per the editing-lifecycle attribution requirement (D7)
 - [ ] 2.6 Verify hot-path PATCH latency does not regress: staging writes on preview-critical routes stay buffered (or equally cheap), with no synchronous entity-store or config-store writes (D5)
 - [x] 2.8 Route config drafts through the deferred flusher so a request produces at most one config save per target, and so one round of cache invalidation (D5, D6)
@@ -27,7 +27,7 @@
 
 ## 3. Publish, discard, dirty state (D3, D4)
 
-- [ ] 3.1 Workspace publish: validate every tracked config item as typed configuration from its workspace-scoped values before core publish; stage invalid-data store entries into the workspace first and report entries the storage layer still rejects as per-item violations; Workspaces Config applies staged configuration at the pre-publish event
+- [x] 3.1 Workspace publish: validate every tracked config item as typed configuration from its workspace-scoped values before core publish; stage invalid-data store entries into the workspace first and report entries the storage layer still rejects as per-item violations; Workspaces Config applies staged configuration at the pre-publish event
 - [x] 3.2 Discard (single and all) clears workspace-scoped configuration alongside every other staging store: delete when no Live copy exists, otherwise reset to Live values
 - [x] 3.3 Derive dirty state for config from the workspace-scoped values against the base of 2.9; invalid-data-only state whose normalized data equals canonical reports as no pending changes and discards cleanly
 
