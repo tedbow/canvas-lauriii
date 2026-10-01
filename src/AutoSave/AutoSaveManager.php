@@ -513,16 +513,12 @@ class AutoSaveManager implements EventSubscriberInterface {
 
   private function getUnchangedHash(EntityInterface $entity): ?string {
     \assert(!\is_null($entity->id()));
-    // Compare against the saved base: for content entities, with the auto-save
-    // workspace active, a plain loadUnchanged() would return the staged
-    // revision, making every re-save of the draft look like a reset to the
-    // original values.
-    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::loadUnchangedBase()
-    $original = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), $entity->id());
-    if ($original === NULL) {
-      return NULL;
-    }
-    return self::generateHash(self::normalizeEntity($original));
+    // Compare against the saved base, never the staged copy: with the staging
+    // workspace active, a plain loadUnchanged() would return the draft itself,
+    // making every re-save of the draft look like a reset to the original
+    // values.
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::getBaseHash()
+    return $this->workspaceAutoSave->getBaseHash($entity);
   }
 
   public function getAutoSaveEntity(EntityInterface $entity, bool $bypass_cache = FALSE): AutoSaveEntity {
@@ -1092,7 +1088,8 @@ class AutoSaveManager implements EventSubscriberInterface {
     // Publish-time staging saves the draft itself: the auto-save entry is
     // about to be consumed by the publish, so there is nothing to update —
     // and re-staging it here would write into the workspace mid-publish.
-    if ($this->workspaceAutoSave->isPublishTimeStaging()) {
+    // A Canvas staged config write likewise saves the draft itself.
+    if ($this->workspaceAutoSave->isPublishTimeStaging() || $this->workspaceAutoSave->isStagingConfigWrite()) {
       return;
     }
 
@@ -1103,6 +1100,20 @@ class AutoSaveManager implements EventSubscriberInterface {
     // Auto-saves can only occur for Canvas config entities modified by the
     // Canvas UI.
     if (!$entity instanceof CanvasHttpApiEligibleConfigEntityInterface) {
+      return;
+    }
+
+    // Inside a workspace, a save of config staged as workspace-scoped
+    // configuration (the config API, a config form) writes the workspace's
+    // copy, which is the draft: there is no separate draft to update or
+    // discard. Saves outside any workspace are Live edits; they are
+    // reconciled against the Main workspace's draft below, like any other
+    // outside edit.
+    if ($entity instanceof ComponentTreeConfigEntityBase
+      && $this->workspaceAutoSave->usesWorkspaceConfigStaging($entity)
+      && $this->workspaceAutoSave->hasActiveWorkspace()) {
+      $this->workspaceAutoSave->onWorkspaceStagedConfigSaved($entity);
+      $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
       return;
     }
 

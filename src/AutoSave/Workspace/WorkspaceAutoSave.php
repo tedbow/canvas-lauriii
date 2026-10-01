@@ -8,26 +8,32 @@ use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSaveEntity;
 use Drupal\canvas\CanvasServiceProvider;
 use Drupal\canvas\Entity\CanvasHttpApiEligibleConfigEntityInterface;
+use Drupal\canvas\Entity\ComponentTreeConfigEntityBase;
 use Drupal\canvas\Workspace\WorkspaceEntityLockedException;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Config\ConfigManagerInterface;
 use Drupal\Core\Config\Entity\ConfigEntityInterface;
 use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
+use Drupal\Core\Config\StorageInterface;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityChangedInterface;
 use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\RevisionableInterface;
 use Drupal\Core\Entity\RevisionableStorageInterface;
 use Drupal\Core\Entity\RevisionLogInterface;
 use Drupal\Core\Entity\TranslatableInterface;
+use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\Core\Language\LanguageInterface;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\user\EntityOwnerInterface;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
@@ -35,10 +41,12 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  *
  * Staging for a given entity lives in exactly one place, resolved in this
  * order: the pending write buffer (deferred saves not yet flushed), a payload
- * snapshot row (config entities, and content drafts the storage layer
- * rejected as revisions), or a pending revision tracked in the staging
- * workspace. A successful revision persist removes the snapshot row for the
- * same target.
+ * snapshot row (drafts the storage layer rejected, and config entities without
+ * workspace-scoped staging), then the primary store: a pending revision
+ * tracked in the staging workspace for content, or workspace-scoped
+ * configuration (staged through the Workspace Config module) for component
+ * tree config entities. A successful persist to a primary store removes the
+ * snapshot row for the same target.
  *
  * The staging workspace is the active workspace when one is negotiated, or
  * the Main workspace (`canvas_default`) as the fallback for sessions that
@@ -49,9 +57,35 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  */
 final class WorkspaceAutoSave {
 
+  /**
+   * Staging metadata key: base hash of config created inside the workspace.
+   *
+   * Configuration created while a workspace is active has no Live copy to
+   * compute hashes and starting points against, so the copy it was created as
+   * is recorded once and kept until the workspace publishes or the draft is
+   * discarded.
+   *
+   * @see ::getBaseHash()
+   */
+  public const string CONFIG_BASE_HASH_KEY = 'config_base_hash';
+
+  /**
+   * Whether a Canvas staged config write is running.
+   *
+   * @see ::persistConfigEntity()
+   */
+  private bool $stagingConfigWrite = FALSE;
+
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly ConfigManagerInterface $configManager,
+    private readonly ConfigFactoryInterface $configFactory,
+    #[Autowire(service: 'config.storage')]
+    private readonly StorageInterface $configStorage,
+    private readonly ModuleHandlerInterface $moduleHandler,
+    private readonly EntityLastInstalledSchemaRepositoryInterface $entityLastInstalledSchemaRepository,
+    #[Autowire(service: 'logger.channel.canvas')]
+    private readonly LoggerInterface $logger,
     // Nullable, resolved to NULL until the Workspaces module is installed
     // (before database updates run); staging then uses the key-value store.
     /**
@@ -64,6 +98,12 @@ final class WorkspaceAutoSave {
      */
     #[Autowire(service: 'workspaces.tracker')]
     private readonly ?object $workspaceAssociation,
+    // Nullable: only exists while the Workspace Config module is installed.
+    /**
+     * @var \Drupal\workspace_config\WorkspaceConfigInformationInterface|null
+     */
+    #[Autowire(service: 'Drupal\workspace_config\WorkspaceConfigInformationInterface')]
+    private readonly ?object $workspaceConfigInformation,
     private readonly AutoSaveSnapshotRepository $snapshotRepository,
     private readonly AccountProxyInterface $currentUser,
     private readonly TimeInterface $time,
@@ -173,6 +213,79 @@ final class WorkspaceAutoSave {
   }
 
   /**
+   * Whether a Canvas staged config write is currently running.
+   *
+   * TRUE exactly while ::persistConfigEntity() saves a draft as
+   * workspace-scoped configuration. Config save listeners that reconcile
+   * drafts with saves made elsewhere must ignore these saves: the draft is
+   * the thing being saved.
+   *
+   * @see \Drupal\canvas\AutoSave\AutoSaveManager::onCanvasConfigEntitySave()
+   */
+  public function isStagingConfigWrite(): bool {
+    return $this->stagingConfigWrite;
+  }
+
+  /**
+   * Whether core negotiated an active workspace for this request.
+   */
+  public function hasActiveWorkspace(): bool {
+    return $this->workspaceManager !== NULL && $this->workspaceManager->hasActiveWorkspace();
+  }
+
+  /**
+   * Whether $entity's drafts stage as workspace-scoped configuration.
+   *
+   * Component tree config entities (content templates, patterns, page
+   * variants) stage every draft as a config save inside the staging
+   * workspace, which the Workspace Config module stores in that workspace's
+   * partition. Inside the workspace the draft then resolves as regular
+   * configuration for every consumer (entity view builders, Views, page
+   * variant resolution), not only through the auto-save read API.
+   *
+   * Other Canvas config entities keep snapshot staging: code components and
+   * asset libraries compile and write asset files on save, and staged config
+   * updates apply to a different target on save, neither of which a draft
+   * should trigger.
+   *
+   * @see ::persistConfigEntity()
+   * @see ::loadWorkspaceStagedConfigAutoSave()
+   */
+  public function usesWorkspaceConfigStaging(EntityInterface $entity): bool {
+    return $entity instanceof ComponentTreeConfigEntityBase && $this->usesWorkspaceConfigStagingForType($entity->getEntityTypeId());
+  }
+
+  /**
+   * Type-level counterpart of ::usesWorkspaceConfigStaging().
+   */
+  private function usesWorkspaceConfigStagingForType(string $entity_type_id): bool {
+    if (!$this->entityTypeManager->hasDefinition($entity_type_id)) {
+      return FALSE;
+    }
+    $class = $this->entityTypeManager->getDefinition($entity_type_id)->getClass();
+    if (!\is_a($class, ComponentTreeConfigEntityBase::class, TRUE)) {
+      return FALSE;
+    }
+    // Without the Workspace Config module (or before its entity schema is
+    // installed) a config save inside a workspace writes Live: drafts must
+    // stay in snapshot rows until it is available.
+    if ($this->workspaceManager === NULL || !$this->snapshotRepository->isWorkspaceStorageReady()) {
+      return FALSE;
+    }
+    if (!$this->moduleHandler->moduleExists('workspace_config') || !$this->entityTypeManager->hasDefinition('workspace_config')) {
+      return FALSE;
+    }
+    if ($this->entityLastInstalledSchemaRepository->getLastInstalledDefinition('workspace_config') === NULL) {
+      return FALSE;
+    }
+    // A config entity type the site has not declared workspace-safe cannot be
+    // written inside a workspace at all; its drafts stay in snapshot rows.
+    // @see \Drupal\canvas\Hook\WorkspaceAutoSaveHooks::workspaceConfigSafeListAlter()
+    return $this->workspaceConfigInformation === NULL
+      || $this->workspaceConfigInformation->isConfigEntityTypeIdWorkspaceSafe($entity_type_id);
+  }
+
+  /**
    * Whether a bookkeeping switch into this workspace is in progress.
    *
    * @see \Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks::workspaceAccess()
@@ -211,6 +324,25 @@ final class WorkspaceAutoSave {
       $this->uncheckedSwitchWorkspaceId = $previous;
       $handler->resetCache();
     }
+  }
+
+  /**
+   * Runs a bookkeeping callback inside the staging workspace.
+   *
+   * A passthrough when the staging workspace is already active: every
+   * workspace switch dispatches WorkspaceSwitchEvent, which resets config
+   * and field definition caches, so needless round trips are avoided.
+   *
+   * @see ::executeInWorkspaceUnchecked()
+   */
+  private function executeInStagingWorkspaceUnchecked(callable $callback): mixed {
+    $staging_workspace_id = $this->getStagingWorkspaceId();
+    if ($this->workspaceManager !== NULL
+      && $this->workspaceManager->hasActiveWorkspace()
+      && $this->workspaceManager->getActiveWorkspace()?->id() === $staging_workspace_id) {
+      return $callback();
+    }
+    return $this->executeInWorkspaceUnchecked($staging_workspace_id, $callback);
   }
 
   /**
@@ -271,6 +403,10 @@ final class WorkspaceAutoSave {
       && $this->workspaceAssociation !== NULL
       && $this->workspaceManager !== NULL) {
       return !$this->loadWorkspaceStagedContentAutoSave($entity)->isEmpty();
+    }
+    if ($this->usesWorkspaceConfigStaging($entity)) {
+      \assert($entity instanceof ComponentTreeConfigEntityBase);
+      return !$this->loadWorkspaceStagedConfigAutoSave($entity)->isEmpty();
     }
     return FALSE;
   }
@@ -497,6 +633,11 @@ final class WorkspaceAutoSave {
     // activating the workspace would leak into subsequent entity saves in the
     // same process (CLI, tests, long-running workers).
     $this->snapshotRepository->executeInStagingWorkspace(function () use ($entity, $clientId, $immediateContentPersist, $entry): void {
+      if ($this->usesWorkspaceConfigStaging($entity)) {
+        \assert($entity instanceof ComponentTreeConfigEntityBase);
+        $this->persistConfigEntity($entity, $clientId, $entry);
+        return;
+      }
       if ($entity instanceof CanvasHttpApiEligibleConfigEntityInterface) {
         $this->persistConfigSnapshot($entity, $clientId);
         return;
@@ -569,7 +710,81 @@ final class WorkspaceAutoSave {
     $this->cache->delete($key);
   }
 
-  private function persistConfigSnapshot(CanvasHttpApiEligibleConfigEntityInterface $entity, ?string $clientId): void {
+  /**
+   * Stages a component tree config entity draft as workspace-scoped config.
+   *
+   * Runs inside the staging workspace: the save is intercepted by the
+   * Workspace Config module and stored in that workspace's partition, so Live
+   * is untouched and the draft resolves as regular configuration for every
+   * consumer inside the workspace. Staging never validates; a draft the
+   * storage layer refuses (an exception anywhere in the save) is retained as
+   * a snapshot row instead, so no auto-save is ever dropped.
+   *
+   * @see ::usesWorkspaceConfigStaging()
+   * @see \Drupal\workspace_config\WorkspaceConfigDatabaseStorage::write()
+   */
+  private function persistConfigEntity(ComponentTreeConfigEntityBase $entity, ?string $clientId, ?array $entry): void {
+    $key = AutoSaveManager::getAutoSaveKey($entity);
+    $type_id = $entity->getEntityTypeId();
+    $id = (string) $entity->id();
+    $storage = $this->entityTypeManager->getStorage($type_id);
+    // Never mutate the caller's entity object: the save marks it as saved and
+    // recalculates its dependencies, which would leak into the caller's own
+    // later use of the same object.
+    $to_save = clone $entity;
+    // Drafts are reconstructed through ::create(), which marks them new; the
+    // config object they target exists (in Live, or staged in this workspace)
+    // and must be updated, not inserted.
+    $to_save->enforceIsNew($storage->load($id) === NULL);
+    $previous = $this->stagingConfigWrite;
+    try {
+      $this->stagingConfigWrite = TRUE;
+      $to_save->save();
+    }
+    catch (\Throwable $e) {
+      // Retention over failure: keep the draft as a payload snapshot. If the
+      // snapshot write fails too, the client must see the error.
+      $this->logger->warning('Canvas auto-save for @type @id could not be stored as workspace-scoped configuration (@message); stored as a snapshot instead.', [
+        '@type' => $type_id,
+        '@id' => $id,
+        '@message' => $e->getMessage(),
+      ]);
+      $this->persistConfigSnapshot($entity, $clientId);
+      return;
+    }
+    finally {
+      $this->stagingConfigWrite = $previous;
+    }
+    // The workspace-scoped copy is now the current staged state; a snapshot
+    // row from an earlier failed persist would otherwise shadow it forever.
+    $this->snapshotRepository->deleteFor($type_id, $id, self::snapshotLangcode($entity));
+    // Workspace-scoped configuration records neither which client instance
+    // produced the draft, the editor, nor the base hash it started from, but
+    // attribution, concurrent-edit validation and conflict detection need
+    // them.
+    // @see ::getStagedClientId()
+    // @see ::getStagedEntryMetadata()
+    $this->setStagedEntryMetadata($key, ['client_id' => $clientId] + self::entryMetadata($entry) + [
+      'owner' => (int) $this->currentUser->id(),
+      'updated' => $this->time->getRequestTime(),
+    ]);
+    $storage->resetCache([$id]);
+    $this->cache->delete($key);
+  }
+
+  /**
+   * Records staging metadata for a key, keeping the recorded config base.
+   *
+   * @param array<string, mixed> $metadata
+   *
+   * @see self::CONFIG_BASE_HASH_KEY
+   */
+  private function setStagedEntryMetadata(string $key, array $metadata): void {
+    $existing = $this->pendingBuffer->get($key) ?? [];
+    $this->pendingBuffer->set($key, $metadata + \array_intersect_key($existing, [self::CONFIG_BASE_HASH_KEY => TRUE]));
+  }
+
+  private function persistConfigSnapshot(ConfigEntityInterface $entity, ?string $clientId): void {
     $payload = \json_encode($entity->toArray(), JSON_THROW_ON_ERROR);
     $data_hash = AutoSaveManager::generateHashFromData(\json_decode($payload, TRUE, 512, JSON_THROW_ON_ERROR));
     $this->snapshotRepository->persist(
@@ -764,7 +979,134 @@ final class WorkspaceAutoSave {
       return $this->loadWorkspaceStagedContentAutoSave($entity);
     }
 
+    if ($this->usesWorkspaceConfigStaging($entity)) {
+      \assert($entity instanceof ComponentTreeConfigEntityBase);
+      return $this->loadWorkspaceStagedConfigAutoSave($entity);
+    }
+
     return AutoSaveEntity::empty();
+  }
+
+  /**
+   * Loads a draft staged as workspace-scoped configuration.
+   *
+   * The workspace-scoped copy is the draft. Dirty state is derived: a copy
+   * whose normalized data equals its base (the Live configuration, or the
+   * copy the config was created as inside the workspace) is not a pending
+   * change, unless entity form violations are recorded for it.
+   *
+   * @see ::getBaseHash()
+   */
+  private function loadWorkspaceStagedConfigAutoSave(ComponentTreeConfigEntityBase $entity): AutoSaveEntity {
+    $id = $entity->id();
+    if ($id === NULL) {
+      return AutoSaveEntity::empty();
+    }
+    $key = AutoSaveManager::getAutoSaveKey($entity);
+    $storage = $this->entityTypeManager->getStorage($entity->getEntityTypeId());
+    $staged = $this->executeInStagingWorkspaceUnchecked(static fn () => $storage->loadUnchanged($id));
+    if (!$staged instanceof ComponentTreeConfigEntityBase) {
+      return AutoSaveEntity::empty();
+    }
+    $hash = AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($staged));
+    $base_hash = $this->getBaseHash($entity);
+    if ($base_hash !== NULL && \hash_equals($base_hash, $hash) && !$this->hasStoredFormViolations($key)) {
+      return AutoSaveEntity::empty();
+    }
+    // Hand out a copy: callers may adjust the draft (e.g. force it enabled
+    // for preview), which must not leak into the entity static cache.
+    $draft = clone $staged;
+    $draft->enforceIsNew(FALSE);
+    $metadata = $this->getStagedEntryMetadata($key);
+    $updated = isset($metadata['updated']) && \is_numeric($metadata['updated']) ? (int) $metadata['updated'] : NULL;
+    $auto_save_entity = new AutoSaveEntity($draft, $hash, $this->getStagedClientId($key), $updated);
+    $this->cache->set($key, $auto_save_entity, tags: [AutoSaveManager::CACHE_TAG]);
+    return $auto_save_entity;
+  }
+
+  /**
+   * The normalized hash of the saved copy an auto-save draft is based on.
+   *
+   * Content and snapshot-staged config: the copy ::loadUnchangedBase()
+   * returns. Config staged as workspace-scoped configuration: the Live
+   * configuration when one exists, otherwise the copy it was created as
+   * inside the workspace (recorded once in the staging metadata). Never the
+   * staged copy itself: that is the draft, and comparing a draft against
+   * itself would make every re-save look like a reset to the original values.
+   *
+   * @return string|null
+   *   The base hash, or NULL when the entity has no saved base at all.
+   */
+  public function getBaseHash(EntityInterface $entity): ?string {
+    $id = $entity->id();
+    if ($id === NULL) {
+      return NULL;
+    }
+    $base = $this->loadUnchangedBase($entity->getEntityTypeId(), (string) $id);
+    if ($base !== NULL) {
+      return AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($base));
+    }
+    if ($this->usesWorkspaceConfigStaging($entity)) {
+      \assert($entity instanceof ComponentTreeConfigEntityBase);
+      return $this->ensureConfigBaseRecorded($entity);
+    }
+    return NULL;
+  }
+
+  /**
+   * Records (once) and returns the base hash of workspace-created config.
+   *
+   * Nothing can have been auto-saved before the base is recorded: every
+   * staged write and every read of the draft's state resolves the base
+   * first, so the workspace-scoped copy found on first sight is the copy the
+   * config was created as.
+   *
+   * @return string|null
+   *   The recorded base hash, or NULL when the config does not exist in the
+   *   staging workspace either.
+   *
+   * @see self::CONFIG_BASE_HASH_KEY
+   * @see \Drupal\canvas\AutoSave\AutoSaveManager::onCanvasConfigEntitySave()
+   */
+  private function ensureConfigBaseRecorded(ComponentTreeConfigEntityBase $entity): ?string {
+    $id = $entity->id();
+    \assert($id !== NULL);
+    $key = AutoSaveManager::getAutoSaveKey($entity);
+    $metadata = $this->pendingBuffer->get($key) ?? [];
+    $recorded = $metadata[self::CONFIG_BASE_HASH_KEY] ?? NULL;
+    if (\is_string($recorded)) {
+      return $recorded;
+    }
+    $storage = $this->entityTypeManager->getStorage($entity->getEntityTypeId());
+    $staged = $this->executeInStagingWorkspaceUnchecked(static fn () => $storage->loadUnchanged($id));
+    if (!$staged instanceof ComponentTreeConfigEntityBase) {
+      return NULL;
+    }
+    $hash = AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($staged));
+    $this->pendingBuffer->set($key, [self::CONFIG_BASE_HASH_KEY => $hash] + $metadata);
+    return $hash;
+  }
+
+  /**
+   * Reacts to a config save made inside the staging workspace by other code.
+   *
+   * With workspace-scoped staging the saved copy is the draft, so there is no
+   * separate draft to reconcile. Only bookkeeping remains: the memoized draft
+   * is stale, and a config object that was just created inside the workspace
+   * (no Live copy) needs its base recorded before anything edits it.
+   *
+   * @see \Drupal\canvas\AutoSave\AutoSaveManager::onCanvasConfigEntitySave()
+   */
+  public function onWorkspaceStagedConfigSaved(ComponentTreeConfigEntityBase $entity): void {
+    $id = $entity->id();
+    if ($id === NULL) {
+      return;
+    }
+    $key = AutoSaveManager::getAutoSaveKey($entity);
+    $this->cache->delete($key);
+    if ($this->loadUnchangedBase($entity->getEntityTypeId(), (string) $id) === NULL) {
+      $this->ensureConfigBaseRecorded($entity);
+    }
   }
 
   /**
@@ -1060,6 +1402,7 @@ final class WorkspaceAutoSave {
       \assert($row instanceof ContentEntityInterface);
       $name = (string) $row->label();
       $mapped = $name === '' ? NULL : $this->configManager->loadConfigEntityByName($name);
+      $metadata = [];
       if ($mapped instanceof ConfigEntityInterface) {
         $key = AutoSaveManager::getAutoSaveKey($mapped);
         if (isset($out[$key])) {
@@ -1068,13 +1411,26 @@ final class WorkspaceAutoSave {
           // current working copy.
           continue;
         }
-        $data = $mapped->toArray();
+        $data_hash = AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($mapped));
+        if ($this->usesWorkspaceConfigStaging($mapped)) {
+          // Dirty state is derived: a staged copy equal to the Live copy is
+          // not a pending change. A copy created inside the workspace has no
+          // Live counterpart and is always pending (publishing creates it).
+          $live = $this->loadUnchangedBase($mapped->getEntityTypeId(), (string) $mapped->id());
+          if ($live !== NULL
+            && \hash_equals(AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($live)), $data_hash)
+            && !$this->hasStoredFormViolations($key)) {
+            continue;
+          }
+          $metadata = self::entryMetadata($this->getStagedEntryMetadata($key));
+        }
         $entry = [
           'entity_type' => $mapped->getEntityTypeId(),
           'entity_id' => $mapped->id(),
-          'data' => $data,
+          'data' => $mapped->toArray(),
           'label' => self::labelForAutoSaveList($mapped),
-          'data_hash' => AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($mapped)),
+          'data_hash' => $data_hash,
+          'client_id' => $this->getStagedClientId($key),
         ];
       }
       else {
@@ -1095,7 +1451,10 @@ final class WorkspaceAutoSave {
           ]),
         ];
       }
-      $out[$key] = $entry + [
+      // Attribution comes from the staging metadata Canvas records with each
+      // staged write; config staged by other code (a config form submitted
+      // inside the workspace) only has the tracking row to go on.
+      $out[$key] = $entry + $metadata + [
         'langcode' => NULL,
         'is_default_translation' => TRUE,
         'client_id' => NULL,
@@ -1233,14 +1592,69 @@ final class WorkspaceAutoSave {
 
   public function deleteEntity(EntityInterface $entity): void {
     $key = AutoSaveManager::getAutoSaveKey($entity);
-    $this->pendingBuffer->delete($key);
     if ($entity->id() !== NULL) {
       $this->snapshotRepository->deleteFor($entity->getEntityTypeId(), (string) $entity->id(), self::snapshotLangcode($entity));
     }
     $this->discardWorkspaceStagedContentEntity($entity);
+    $this->discardWorkspaceStagedConfig($entity);
+    $this->pendingBuffer->delete($key);
     $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
     $this->cache->delete($key);
     $this->keyValueFactory->get(AutoSaveManager::AUTO_SAVE_STORE)->delete($key);
+  }
+
+  /**
+   * Removes the workspace-scoped copy of a config entity from staging.
+   *
+   * Configuration created inside the workspace (no Live copy) is deleted;
+   * configuration that exists in Live has its workspace copy reset to the
+   * Live values and its tracking rows removed, so the workspace no longer
+   * stages that name at all. A config object the workspace has deleted (a
+   * staged delete marker, or the entity deletion that triggered this call)
+   * is left alone: resetting it would resurrect it.
+   *
+   * @see \Drupal\workspace_config\WorkspaceConfigDatabaseStorage::delete()
+   */
+  private function discardWorkspaceStagedConfig(EntityInterface $entity): void {
+    if (!$this->usesWorkspaceConfigStaging($entity) || $entity->id() === NULL || $this->workspaceAssociation === NULL) {
+      return;
+    }
+    \assert($entity instanceof ComponentTreeConfigEntityBase);
+    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
+    $wm = $this->workspaceManager;
+    $name = $entity->getConfigDependencyName();
+    $type_id = $entity->getEntityTypeId();
+    $id = (string) $entity->id();
+    $staging_workspace_id = $this->getStagingWorkspaceId();
+    $this->executeInWorkspaceUnchecked($staging_workspace_id, function () use ($wm, $name, $type_id, $id, $staging_workspace_id): void {
+      if (!$this->configStorage->exists($name)) {
+        return;
+      }
+      $live = $wm->executeOutsideWorkspace(fn () => $this->configStorage->read($name));
+      if ($live === FALSE) {
+        // Only ever existed in this workspace: the storage removes the
+        // tracking rows and the cached workspace read.
+        $this->configStorage->delete($name);
+      }
+      else {
+        // Writing the Live values replaces the cached workspace read; the
+        // tracking rows then go so the workspace no longer stages the name.
+        $this->configStorage->write($name, $live);
+        $tracked = $this->workspaceAssociation->getTrackedEntities($staging_workspace_id, 'workspace_config');
+        $storage = $this->entityTypeManager->getStorage('workspace_config');
+        $rows = \array_filter(
+          $storage->loadMultiple(\array_unique($tracked['workspace_config'] ?? [])),
+          static fn (EntityInterface $row): bool => (string) $row->label() === $name,
+        );
+        if ($rows !== []) {
+          $wm->executeOutsideWorkspace(static fn () => $storage->delete($rows));
+        }
+      }
+      $this->configFactory->reset($name);
+      $this->entityTypeManager->getStorage($type_id)->resetCache([$id]);
+    });
+    $entity_type = $this->entityTypeManager->getDefinition($type_id);
+    $this->cacheTagsInvalidator->invalidateTags(['config:' . $name, ...$entity_type->getListCacheTags()]);
   }
 
   /**
@@ -1309,6 +1723,17 @@ final class WorkspaceAutoSave {
     // "discard all" leaves pending changes that reappear on the next listing.
     if ($this->workspaceAssociation !== NULL && $this->workspaceManager !== NULL && $this->snapshotRepository->isWorkspaceStorageReady()) {
       $tracked = $this->workspaceAssociation->getTrackedEntities($this->getStagingWorkspaceId());
+      // Config staged as workspace-scoped configuration is discarded through
+      // its own path, which also resets the workspace's cached config reads.
+      foreach (\array_unique($tracked['workspace_config'] ?? []) as $row_id) {
+        $row = $this->entityTypeManager->getStorage('workspace_config')->load($row_id);
+        $name = $row === NULL ? '' : (string) $row->label();
+        $mapped = $name === '' ? NULL : $this->executeInStagingWorkspaceUnchecked(fn () => $this->configManager->loadConfigEntityByName($name));
+        if ($mapped instanceof ConfigEntityInterface) {
+          $this->discardWorkspaceStagedConfig($mapped);
+        }
+      }
+      $tracked = $this->workspaceAssociation->getTrackedEntities($this->getStagingWorkspaceId());
       foreach ($tracked as $entity_type_id => $revision_map) {
         foreach (\array_unique($revision_map) as $entity_id) {
           $this->discardTrackedRevisions($entity_type_id, (string) $entity_id);
@@ -1337,6 +1762,13 @@ final class WorkspaceAutoSave {
   public function getAutoSaveStartingPoint(EntityInterface $entity): string|int|null {
     \assert($entity->id() !== NULL);
     $saved_entity = $this->loadUnchangedBase($entity->getEntityTypeId(), (string) $entity->id());
+    if ($saved_entity === NULL && $this->usesWorkspaceConfigStaging($entity)) {
+      // Created inside the workspace: no Live copy exists until publish, so
+      // the recorded base identifies the starting point. It changes when the
+      // workspace publishes (a Live copy then exists) and never before.
+      \assert($entity instanceof ComponentTreeConfigEntityBase);
+      return $this->ensureConfigBaseRecorded($entity);
+    }
     \assert($saved_entity instanceof EntityInterface);
     $auto_save_start_revision = $saved_entity instanceof RevisionableInterface
       ? $saved_entity->getRevisionId()
@@ -1355,20 +1787,30 @@ final class WorkspaceAutoSave {
    * loadUnchanged() would return the draft itself rather than the Live base
    * that hashes and starting points must be computed against.
    *
-   * Config entities load inside the active workspace: their drafts are
+   * Config entities staged as workspace-scoped configuration load outside
+   * any workspace as well: inside it, the unchanged copy is the draft. For
+   * configuration created inside the workspace this returns NULL, since no
+   * Live copy exists until publish; ::getBaseHash() then falls back to the
+   * recorded base.
+   *
+   * Other config entities load inside the active workspace: their drafts are
    * snapshot rows or key-value entries, never config writes, so the
    * in-workspace unchanged copy is the saved base. Loading outside the
    * workspace would miss config that the Workspace Config module staged in
-   * the workspace and has not published yet (for example, a content template
-   * created in Canvas), which only exists in that workspace's partition.
+   * the workspace and has not published yet, which only exists in that
+   * workspace's partition.
    *
+   * @see ::usesWorkspaceConfigStaging()
    * @see ::persistConfigSnapshot()
    * @see \Drupal\canvas\Controller\ApiConfigControllers
    */
   public function loadUnchangedBase(string $entityTypeId, string|int $id): ?EntityInterface {
     $storage = $this->entityTypeManager->getStorage($entityTypeId);
+    if ($this->workspaceManager === NULL) {
+      return $storage->loadUnchanged($id);
+    }
     $is_config = $this->entityTypeManager->getDefinition($entityTypeId) instanceof ConfigEntityTypeInterface;
-    if ($is_config || $this->workspaceManager === NULL) {
+    if ($is_config && !$this->usesWorkspaceConfigStagingForType($entityTypeId)) {
       return $storage->loadUnchanged($id);
     }
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */

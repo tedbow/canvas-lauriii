@@ -7,19 +7,36 @@ namespace Drupal\Tests\canvas\Kernel\AutoSave;
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\Entity\CanvasHttpApiEligibleConfigEntityInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
 use Drupal\Core\Extension\ThemeInstallerInterface;
+use Drupal\Tests\canvas\Kernel\Traits\CanvasWorkspaceConfigTestTrait;
 use Drupal\Tests\canvas\TestSite\CanvasTestSetup;
 use Drupal\Tests\canvas\Traits\AutoSaveRequestTestTrait;
+use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 trait AutoSaveConflictTestTrait {
 
   use AutoSaveRequestTestTrait;
+  use CanvasWorkspaceConfigTestTrait;
+  use WorkspaceConfigTestTrait;
 
   protected EntityInterface $entity;
+
+  /**
+   * {@inheritdoc}
+   *
+   * Publishing runs through workspace_config, which expects its key-value
+   * decoration to be in place as on a real site.
+   */
+  public function register(ContainerBuilder $container): void {
+    parent::register($container);
+    $this->registerCanvasStagingKeyValue($container);
+    $this->registerWorkspaceConfigKeyValue($container);
+  }
 
   abstract protected static function getPermissions(): array;
 
@@ -44,7 +61,9 @@ trait AutoSaveConflictTestTrait {
     (new CanvasTestSetup())->setup();
 
     $this->setUpEntity();
-    $this->setUpCurrentUser(permissions: self::getPermissions());
+    // Publishing publishes the workspace, which follows core workspace access.
+    // @see \Drupal\canvas\Controller\ApiAutoSaveController::post()
+    $this->setUpCurrentUser(permissions: [...self::getPermissions(), 'view any workspace', 'edit any workspace']);
   }
 
   protected function getAutoSaveManager(): AutoSaveManager {

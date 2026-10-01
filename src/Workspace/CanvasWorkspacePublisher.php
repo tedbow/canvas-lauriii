@@ -108,6 +108,7 @@ final class CanvasWorkspacePublisher {
       // live write happens when anything is invalid.
       $violation_sets = [];
       $snapshot_staged = [];
+      $workspace_config_staged = [];
       foreach ($entries as $entry) {
         $entity = $entry['entity'] ?? NULL;
         if (!$entity instanceof EntityInterface) {
@@ -136,6 +137,9 @@ final class CanvasWorkspacePublisher {
         if ($this->workspaceAutoSave->hasSnapshotStaging($entity)) {
           $snapshot_staged[] = $entity;
         }
+        elseif ($entity instanceof ComponentTreeConfigEntityBase && $this->workspaceAutoSave->usesWorkspaceConfigStaging($entity)) {
+          $workspace_config_staged[] = $entity;
+        }
       }
       if ($violation_sets !== []) {
         throw new WorkspacePublishValidationException($violation_sets);
@@ -151,9 +155,12 @@ final class CanvasWorkspacePublisher {
       try {
         // Publish-time staging is not an editorial write: staged-write
         // listeners (e.g. a review-state demotion) must ignore these saves.
-        $this->workspaceAutoSave->executePublishTimeStaging(function () use ($snapshot_staged, $workspace): void {
+        $this->workspaceAutoSave->executePublishTimeStaging(function () use ($snapshot_staged, $workspace_config_staged, $workspace): void {
           foreach ($snapshot_staged as $entity) {
             $this->stageSnapshotEntity($entity);
+          }
+          foreach ($workspace_config_staged as $entity) {
+            $this->finalizeWorkspaceStagedConfig($entity);
           }
           $workspace->publish();
         });
@@ -226,11 +233,35 @@ final class CanvasWorkspacePublisher {
     // by the core publish that follows.
     $entity->save();
     if ($entity instanceof ComponentTreeConfigEntityBase) {
-      foreach ($this->autoSaveManager->groupConfigEntityAutoSaves($entity) as $override) {
-        $override->autoSavePublish();
-        $override->enforceIsNew(FALSE);
-        $override->save();
-      }
+      $this->stageLanguageOverrides($entity);
+    }
+  }
+
+  /**
+   * Readies a draft already staged as workspace-scoped configuration.
+   *
+   * The draft itself is in the workspace, so core publish promotes it as is.
+   * Two things are not: the publish-time transformation the entity declares
+   * (a content template is created disabled and enabled on publish), and its
+   * per-language override drafts, which stage in the key-value store.
+   */
+  private function finalizeWorkspaceStagedConfig(ComponentTreeConfigEntityBase $entity): void {
+    if ($entity instanceof AutoSavePublishAwareInterface) {
+      $entity->autoSavePublish();
+      $entity->enforceIsNew(FALSE);
+      $entity->save();
+    }
+    $this->stageLanguageOverrides($entity);
+  }
+
+  /**
+   * Stages a config entity's per-language override drafts into the workspace.
+   */
+  private function stageLanguageOverrides(ComponentTreeConfigEntityBase $entity): void {
+    foreach ($this->autoSaveManager->groupConfigEntityAutoSaves($entity) as $override) {
+      $override->autoSavePublish();
+      $override->enforceIsNew(FALSE);
+      $override->save();
     }
   }
 
