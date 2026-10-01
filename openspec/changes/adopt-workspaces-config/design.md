@@ -14,7 +14,7 @@ Scope update (2026-09-30): ADR 0017 landed on the same branch before the config 
 
 **Goals:**
 
-- Valid config auto-saves staged as workspace-scoped configuration in the active workspace (the Main workspace `canvas_default` when none is negotiated) via Workspaces Config.
+- Valid auto-saves of component tree config entities (content templates, patterns, page variants) staged as workspace-scoped configuration in the active workspace (the Main workspace `canvas_default` when none is negotiated) via Workspaces Config.
 - The fallback store becomes an invalid-data store holding only what no primary store can persist; the one-store-per-target invariant preserved.
 - No observable editor behavior change inside Canvas: same auto-save read API, same validation lifecycle, no hot-path latency regression.
 - Staged configuration is effective on every route rendered inside the workspace, not only Canvas preview routes: a content template drafted in a workspace changes how entities render on the site while that workspace is active.
@@ -33,6 +33,8 @@ Scope update (2026-09-30): ADR 0017 landed on the same branch before the config 
 The config persist path attempts a workspace-scoped config write first: a plain entity save executed inside the active workspace, which Workspaces Config intercepts and stores in that workspace's partition. Success means the staged values live as real config attached to the active workspace; loading that config with the workspace active yields staged values, loading it outside yields live values, and configuration that was created inside the workspace and has no Live copy is absent outside it. The auto-save read API resolves config from this store the same way it resolves content from workspace revisions.
 
 Every staged write persists this way, not only the create. A config entity created through the Canvas API inside a workspace and then edited in the editor has its current draft in workspace-scoped configuration at all times, so any consumer loading that config inside the workspace (entity view builders, Views, page variant resolution, the editor's own preview) sees the same state without special-casing.
+
+Scope: component tree config entities only (content templates, patterns, page variants). Code components and asset libraries compile and write asset files on every save and invalidate library discovery globally; staged config updates apply to a different target config on save. None of that should run on every keystroke of a draft, so those types keep snapshot staging (the invalid-data store is their primary store) and the code editor keeps its own draft model. Widening to them is a separate decision. The persist path also falls back to a snapshot row for a type the site has not declared workspace-safe; Canvas declares its own types safe (page variants were missing from the Workspace Config module's built-in list).
 
 Rejected alternative: keep Canvas config in the Phase 1 payload store and let sites run Workspaces Config beside it for everything else, configured to ignore Canvas-owned config. Two storages for the same problem, permanent divergence risk, and a guaranteed migration in Phase 2.
 

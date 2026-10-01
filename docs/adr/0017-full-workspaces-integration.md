@@ -85,12 +85,19 @@ unit of review and publish.
    `canvas.api.config.*` and content create/update/list routes are removed:
    while a workspace is active those writes stage into it, which also
    dissolves the config cache partition split (writes and reads share the
-   workspace partition). Config entity auto-saves stage the same way: every
+   workspace partition). Auto-saves of component tree config entities
+   (content templates, patterns, page variants) stage the same way: every
    staged write is a config save inside the workspace, so the current draft
    is the workspace-scoped configuration at all times and resolves as
    regular configuration for every consumer inside that workspace (entity
    view builders, Views, page variant resolution, the editor preview), not
-   only on Canvas preview routes. A config entity created inside a workspace
+   only on Canvas preview routes. Code components, asset libraries, brand
+   kits and staged config updates keep snapshot rows as their primary
+   store: their saves compile and write asset files or apply to other
+   configuration, which a draft must not trigger. Canvas declares its
+   workspace-staged config entity types workspace-safe to
+   `workspace_config` itself rather than relying on that module's built-in
+   list. A config entity created inside a workspace
    exists only there until publish; content templates are therefore no
    longer created disabled and enabled at publish, since Live is untouched
    until the workspace publishes. Hashes, dirty state and the client's
