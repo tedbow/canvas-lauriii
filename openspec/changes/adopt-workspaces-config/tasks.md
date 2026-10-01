@@ -35,7 +35,7 @@
 
 - [ ] 4.1 Key-value migration (post-update and lazy) stages valid config rows into workspace-scoped configuration, preserving payload, editor, and timestamp
 - [ ] 4.2 Legacy rows that cannot be persisted still migrate into the invalid-data store
-- [ ] 4.3 Snapshot rows holding valid config drafts are promoted into workspace-scoped configuration of the workspace recorded on the row (lazy on first read, eager by post-update), and deleted once the staged copy is durable
+- [x] 4.3 Snapshot rows holding valid config drafts are promoted into workspace-scoped configuration of the workspace recorded on the row by a post-update pass (`canvas_post_update_0033_promote_config_snapshots`), and deleted once the staged copy is durable. No lazy promotion on read: a snapshot row is also the legitimate fallback for a draft the storage layer rejects, and retrying that save on every read would fail every time
 
 ## 5. Docs and diagram
 
@@ -47,7 +47,7 @@
 ## 6. Tests
 
 - [x] 6.1 Kernel: valid config auto-save stages workspace-scoped configuration, no invalid-data entry, live config unchanged
-- [ ] 6.2 Kernel: invalid config payload falls back to the invalid-data store; a later valid save promotes it and deletes the entry
+- [x] 6.2 Kernel: a config payload the storage layer rejects falls back to the invalid-data store; a later valid save promotes it and deletes the entry
 - [x] 6.3 Kernel: staged config resolves inside the workspace context and not outside it
 - [x] 6.4 Kernel: workspace publish applies staged config to live and clears the workspace-scoped copy; discard removes it without touching live
 - [ ] 6.5 Kernel: invalid-data-only staged state equal to canonical reports no pending changes and discards without residue

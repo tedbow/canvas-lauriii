@@ -5,12 +5,16 @@ declare(strict_types=1);
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist;
 use Drupal\canvas\CanvasConfigUpdater;
 use Drupal\canvas\CanvasServiceProvider;
 use Drupal\canvas\ContentTranslation\ComponentTreeFieldSymmetricalTranslationSynchronizer;
 use Drupal\canvas\Entity\BrandKit;
+use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\Color;
 use Drupal\canvas\Entity\Component;
+use Drupal\canvas\Entity\ComponentTreeConfigEntityBase;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\Folder;
 use Drupal\canvas\Entity\PageRegion;
@@ -36,6 +40,7 @@ use Drupal\Core\TempStore\SharedTempStoreFactory;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\image\Entity\ImageStyle;
 use Drupal\workspaces\WorkspaceInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 
 /**
  * Track that props have the required flag in component config entities.
@@ -908,4 +913,67 @@ function canvas_post_update_0032_main_workspace(): void {
       $role->save();
     }
   }
+}
+
+/**
+ * Promotes component tree config drafts from snapshot rows into workspaces.
+ *
+ * Content template, pattern and page variant drafts staged before they
+ * persisted as workspace-scoped configuration sit in snapshot rows. Each is
+ * saved into the workspace recorded on its row, which removes the row; the
+ * copy found in the workspace beforehand is recorded as the draft's base. A
+ * draft the storage layer still rejects stays a snapshot row.
+ *
+ * Workspace switching needs no access relaxation: core exempts CLI (drush
+ * updb), and for web update.php the Canvas workspace provider grants view
+ * access during maintenance-mode update runs.
+ *
+ * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist
+ */
+function canvas_post_update_0033_promote_config_snapshots(array &$sandbox): void {
+  $entity_type_manager = \Drupal::entityTypeManager();
+  $snapshot_storage = $entity_type_manager->getStorage(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
+  if (!isset($sandbox['ids'])) {
+    $sandbox['ids'] = \array_values($snapshot_storage->getQuery()->accessCheck(FALSE)->execute());
+    $sandbox['total'] = \count($sandbox['ids']);
+  }
+  if ($sandbox['total'] === 0) {
+    $sandbox['#finished'] = 1;
+    return;
+  }
+
+  /** @var \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave $workspace_auto_save */
+  $workspace_auto_save = \Drupal::service(WorkspaceAutoSave::class);
+  /** @var \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist $persist */
+  $persist = \Drupal::service(WorkspaceConfigEntityPersist::class);
+  /** @var \Drupal\workspaces\WorkspaceManagerInterface $workspace_manager */
+  $workspace_manager = \Drupal::service(WorkspaceManagerInterface::class);
+  $workspace_storage = $entity_type_manager->getStorage('workspace');
+  foreach (\array_splice($sandbox['ids'], 0, 25) as $id) {
+    $snapshot = $snapshot_storage->load($id);
+    if (!$snapshot instanceof CanvasAutoSaveSnapshot) {
+      continue;
+    }
+    $workspace_id = (string) $snapshot->get('workspace')->value;
+    $target_type_id = $snapshot->getTargetEntityTypeId();
+    if (!$entity_type_manager->hasDefinition($target_type_id) || $workspace_storage->load($workspace_id) === NULL) {
+      continue;
+    }
+    $draft = $entity_type_manager->getStorage($target_type_id)->create(\json_decode($snapshot->getPayload(), TRUE, 512, JSON_THROW_ON_ERROR));
+    if (!$draft instanceof ComponentTreeConfigEntityBase) {
+      continue;
+    }
+    $workspace_manager->executeInWorkspace($workspace_id, static function () use ($workspace_auto_save, $persist, $draft, $snapshot): void {
+      if (!$workspace_auto_save->usesWorkspaceConfigStaging($draft)) {
+        return;
+      }
+      // Record the base before the draft replaces the workspace copy.
+      $workspace_auto_save->getBaseHash($draft);
+      $persist->persist($draft, $snapshot->getClientInstanceId(), [
+        'owner' => (int) $snapshot->getOwnerId(),
+        'updated' => (int) ($snapshot->getChangedTime() ?? 0),
+      ]);
+    });
+  }
+  $sandbox['#finished'] = \count($sandbox['ids']) === 0 ? 1 : 1 - (\count($sandbox['ids']) / $sandbox['total']);
 }
