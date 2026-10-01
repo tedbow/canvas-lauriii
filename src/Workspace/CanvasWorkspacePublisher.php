@@ -93,7 +93,7 @@ final class CanvasWorkspacePublisher {
       // Flush deferred buffers so validation sees durable staged state.
       $entries = $this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE);
       foreach ($entries as $entry) {
-        if ($entry['entity'] instanceof ContentEntityInterface) {
+        if ($entry['entity'] instanceof EntityInterface) {
           $this->autoSaveManager->flushDeferredContentEntity($entry['entity']);
         }
       }

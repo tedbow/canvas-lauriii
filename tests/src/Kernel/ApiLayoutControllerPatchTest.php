@@ -6,6 +6,7 @@ namespace Drupal\Tests\canvas\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository;
+use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
 use Drupal\canvas\Entity\Component;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\JavaScriptComponent;
@@ -1039,6 +1040,46 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       self::assertSame('hello, world!', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
       self::assertSame('hello, world!', $live_heading());
       self::assertSame([], $tracked_names());
+
+      // On preview-critical routes the config save is deferred to kernel
+      // terminate like a content save: the draft sits in the pending buffer,
+      // readable, until a flush (here forced, as the response path does
+      // before reporting hashes) writes it as workspace-scoped configuration.
+      \putenv('CANVAS_TEST_FORCE_DEFER_AUTOSAVE=1');
+      try {
+        $draft = clone $template;
+        $draft->setComponentTree([
+          [
+            'uuid' => $heading_uuid,
+            'component_id' => 'sdc.canvas_test_sdc.heading',
+            'component_version' => '8c01a2bdb897a810',
+            'inputs' => ['text' => 'Deferred heading', 'element' => 'h1'],
+          ],
+        ]);
+        $autoSave->saveEntity($draft, 'client-b');
+        $buffer = $this->container->get(PendingContentAutoSaveBuffer::class);
+        $row = $buffer->get($key);
+        self::assertIsArray($row);
+        self::assertArrayHasKey('data', $row, 'The deferred config write sits in the pending buffer.');
+        $staged_heading = static function () use ($storage, $template_id): ?string {
+          $staged = $storage->loadUnchanged($template_id);
+          \assert($staged instanceof ContentTemplate);
+          return $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
+        };
+        self::assertSame('hello, world!', $staged_heading(), 'Nothing is written before the flush.');
+        $buffered = $autoSave->getAutoSaveEntity($template)->entity;
+        self::assertInstanceOf(ContentTemplate::class, $buffered);
+        self::assertSame('Deferred heading', $buffered->getComponentTree()->first()?->getInputs()['text'] ?? NULL, 'The buffered draft is what readers see before the flush.');
+        $autoSave->flushDeferredContentEntity($template);
+        self::assertSame('Deferred heading', $staged_heading(), 'The flush wrote the workspace-scoped copy.');
+        $sidecar = $buffer->get($key);
+        self::assertIsArray($sidecar);
+        self::assertArrayNotHasKey('data', $sidecar, 'Only the metadata sidecar remains after the flush.');
+        self::assertSame('client-b', $sidecar['client_id']);
+      }
+      finally {
+        \putenv('CANVAS_TEST_FORCE_DEFER_AUTOSAVE');
+      }
     });
   }
 

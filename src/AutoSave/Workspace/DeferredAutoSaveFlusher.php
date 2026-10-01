@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Drupal\canvas\AutoSave\Workspace;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\Entity\ComponentTreeConfigEntityBase;
 use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Entity\TranslatableInterface;
 use Drupal\Core\Lock\LockBackendInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Psr\Log\LoggerInterface;
@@ -19,7 +21,10 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
- * Defers content entity saves to kernel terminate for preview API requests.
+ * Defers staged entity saves to kernel terminate for preview API requests.
+ *
+ * Content entities flush into workspace revisions, component tree config
+ * entities into workspace-scoped configuration.
  */
 final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
 
@@ -31,6 +36,7 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
   public function __construct(
     private readonly PendingContentAutoSaveBuffer $buffer,
     private readonly WorkspaceContentEntityPersist $contentEntityPersist,
+    private readonly WorkspaceConfigEntityPersist $configEntityPersist,
     private readonly EntityTypeManagerInterface $entityTypeManager,
     /**
      * @var \Drupal\workspaces\WorkspaceManagerInterface|null
@@ -56,14 +62,14 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
     ];
   }
 
-  public function enqueue(ContentEntityInterface $entity, ?string $clientId, ?array $entry = NULL): void {
+  public function enqueue(EntityInterface $entity, ?string $clientId, ?array $entry = NULL): void {
     $key = AutoSaveManager::getAutoSaveKey($entity);
     \assert($entity->id() !== NULL);
     $row = WorkspaceAutoSave::entryMetadata($entry) + [
       'entity_type' => $entity->getEntityTypeId(),
       'entity_id' => $entity->id(),
       'langcode' => $entity->language()->getId(),
-      'is_default_translation' => $entity->isDefaultTranslation(),
+      'is_default_translation' => !($entity instanceof TranslatableInterface) || $entity->isDefaultTranslation(),
       'data' => AutoSaveManager::toStorableArray($entity),
       'data_hash' => AutoSaveManager::generateHashFromData(AutoSaveManager::normalizeEntity($entity)),
       'client_id' => $clientId,
@@ -71,6 +77,10 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
       'updated' => $this->time->getRequestTime(),
       'owner' => (int) $this->currentUser->id(),
     ];
+    // The base recorded for config created inside the workspace outlives
+    // individual writes; it must survive the row being replaced.
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::CONFIG_BASE_HASH_KEY
+    $row += \array_intersect_key($this->buffer->get($key) ?? [], [WorkspaceAutoSave::CONFIG_BASE_HASH_KEY => TRUE]);
     $this->buffer->set($key, $row);
     $this->queuedKeys[$key] = TRUE;
     $this->staticCache->delete($key);
@@ -78,9 +88,6 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
   }
 
   public function flushNow(EntityInterface $entity): void {
-    if (!$entity instanceof ContentEntityInterface) {
-      return;
-    }
     $this->flushKey(AutoSaveManager::getAutoSaveKey($entity));
   }
 
@@ -111,6 +118,19 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
       }
       $storage = $this->entityTypeManager->getStorage($entity_type);
       $staged = $storage->create($data);
+      if ($staged instanceof ComponentTreeConfigEntityBase) {
+        // The reconstructed draft is the whole config object; the persist
+        // service handles the metadata sidecar, guarded by this row's token
+        // so a newer queued row is never overwritten.
+        $staged->enforceIsNew(FALSE);
+        $this->persistInWorkspace(
+          fn () => $this->configEntityPersist->persist($staged, $row['client_id'] ?? NULL, $row, (string) $token),
+          self::workspaceIdFromKey($key),
+        );
+        $this->staticCache->delete($key);
+        $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
+        return;
+      }
       if (!$staged instanceof ContentEntityInterface) {
         return;
       }
@@ -145,7 +165,10 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
         }
         $to_save->set($field_name, $items->getValue());
       }
-      $this->persistInWorkspace($to_save, $row['client_id'] ?? NULL, self::workspaceIdFromKey($key));
+      $this->persistInWorkspace(
+        fn () => $this->contentEntityPersist->persist($to_save, $row['client_id'] ?? NULL),
+        self::workspaceIdFromKey($key),
+      );
       $this->staticCache->delete($key);
       $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
       $still = $this->buffer->get($key);
@@ -189,8 +212,7 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
    * (or none is active) by terminate time. Terminate-time flushes must not
    * leave the workspace active for whatever runs later in the same process.
    */
-  private function persistInWorkspace(ContentEntityInterface $entity, ?string $clientId, string $workspaceId): void {
-    $persist = fn () => $this->contentEntityPersist->persist($entity, $clientId);
+  private function persistInWorkspace(callable $persist, string $workspaceId): void {
     if ($this->workspaceManager === NULL
       || $this->entityTypeManager->getStorage('workspace')->load($workspaceId) === NULL) {
       $persist();

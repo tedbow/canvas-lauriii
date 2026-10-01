@@ -44,15 +44,15 @@ flowchart TB
 
     subgraph Core["Auto-save core"]
         asm["AutoSaveManager (facade)<br>normalization + hashing,<br>idempotent retries, reset and conflict<br>detection against Live baselines,<br>pending list, translation groups"]
-        wsa["WorkspaceAutoSave<br>routes writes per entity type,<br>resolves reads: buffer → snapshot → revision,<br>rejects writes for entities locked<br>by another workspace"]
+        wsa["WorkspaceAutoSave<br>routes writes per entity type,<br>resolves reads: buffer → snapshot →<br>revision or workspace config,<br>rejects writes for entities locked<br>by another workspace"]
     end
 
     subgraph Staging["Staging stores (per active workspace)"]
         buffer["PendingContentAutoSaveBuffer<br>durable key-value buffer, no expiry,<br>workspace-prefixed keys"]
         flusher["DeferredAutoSaveFlusher<br>flushes at kernel terminate,<br>and before any staged read"]
-        snapshot["canvas_auto_save_snapshot entity<br>invalid-data store: content and config<br>drafts the storage layer rejected;<br>one row per (workspace, type, ID, langcode)"]
+        snapshot["canvas_auto_save_snapshot entity<br>invalid-data store: content and config<br>drafts the storage layer rejected, plus<br>code component, asset library, brand kit<br>and staged config update drafts;<br>one row per (workspace, type, ID, langcode)"]
         ws["Active workspace<br>pending revisions via core Workspaces<br>staging never validates: invalid drafts<br>store as ordinary pending revisions<br>AutoSaveRevisionPruner: log-spaced history"]
-        wsconfig["Workspaces Config (contrib)<br>config entity drafts staged as<br>workspace-scoped configuration:<br>resolves as regular config inside the<br>active workspace, live outside"]
+        wsconfig["Workspaces Config (contrib)<br>content template, pattern and page<br>variant drafts staged as<br>workspace-scoped configuration:<br>resolves as regular config inside the<br>active workspace, live outside"]
     end
 
     subgraph Publish["Workspace publish"]

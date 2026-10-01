@@ -20,7 +20,7 @@
 - [ ] 2.4 Confirm staged config resolves as regular configuration when the workspace is active and as live configuration outside it, including on non-Canvas routes (entity view builder, Views, page variant resolution) with no preview-route special-casing
 - [x] 2.5 Attribution and conflict metadata for workspace-scoped config staging live in the pending buffer sidecar (editor, edit time, client instance, base hash), per the editing-lifecycle attribution requirement (D7)
 - [ ] 2.6 Verify hot-path PATCH latency does not regress: staging writes on preview-critical routes stay buffered (or equally cheap), with no synchronous entity-store or config-store writes (D5)
-- [ ] 2.8 Route config drafts through the deferred flusher so a request produces at most one config save per target, and so one round of cache invalidation (D5, D6)
+- [x] 2.8 Route config drafts through the deferred flusher so a request produces at most one config save per target, and so one round of cache invalidation (D5, D6)
 - [x] 2.9 Base copy for hashes, dirty state and the auto-save starting point: Live configuration when it exists; for configuration created inside the workspace, the hash recorded in the sidecar at the creating write. Never the workspace-scoped copy itself (D7)
 - [ ] 2.10 (deferred, separate change) Retire the "created disabled" rule for content templates. Today `status` means "published at least once": created `FALSE`, flipped `TRUE` at publish, and the layout API's `isNew` is `!status()`. With creation itself staged, the flag no longer guards Live, and a greenfield design would make `status` mean "enabled" like every other config entity and derive `isNew` from "no Live copy exists". Retiring it must also redefine `isNew` for config (same signal for patterns and page variants), decide the CLI's write target (its Live writes would render immediately), update the UI badge, and update the three `ApiAutoSaveControllerTest` status assertions. Kept out of this change for its blast radius, not on the merits
 - [x] 2.12 Render a workspace's unpublished template creations inside that workspace: the view builder treats a disabled template with no Live copy as effective while a workspace is active, and renders vary by the `workspace` cache context (D3)
@@ -42,7 +42,7 @@
 - [x] 5.1 Update the architectural diagram in the canvas module docs for the Workspaces Config storage split
 - [x] 5.2 Add a revision note to ADR 0014 recording the storage decision change and its rationale
 - [x] 5.3 Record in ADR 0017 that staged configuration writes invalidate cache tags globally (accepted) and that content templates are no longer created disabled
-- [ ] 5.4 Once 2.x lands, re-read the diagram and the doc blocks in `AutoSave/Workspace` that still describe config drafts as snapshot rows, and fix them
+- [x] 5.4 Once 2.x lands, re-read the diagram and the doc blocks in `AutoSave/Workspace` that still describe config drafts as snapshot rows, and fix them
 
 ## 6. Tests
 

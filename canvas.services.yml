@@ -97,6 +97,7 @@ services:
       - { name: cache.bin.memory }
   Drupal\canvas\AutoSave\Workspace\AutoSaveRevisionPruner: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceContentEntityPersist: { }
+  Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist: { }
   Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer: { }
   Drupal\canvas\AutoSave\Workspace\DeferredAutoSaveFlusher: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave: { }

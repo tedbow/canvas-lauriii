@@ -33,7 +33,6 @@ use Drupal\Core\Language\LanguageInterface;
 use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\user\EntityOwnerInterface;
-use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
@@ -69,13 +68,6 @@ final class WorkspaceAutoSave {
    */
   public const string CONFIG_BASE_HASH_KEY = 'config_base_hash';
 
-  /**
-   * Whether a Canvas staged config write is running.
-   *
-   * @see ::persistConfigEntity()
-   */
-  private bool $stagingConfigWrite = FALSE;
-
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly ConfigManagerInterface $configManager,
@@ -84,8 +76,6 @@ final class WorkspaceAutoSave {
     private readonly StorageInterface $configStorage,
     private readonly ModuleHandlerInterface $moduleHandler,
     private readonly EntityLastInstalledSchemaRepositoryInterface $entityLastInstalledSchemaRepository,
-    #[Autowire(service: 'logger.channel.canvas')]
-    private readonly LoggerInterface $logger,
     // Nullable, resolved to NULL until the Workspaces module is installed
     // (before database updates run); staging then uses the key-value store.
     /**
@@ -120,6 +110,7 @@ final class WorkspaceAutoSave {
     private readonly KeyValueFactoryInterface $keyValueFactory,
     private readonly AutoSaveRevisionPruner $revisionPruner,
     private readonly WorkspaceContentEntityPersist $contentEntityPersist,
+    private readonly WorkspaceConfigEntityPersist $configEntityPersist,
     private readonly PendingContentAutoSaveBuffer $pendingBuffer,
     private readonly DeferredAutoSaveFlusher $deferredFlusher,
     private readonly RouteMatchInterface $routeMatch,
@@ -215,15 +206,10 @@ final class WorkspaceAutoSave {
   /**
    * Whether a Canvas staged config write is currently running.
    *
-   * TRUE exactly while ::persistConfigEntity() saves a draft as
-   * workspace-scoped configuration. Config save listeners that reconcile
-   * drafts with saves made elsewhere must ignore these saves: the draft is
-   * the thing being saved.
-   *
-   * @see \Drupal\canvas\AutoSave\AutoSaveManager::onCanvasConfigEntitySave()
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist::isStagingWrite()
    */
   public function isStagingConfigWrite(): bool {
-    return $this->stagingConfigWrite;
+    return $this->configEntityPersist->isStagingWrite();
   }
 
   /**
@@ -635,11 +621,11 @@ final class WorkspaceAutoSave {
     $this->snapshotRepository->executeInStagingWorkspace(function () use ($entity, $clientId, $immediateContentPersist, $entry): void {
       if ($this->usesWorkspaceConfigStaging($entity)) {
         \assert($entity instanceof ComponentTreeConfigEntityBase);
-        $this->persistConfigEntity($entity, $clientId, $entry);
+        $this->persistConfigEntity($entity, $clientId, $immediateContentPersist, $entry);
         return;
       }
       if ($entity instanceof CanvasHttpApiEligibleConfigEntityInterface) {
-        $this->persistConfigSnapshot($entity, $clientId);
+        $this->configEntityPersist->persistSnapshot($entity, $clientId);
         return;
       }
       if ($entity instanceof ContentEntityInterface) {
@@ -713,89 +699,20 @@ final class WorkspaceAutoSave {
   /**
    * Stages a component tree config entity draft as workspace-scoped config.
    *
-   * Runs inside the staging workspace: the save is intercepted by the
-   * Workspace Config module and stored in that workspace's partition, so Live
-   * is untouched and the draft resolves as regular configuration for every
-   * consumer inside the workspace. Staging never validates; a draft the
-   * storage layer refuses (an exception anywhere in the save) is retained as
-   * a snapshot row instead, so no auto-save is ever dropped.
+   * Deferred to kernel terminate on preview-critical routes, exactly like
+   * content: a config save is a synchronous storage write with cache
+   * invalidation attached, and one flush per request also bounds that
+   * invalidation to once per target per request.
    *
    * @see ::usesWorkspaceConfigStaging()
-   * @see \Drupal\workspace_config\WorkspaceConfigDatabaseStorage::write()
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist
    */
-  private function persistConfigEntity(ComponentTreeConfigEntityBase $entity, ?string $clientId, ?array $entry): void {
-    $key = AutoSaveManager::getAutoSaveKey($entity);
-    $type_id = $entity->getEntityTypeId();
-    $id = (string) $entity->id();
-    $storage = $this->entityTypeManager->getStorage($type_id);
-    // Never mutate the caller's entity object: the save marks it as saved and
-    // recalculates its dependencies, which would leak into the caller's own
-    // later use of the same object.
-    $to_save = clone $entity;
-    // Drafts are reconstructed through ::create(), which marks them new; the
-    // config object they target exists (in Live, or staged in this workspace)
-    // and must be updated, not inserted.
-    $to_save->enforceIsNew($storage->load($id) === NULL);
-    $previous = $this->stagingConfigWrite;
-    try {
-      $this->stagingConfigWrite = TRUE;
-      $to_save->save();
-    }
-    catch (\Throwable $e) {
-      // Retention over failure: keep the draft as a payload snapshot. If the
-      // snapshot write fails too, the client must see the error.
-      $this->logger->warning('Canvas auto-save for @type @id could not be stored as workspace-scoped configuration (@message); stored as a snapshot instead.', [
-        '@type' => $type_id,
-        '@id' => $id,
-        '@message' => $e->getMessage(),
-      ]);
-      $this->persistConfigSnapshot($entity, $clientId);
+  private function persistConfigEntity(ComponentTreeConfigEntityBase $entity, ?string $clientId, bool $immediatePersist, ?array $entry): void {
+    if ($immediatePersist || !$this->shouldDeferContentPersistToTerminate()) {
+      $this->configEntityPersist->persist($entity, $clientId, $entry);
       return;
     }
-    finally {
-      $this->stagingConfigWrite = $previous;
-    }
-    // The workspace-scoped copy is now the current staged state; a snapshot
-    // row from an earlier failed persist would otherwise shadow it forever.
-    $this->snapshotRepository->deleteFor($type_id, $id, self::snapshotLangcode($entity));
-    // Workspace-scoped configuration records neither which client instance
-    // produced the draft, the editor, nor the base hash it started from, but
-    // attribution, concurrent-edit validation and conflict detection need
-    // them.
-    // @see ::getStagedClientId()
-    // @see ::getStagedEntryMetadata()
-    $this->setStagedEntryMetadata($key, ['client_id' => $clientId] + self::entryMetadata($entry) + [
-      'owner' => (int) $this->currentUser->id(),
-      'updated' => $this->time->getRequestTime(),
-    ]);
-    $storage->resetCache([$id]);
-    $this->cache->delete($key);
-  }
-
-  /**
-   * Records staging metadata for a key, keeping the recorded config base.
-   *
-   * @param array<string, mixed> $metadata
-   *
-   * @see self::CONFIG_BASE_HASH_KEY
-   */
-  private function setStagedEntryMetadata(string $key, array $metadata): void {
-    $existing = $this->pendingBuffer->get($key) ?? [];
-    $this->pendingBuffer->set($key, $metadata + \array_intersect_key($existing, [self::CONFIG_BASE_HASH_KEY => TRUE]));
-  }
-
-  private function persistConfigSnapshot(ConfigEntityInterface $entity, ?string $clientId): void {
-    $payload = \json_encode($entity->toArray(), JSON_THROW_ON_ERROR);
-    $data_hash = AutoSaveManager::generateHashFromData(\json_decode($payload, TRUE, 512, JSON_THROW_ON_ERROR));
-    $this->snapshotRepository->persist(
-      $entity->getEntityTypeId(),
-      (string) $entity->id(),
-      self::snapshotLangcode($entity),
-      $payload,
-      $data_hash,
-      $clientId,
-      (int) $this->currentUser->id(),
-    );
+    $this->deferredFlusher->enqueue($entity, $clientId, $entry);
   }
 
   private function persistContentEntity(ContentEntityInterface $entity, ?string $clientId, bool $immediateContentPersist, ?array $entry = NULL): void {
@@ -956,9 +873,11 @@ final class WorkspaceAutoSave {
     }
 
     // Staging resolves in a fixed order for every entity type: the pending
-    // write buffer, then a snapshot row, then a workspace-tracked revision.
+    // write buffer, then a snapshot row, then the primary store (a
+    // workspace-tracked revision, or workspace-scoped configuration).
     // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceContentEntityPersist
-    $pending = $this->loadPendingContentAutoSave($entity);
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist
+    $pending = $this->loadPendingBufferedAutoSave($entity);
     if ($pending !== NULL) {
       $this->cache->set($key, $pending, tags: [AutoSaveManager::CACHE_TAG]);
       return $pending;
@@ -1130,8 +1049,17 @@ final class WorkspaceAutoSave {
     return $auto_save_entity;
   }
 
-  private function loadPendingContentAutoSave(EntityInterface $entity): ?AutoSaveEntity {
-    if (!$entity instanceof ContentEntityInterface || $entity->id() === NULL || $this->workspaceManager === NULL) {
+  /**
+   * Loads a deferred write still sitting in the pending buffer.
+   *
+   * Content and workspace-staged config alike: both defer their persist to
+   * kernel terminate on preview-critical routes.
+   */
+  private function loadPendingBufferedAutoSave(EntityInterface $entity): ?AutoSaveEntity {
+    if ($entity->id() === NULL || $this->workspaceManager === NULL) {
+      return NULL;
+    }
+    if (!$entity instanceof ContentEntityInterface && !$this->usesWorkspaceConfigStaging($entity)) {
       return NULL;
     }
     $row = $this->pendingBuffer->get(AutoSaveManager::getAutoSaveKey($entity));
@@ -1658,14 +1586,15 @@ final class WorkspaceAutoSave {
   }
 
   /**
-   * Persists any pending (pre-terminate) auto-save buffer for a content entity.
+   * Persists any pending (pre-terminate) auto-save buffer for an entity.
    *
-   * Call before returning autoSave hashes to the client so
-   * autoSaveStartingPoint matches workspace revisions (buffer tokens are only
-   * valid until flush).
+   * Call before returning autoSave hashes to the client so the reported hash
+   * matches the primary store (buffer tokens are only valid until flush).
+   * Covers content entities and workspace-staged config alike; a no-op for
+   * anything else.
    */
   public function flushDeferredContentEntity(EntityInterface $entity): void {
-    if (!$entity instanceof ContentEntityInterface) {
+    if (!$entity instanceof ContentEntityInterface && !$this->usesWorkspaceConfigStaging($entity)) {
       return;
     }
     $this->deferredFlusher->flushNow($entity);
