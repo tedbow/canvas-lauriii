@@ -98,9 +98,12 @@ unit of review and publish.
    workspace-staged config entity types workspace-safe to
    `workspace_config` itself rather than relying on that module's built-in
    list. A config entity created inside a workspace
-   exists only there until publish; content templates are therefore no
-   longer created disabled and enabled at publish, since Live is untouched
-   until the workspace publishes. Hashes, dirty state and the client's
+   exists only there until publish. Content templates are still created
+   disabled and enabled at their first publish (the flag doubles as the
+   "never published" signal); inside a workspace, a disabled template with
+   no Live copy renders as if enabled, since it is that workspace's own
+   unpublished creation, and renders of templated entities vary by the
+   workspace cache context. Hashes, dirty state and the client's
    auto-save starting point are computed against a stable base: the Live
    configuration when one exists, otherwise the configuration as it was
    created inside the workspace (recorded alongside the draft's

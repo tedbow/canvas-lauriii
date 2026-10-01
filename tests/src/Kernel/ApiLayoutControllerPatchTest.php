@@ -900,6 +900,18 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       self::assertNull($workspace_manager->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($template_id)));
       self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
 
+      // The unpublished template renders entities of its bundle inside the
+      // workspace, on any route: it is this workspace's own creation. Outside
+      // the workspace the core display renders them.
+      $node = Node::load(1);
+      \assert($node instanceof Node);
+      $render_teaser = function () use ($node): string {
+        $build = $this->container->get(EntityTypeManagerInterface::class)->getViewBuilder('node')->view($node, 'teaser');
+        return (string) $this->container->get('renderer')->renderInIsolation($build);
+      };
+      self::assertStringContainsString('Updated heading', $render_teaser());
+      self::assertStringNotContainsString('Updated heading', $workspace_manager->executeOutsideWorkspace($render_teaser));
+
       // A further auto-save keeps the starting point.
       $model['resolved']['text'] = 'Updated heading again';
       $patch['model'] = $model;
