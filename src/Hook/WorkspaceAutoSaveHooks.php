@@ -43,6 +43,22 @@ final class WorkspaceAutoSaveHooks {
   }
 
   /**
+   * Implements hook_workspace_config_safe_list_alter().
+   *
+   * The Workspace Config module ships a built-in list of Canvas config entity
+   * types that stage per workspace; page variants replaced page regions after
+   * that list was written, so they are declared here. Without this, saving a
+   * page variant while a workspace is active is refused outright.
+   *
+   * @see \Drupal\workspace_config\Hook\WorkspaceConfigSchemaHooks
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::usesWorkspaceConfigStaging()
+   */
+  #[Hook('workspace_config_safe_list_alter')]
+  public static function workspaceConfigSafeListAlter(array &$patterns): void {
+    $patterns[] = 'canvas.page_variant.*';
+  }
+
+  /**
    * Implements hook_validation_constraint_alter().
    */
   #[Hook('validation_constraint_alter')]
