@@ -177,7 +177,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Review Changes compares selected non-conflicted Page changes before publishing. Selecting Old version discards the auto-save; selecting New version keeps it selected for publishing.',
+          'Review Changes compares selected Page changes before publishing. Selecting Old version discards the auto-save; selecting New version keeps it selected for publishing.',
       },
     },
   },

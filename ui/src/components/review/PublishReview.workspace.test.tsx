@@ -10,10 +10,6 @@ import { formatScheduledDate } from '@/components/workspaces/utils';
 import type { Workspace } from '@/services/workspacesApi';
 import type { UnpublishedChange } from '@/types/Review';
 
-vi.mock('@/features/conflict/conflictUtils', () => ({
-  isConflictUxEnabled: () => false,
-}));
-
 let workflowsEnabled = true;
 
 vi.mock('@/components/workspaces/utils', async (importOriginal) => ({

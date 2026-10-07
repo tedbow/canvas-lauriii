@@ -71,22 +71,6 @@ const mockChanges: Record<string, UnpublishedChange> = {
       uri: '/user/4',
     },
   },
-  conflicted: {
-    pointer: 'node:5:en',
-    label: 'Contact Page with Conflicts',
-    updated: Math.floor(Date.now() / 1000) - 30 * 60, // 30 minutes ago
-    entity_type: 'node',
-    data_hash: 'data-hash-5',
-    entity_id: 5,
-    langcode: 'en',
-    hasConflict: true,
-    owner: {
-      name: 'Alex Morgan',
-      avatar: null,
-      id: 5,
-      uri: '/user/5',
-    },
-  },
   recentChange: {
     pointer: 'js_component:6:en',
     label: 'Hero Banner Component',
@@ -232,13 +216,6 @@ export const SelectedChange: Story = {
   args: {
     change: mockChanges.page,
     selectedChanges: [mockChanges.page],
-  },
-};
-
-export const ConflictedChange: Story = {
-  render: InteractiveChangeRow,
-  args: {
-    change: mockChanges.conflicted,
   },
 };
 

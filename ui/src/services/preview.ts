@@ -28,7 +28,7 @@ import type {
   ResolvedValues,
 } from '@/features/layout/layoutModelSlice';
 import type { EditorFrameContext } from '@/features/ui/uiSlice';
-import type { ConflictError } from '@/services/pendingChangesApi';
+import type { ApiErrorEntry } from '@/services/pendingChangesApi';
 import type { AutoSavesHash } from '@/types/AutoSaves';
 import type { InputUIData } from '@/types/Form';
 
@@ -37,7 +37,7 @@ export type UpdateComponentResultType = {
   layout: any;
   model: any;
   autoSaves: AutoSavesHash;
-  errors?: Array<ConflictError>;
+  errors?: Array<ApiErrorEntry>;
 };
 
 export type UpdateComponentQueryArg = {

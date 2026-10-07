@@ -44,22 +44,6 @@ const createMockChangeGroups = (): UnpublishedChangeGroups => ({
         uri: '/user/2',
       },
     },
-    {
-      pointer: 'node:3:en',
-      label: 'Contact Page with Conflicts',
-      updated: Math.floor(Date.now() / 1000) - 30 * 60, // 30 minutes ago
-      entity_type: 'node',
-      data_hash: 'data-hash-3',
-      entity_id: 3,
-      langcode: 'en',
-      hasConflict: true,
-      owner: {
-        name: 'Alex Morgan',
-        avatar: null,
-        id: 3,
-        uri: '/user/3',
-      },
-    },
   ],
   js_component: [
     {

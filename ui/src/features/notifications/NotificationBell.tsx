@@ -1,13 +1,8 @@
 import { useRef } from 'react';
-import { useNavigate } from 'react-router';
 import BellIcon from '@assets/icons/bell.svg?react';
 import { Popover } from '@radix-ui/themes';
 
 import { useAppDispatch, useAppSelector } from '@/app/hooks';
-import {
-  isConflictNotification,
-  useConflictNotification,
-} from '@/features/notifications/conflictNotification';
 import {
   selectActivityCenterOpen,
   setActivityCenterOpen,
@@ -32,26 +27,18 @@ import styles from './NotificationBell.module.css';
 
 const NotificationBell = () => {
   const devMode = getCanvasSettings()?.devMode;
-  const navigate = useNavigate();
   const dispatch = useAppDispatch();
   const isOpen = useAppSelector(selectActivityCenterOpen);
   const isTabFocused = useDocumentVisibility();
   const [markRead] = useMarkNotificationsReadMutation();
   const hasProcessingRef = useRef(false);
-  const {
-    notification: conflictNotification,
-    markRead: markConflictNotificationRead,
-  } = useConflictNotification(!!devMode);
 
   const { data } = useGetNotificationsQuery(undefined, {
     pollingInterval: getPollingInterval(isTabFocused, hasProcessingRef.current),
     skip: !devMode,
   });
 
-  const notifications = [
-    ...(conflictNotification ? [conflictNotification] : []),
-    ...(data?.data.notifications ?? []),
-  ];
+  const notifications = data?.data.notifications ?? [];
   hasProcessingRef.current = notifications.some((n) => n.type === 'processing');
   const badgeCount = computeBadgeCount(notifications);
 
@@ -68,33 +55,14 @@ const NotificationBell = () => {
   };
 
   const handleMarkAllRead = () => {
-    if (conflictNotification && !conflictNotification.hasRead) {
-      markConflictNotificationRead();
-    }
-    const unreadIds = notifications
-      .filter((n) => !isConflictNotification(n.id) && !n.hasRead)
-      .map((n) => n.id);
+    const unreadIds = notifications.filter((n) => !n.hasRead).map((n) => n.id);
     if (unreadIds.length > 0) {
       markRead({ ids: unreadIds });
     }
   };
 
   const handleMarkRead = (id: string) => {
-    if (isConflictNotification(id)) {
-      markConflictNotificationRead();
-      return;
-    }
     markRead({ ids: [id] });
-  };
-
-  const handleAction = (id: string, href: string) => {
-    if (isConflictNotification(id)) {
-      markConflictNotificationRead();
-      dispatch(setActivityCenterOpen(false));
-      navigate(href);
-      return;
-    }
-    window.open(href, '_blank', 'noopener,noreferrer');
   };
 
   if (!devMode) return null;
@@ -117,7 +85,6 @@ const NotificationBell = () => {
           onClose={() => handleOpenChange(false)}
           onMarkAllRead={handleMarkAllRead}
           onMarkRead={handleMarkRead}
-          onAction={handleAction}
         />
       </Popover.Content>
     </Popover.Root>

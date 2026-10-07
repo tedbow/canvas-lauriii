@@ -8,14 +8,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/services/componentAndLayout', () => ({
-  useGetConflictPageLayoutQuery: (arg: unknown) => {
+  useGetPageVersionLayoutQuery: (arg: unknown) => {
     mocks.layoutRequests(arg);
     const data = {
       html: '<main>Version preview</main>',
       entity_form_fields: {},
       layout: [],
       model: {},
-      updated: 1_777_000_000,
     };
     return {
       data,

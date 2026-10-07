@@ -2,7 +2,6 @@
 import { createApi } from '@reduxjs/toolkit/query/react';
 
 import {
-  setConflicts,
   setErrors,
   setPreviousPendingChanges,
 } from '@/components/review/PublishReview.slice';
@@ -24,8 +23,6 @@ export interface PendingChange {
   langcode: string;
   label: string;
   updated: number;
-  hasConflict?: boolean;
-  conflict_id?: string;
 }
 
 export type PendingChanges = {
@@ -36,25 +33,23 @@ interface SuccessResponse {
   message: string;
 }
 
-export interface ConflictError {
+export interface ApiErrorEntry {
   code?: number;
   detail: string;
   source: {
     pointer: string;
   };
-  meta?: ConflictErrorMeta;
+  meta?: ApiErrorMeta;
 }
 
-export interface ConflictErrorMeta {
+export interface ApiErrorMeta {
   entity_type?: string;
   entity_id?: string | number;
   label?: string;
-  api_auto_save_key?: string;
-  conflict_id?: string;
 }
 
 export interface ErrorResponse {
-  errors: Array<ConflictError>;
+  errors: Array<ApiErrorEntry>;
 }
 
 type DiscardPendingChangeArg = PendingChange & {
@@ -66,76 +61,9 @@ export enum STATUS_CODE {
   UNPROCESSABLE_ENTITY = 422,
 }
 
-export enum CONFLICT_CODE {
-  UNEXPECTED = 1,
-  EXPECTED = 2,
-  DETECTED = 4,
-}
-
 export interface PendingChangesResponse {
   data: PendingChanges;
-  errors?: ConflictError[];
 }
-
-type PendingChangesApiResponse = PendingChanges | PendingChangesResponse;
-
-const isPendingChangesResponse = (
-  response: PendingChangesApiResponse,
-): response is PendingChangesResponse => {
-  const asWrapped = response as { data?: unknown };
-  return typeof asWrapped.data === 'object' && asWrapped.data !== null;
-};
-
-export const getAutoSaveKeyFromError = (
-  error: ConflictError,
-): string | undefined => error.meta?.api_auto_save_key ?? error.source.pointer;
-
-const isResolvableConflictError = (error?: ConflictError): boolean =>
-  error?.code === CONFLICT_CODE.DETECTED;
-
-const normalizePendingChangesResponse = (
-  response: PendingChangesApiResponse,
-): PendingChangesResponse => {
-  if (isPendingChangesResponse(response)) {
-    return response;
-  }
-
-  return {
-    data: response as PendingChanges,
-  };
-};
-
-export const applyConflictStateFromResponse = (
-  response: PendingChangesApiResponse,
-): PendingChanges => {
-  const normalizedResponse = normalizePendingChangesResponse(response);
-  const errorsByPointer = new Map<string, ConflictError>();
-  for (const error of normalizedResponse.errors ?? []) {
-    const pointer = getAutoSaveKeyFromError(error);
-    if (pointer) {
-      errorsByPointer.set(pointer, error);
-    }
-  }
-
-  return Object.fromEntries(
-    Object.entries(normalizedResponse.data ?? {}).map(([pointer, change]) => {
-      const conflictError = errorsByPointer.get(pointer);
-      const hasConflict = isResolvableConflictError(conflictError);
-      const conflictId = hasConflict
-        ? conflictError?.meta?.conflict_id
-        : undefined;
-
-      return [
-        pointer,
-        {
-          ...change,
-          hasConflict,
-          conflict_id: conflictId,
-        },
-      ];
-    }),
-  );
-};
 
 // Define a service using a base URL and expected endpoints
 export const pendingChangesApi = createApi({
@@ -144,13 +72,8 @@ export const pendingChangesApi = createApi({
   tagTypes: ['PendingChanges'],
   endpoints: (builder) => ({
     getAllPendingChanges: builder.query<PendingChanges, void>({
-      query: () => ({
-        url: `/canvas/api/v0/auto-saves/pending`,
-        validateStatus: (response) =>
-          response.status === STATUS_CODE.CONFLICT || response.status === 200,
-      }),
-      transformResponse: (response: PendingChangesApiResponse) =>
-        applyConflictStateFromResponse(response),
+      query: () => `/canvas/api/v0/auto-saves/pending`,
+      transformResponse: (response: PendingChangesResponse) => response.data,
       providesTags: () => [{ type: 'PendingChanges', id: 'LIST' }],
     }),
     publishAllPendingChanges: builder.mutation<
@@ -165,8 +88,8 @@ export const pendingChangesApi = createApi({
         body: {},
       }),
       async onQueryStarted(_, { dispatch, getState, queryFulfilled }) {
-        // Snapshot the pending changes before the request resolves so the
-        // conflict path can restore them below.
+        // Snapshot the pending changes before the request resolves so a
+        // refused publish can restore them below.
         const pendingChangesBeforePublish =
           pendingChangesApi.endpoints.getAllPendingChanges.select(undefined)(
             getState() as any,
@@ -202,13 +125,11 @@ export const pendingChangesApi = createApi({
         } catch (error: any) {
           dispatch(setErrors(error.error?.data));
 
-          // Handle conflicts
+          // A pre-publish gate refused the publish: the pending changes are
+          // unchanged, so restore the snapshot.
           // @todo https://www.drupal.org/i/3503404
           if (error.error?.status === STATUS_CODE.CONFLICT) {
-            // set previous response
             dispatch(setPreviousPendingChanges(pendingChangesBeforePublish));
-            // set conflicts
-            dispatch(setConflicts(error?.error?.data?.errors));
           }
         }
       },
@@ -242,7 +163,6 @@ export const pendingChangesApi = createApi({
           );
 
           // Reset errors
-          dispatch(setConflicts());
           dispatch(setPreviousPendingChanges());
           dispatch(setErrors());
         } catch (error: any) {

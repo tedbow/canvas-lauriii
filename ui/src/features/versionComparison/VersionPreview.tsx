@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { Spinner } from '@radix-ui/themes';
 
-import { useGetConflictPageLayoutQuery } from '@/services/componentAndLayout';
+import { useGetPageVersionLayoutQuery } from '@/services/componentAndLayout';
 import { getViewportSizes } from '@/utils/viewports';
 
 import styles from './VersionPreview.module.css';
@@ -12,7 +12,7 @@ import styles from './VersionPreview.module.css';
  *
  * Unlike the main PagePreview, this component is fully isolated from the
  * editor's Redux preview-update cycle. It fetches the layout HTML directly
- * via `useGetConflictPageLayoutQuery` (which has no side-effects) and renders
+ * via `useGetPageVersionLayoutQuery` (which has no side-effects) and renders
  * it in an iframe. The `?version=published` search param controls whether the
  * published version or the auto-save (new) version is displayed.
  */
@@ -34,7 +34,7 @@ const VersionPreview = () => {
     return viewportSize ? `${viewportSize.width}px` : '100%';
   }, [width, viewportSizes]);
 
-  const { data, isFetching, isError } = useGetConflictPageLayoutQuery(
+  const { data, isFetching, isError } = useGetPageVersionLayoutQuery(
     entityId && entityType
       ? {
           entityId,

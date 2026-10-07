@@ -14,7 +14,6 @@ import SideMenu from '@/components/sideMenu/SideMenu';
 import PrimaryPanel from '@/components/sidePanel/PrimaryPanel';
 import CodeEditorContainer from '@/features/code-editor/CodeEditorContainer';
 import CodeComponentDialogs from '@/features/code-editor/dialogs/CodeComponentDialogs';
-import ConflictResolutionPage from '@/features/conflict/ConflictResolutionPage';
 import EditorLayout from '@/features/editor/EditorLayout';
 import TemplateRoot from '@/features/editor/TemplateRoot';
 import HeadlessFrontendsPage from '@/features/headlessFrontends/HeadlessFrontendsPage';
@@ -194,22 +193,6 @@ const AppRoutes: React.FC<AppRoutesInterface> = ({ basePath }) => {
           {
             path: '/version-preview/:entityType/:entityId/:width',
             element: <VersionPreview />,
-          },
-          {
-            path: '/conflict',
-            element: (
-              <UiShell>
-                <ConflictResolutionPage />
-              </UiShell>
-            ),
-          },
-          {
-            path: '/conflict/:entityType/:entityId',
-            element: (
-              <UiShell>
-                <ConflictResolutionPage />
-              </UiShell>
-            ),
           },
           {
             path: '/review',

@@ -21,17 +21,6 @@
   color: var(--blue-9);
 }
 
-.conflictIcon {
-  width: 14px;
-  height: 14px;
-  color: var(--red-9);
-}
-
-.resolveConflictMenuItem {
-  color: var(--gray-12);
-  font-weight: var(--font-weight-regular);
-}
-
 .menuIcon {
   width: 14px;
   height: 14px;

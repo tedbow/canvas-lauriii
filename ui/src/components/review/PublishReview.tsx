@@ -33,10 +33,8 @@ import {
 } from '@/components/workspaces/utils';
 import WorkspaceStatusBadge from '@/components/workspaces/WorkspaceStatusBadge';
 import { Divider } from '@/features/code-editor/component-data/FormElement';
-import { isConflictUxEnabled } from '@/features/conflict/conflictUtils';
 
 import ChangeList from './changes/ChangeList';
-import ConflictBanner from './ConflictBanner';
 
 import type { ErrorResponse } from '@/services/pendingChangesApi';
 import type {
@@ -62,7 +60,6 @@ interface PublishReviewProps {
   onDiscardClick: (selectedChange: UnpublishedChange) => void;
   onViewClick?: (change: UnpublishedChange) => void;
   isViewChangeAvailable?: (change: UnpublishedChange) => boolean;
-  onResolveConflict?: (change?: UnpublishedChange) => void;
   onOpenChangeCallback: (open: boolean) => void;
   onTransitionStatus?: (transition: WorkspaceStatusTransition) => void;
   onSchedulePublish?: (publishAt: number) => void;
@@ -73,7 +70,6 @@ interface PublishReviewProps {
   isFetching?: boolean;
   isTransitioning?: boolean;
   isScheduling?: boolean;
-  conflictCount?: number;
   pageStatusMap?: Record<
     string,
     { status: boolean; isNew?: boolean; hasUnsavedStatusChange?: boolean }
@@ -90,7 +86,6 @@ const PublishReview: React.FC<PublishReviewProps> = ({
   onDiscardClick,
   onViewClick,
   isViewChangeAvailable,
-  onResolveConflict,
   onOpenChangeCallback,
   onTransitionStatus,
   onSchedulePublish,
@@ -101,10 +96,8 @@ const PublishReview: React.FC<PublishReviewProps> = ({
   isFetching = false,
   isTransitioning = false,
   isScheduling = false,
-  conflictCount = 0,
   pageStatusMap,
 }) => {
-  const conflictUxEnabled = isConflictUxEnabled();
   // Review transitions and scheduling exist only with the canvas_workflows
   // module; without it the panel offers plain publishing.
   const workflowsEnabled = isWorkspaceWorkflowsEnabled();
@@ -120,11 +113,6 @@ const PublishReview: React.FC<PublishReviewProps> = ({
     isFetching ||
     isTransitioning ||
     isScheduling;
-
-  const firstConflictedChange = useMemo(
-    () => changes.find((change) => change.hasConflict),
-    [changes],
-  );
 
   // Used to display the `Published` state. Publishing covers the whole
   // workspace, so a publish attempt snapshots the pending pointers and the
@@ -210,11 +198,6 @@ const PublishReview: React.FC<PublishReviewProps> = ({
       setInternalOpen(open);
     }
     onOpenChangeCallback(open);
-  };
-
-  const handleResolveConflict = (change?: UnpublishedChange) => {
-    onOpenChangeHandler(false);
-    onResolveConflict?.(change ?? firstConflictedChange);
   };
 
   const handleScheduleConfirm = () => {
@@ -443,15 +426,6 @@ const PublishReview: React.FC<PublishReviewProps> = ({
                       : 'All changes published!'}
                   </Text>
                 </Box>
-                {conflictUxEnabled && conflictCount > 0 && (
-                  <Box px="4" pt="4">
-                    <ConflictBanner
-                      conflictCount={conflictCount}
-                      onResolveClick={() => handleResolveConflict()}
-                      disabled={isBusy}
-                    />
-                  </Box>
-                )}
                 <Box px="4" pt="4">
                   {changes?.length > 0 && (
                     <ChangeList
@@ -461,7 +435,6 @@ const PublishReview: React.FC<PublishReviewProps> = ({
                       onDiscardClick={onDiscardClick}
                       onViewClick={onViewClick}
                       isViewChangeAvailable={isViewChangeAvailable}
-                      onResolveConflict={handleResolveConflict}
                       pageStatusMap={pageStatusMap}
                     />
                   )}

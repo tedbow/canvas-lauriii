@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 
 import { PageVersionComparisonView } from '@/features/versionComparison/PageVersionComparisonView';
-import { useGetConflictPageLayoutQuery } from '@/services/componentAndLayout';
+import { useGetPageVersionLayoutQuery } from '@/services/componentAndLayout';
 
 import type { PageVersionSelection } from '@/features/versionComparison/PageVersionComparisonView';
 import type { LayoutApiResponse } from '@/services/componentAndLayout';
@@ -90,7 +90,7 @@ export const PageVersionComparison = ({
     currentData: draftLayout,
     isFetching: isDraftLoading,
     isError: isDraftError,
-  } = useGetConflictPageLayoutQuery({
+  } = useGetPageVersionLayoutQuery({
     entityId,
     entityType: 'canvas_page',
     versionKey: draftVersionKey,
@@ -99,7 +99,7 @@ export const PageVersionComparison = ({
     currentData: publishedLayout,
     isFetching: isPublishedLoading,
     isError: isPublishedError,
-  } = useGetConflictPageLayoutQuery({
+  } = useGetPageVersionLayoutQuery({
     entityId,
     entityType: 'canvas_page',
     publishedVersion: true,
@@ -161,15 +161,12 @@ export const PageVersionComparison = ({
       publishedVersion={{
         html: stablePublishedLayout?.html || EMPTY_HTML,
         loading: !stablePublishedLayout && isPublishedLoading,
-        updated: formatPageVersionUpdated(stablePublishedLayout?.updated),
       }}
       newVersion={{
         html: stableDraftLayout?.html || EMPTY_HTML,
         loading: !stableDraftLayout && isDraftLoading,
         changed: true,
-        updated: formatPageVersionUpdated(
-          stableDraftLayout?.updated ?? autoSaveUpdated,
-        ),
+        updated: formatPageVersionUpdated(autoSaveUpdated),
       }}
       selectedVersion={selectedVersion}
       onSelectVersion={onSelectVersion}

@@ -1,9 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import {
-  ClockIcon,
-  DotsVerticalIcon,
-  ExclamationTriangleIcon,
-} from '@radix-ui/react-icons';
+import { ClockIcon, DotsVerticalIcon } from '@radix-ui/react-icons';
 import {
   Avatar,
   Badge,
@@ -15,8 +11,6 @@ import {
   Text,
   Tooltip,
 } from '@radix-ui/themes';
-
-import { isConflictUxEnabled } from '@/features/conflict/conflictUtils';
 
 import { getAvatarInitialColor, getChangeLabel, getTimeAgo } from '../utils';
 import ChangeIcon from './ChangeIcon';
@@ -35,7 +29,6 @@ interface ChangeRowProps {
   onDiscardClick: (change: UnpublishedChange) => void;
   onViewClick?: (change: UnpublishedChange) => void;
   isViewChangeAvailable?: (change: UnpublishedChange) => boolean;
-  onResolveConflict?: (change: UnpublishedChange) => void;
   pageStatusMap?: Record<
     string,
     { status: boolean; isNew?: boolean; hasUnsavedStatusChange?: boolean }
@@ -51,21 +44,15 @@ const ChangeRow = ({
   onDiscardClick,
   onViewClick,
   isViewChangeAvailable,
-  onResolveConflict,
   pageStatusMap,
 }: ChangeRowProps) => {
   const changeLabel = getChangeLabel(change);
   const initial = change.owner.name.trim().charAt(0).toUpperCase();
   const avatarColor = getAvatarInitialColor(change.owner.id);
   const date = new Date(change.updated * 1000);
-  const conflictUxEnabled = isConflictUxEnabled();
-  const hasConflict = conflictUxEnabled && !!change.hasConflict;
   const canViewChange =
-    conflictUxEnabled &&
     !!onViewClick &&
-    !hasConflict &&
     (isViewChangeAvailable ? isViewChangeAvailable(change) : true);
-  const color = hasConflict ? 'red' : undefined;
   const weight = 'regular';
   const showCheckbox = selectable && !!setSelectedChanges;
 
@@ -98,7 +85,7 @@ const ChangeRow = ({
 
   const handleChangeSelection = useCallback(
     (checked: boolean) => {
-      if (hasConflict || !setSelectedChanges) {
+      if (!setSelectedChanges) {
         return;
       }
       if (checked) {
@@ -109,37 +96,28 @@ const ChangeRow = ({
         );
       }
     },
-    [change, hasConflict, selectedChanges, setSelectedChanges],
+    [change, selectedChanges, setSelectedChanges],
   );
 
   return (
     <li className={styles.changeRow} data-testid="pending-change-row">
       <Flex as="div" direction="row" align="start" justify="between" gap="4">
-        <Text as="label" color={color} weight={weight} size="1">
+        <Text as="label" weight={weight} size="1">
           <Flex as="div" direction="row" align="start" gap="2" pt="1">
             {showCheckbox && (
               <Checkbox
                 size="1"
-                disabled={isBusy || hasConflict}
+                disabled={isBusy}
                 aria-label={`Select change ${changeLabel}`}
                 onCheckedChange={handleChangeSelection}
                 checked={isSelected}
               />
             )}
             <Flex height="16px" align="center">
-              {hasConflict ? (
-                <Tooltip content="This change has a conflict">
-                  <ExclamationTriangleIcon
-                    className={styles.conflictIcon}
-                    data-testid="change-conflict-icon"
-                  />
-                </Tooltip>
-              ) : (
-                <ChangeIcon
-                  entityType={change.entity_type}
-                  entityId={change.entity_id}
-                />
-              )}
+              <ChangeIcon
+                entityType={change.entity_type}
+                entityId={change.entity_id}
+              />
             </Flex>
             {changeLabel}
           </Flex>
@@ -212,13 +190,6 @@ const ChangeRow = ({
                 </IconButton>
               </DropdownMenu.Trigger>
               <DropdownMenu.Content>
-                {conflictUxEnabled && hasConflict && onResolveConflict && (
-                  <DropdownMenu.Item
-                    onSelect={() => onResolveConflict?.(change)}
-                  >
-                    Resolve conflict
-                  </DropdownMenu.Item>
-                )}
                 {canViewChange && (
                   <DropdownMenu.Item onSelect={() => onViewClick?.(change)}>
                     Review changes

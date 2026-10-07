@@ -153,8 +153,8 @@ describe('PageVersionComparisonView', () => {
     const publishedSelect = screen.getByRole('button', {
       name: 'Select Published version',
     });
-    const publishedCard = screen.getByTestId('conflict-published-version-card');
-    const newCard = screen.getByTestId('conflict-new-version-card');
+    const publishedCard = screen.getByTestId('published-version-card');
+    const newCard = screen.getByTestId('new-version-card');
 
     expect(publishedCard).not.toHaveClass(styles.cardSelected);
     expect(newCard).not.toHaveClass(styles.cardSelected);

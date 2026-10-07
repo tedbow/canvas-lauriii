@@ -38,7 +38,6 @@ export type LayoutApiResponse = RootLayoutModel & {
   isNew: boolean;
   isPublished: boolean;
   publishedVersion?: boolean;
-  updated?: number;
   hasUnsavedStatusChange?: boolean;
   html: string;
   autoSaves: AutoSavesHash;
@@ -251,7 +250,10 @@ export const componentAndLayoutApi = createApi({
         }
       },
     }),
-    getConflictPageLayout: builder.query<
+    // Side-effect free layout fetch for the version comparison views.
+    // `publishedVersion` requests the published (Live) layout through
+    // `autoSaved=false`; `versionKey` only separates the draft cache entries.
+    getPageVersionLayout: builder.query<
       LayoutApiResponse,
       {
         entityId: string;
@@ -829,7 +831,7 @@ export const {
   useGetComponentUsageDetailsQuery,
   useGetComponentUsageListQuery,
   useGetPageLayoutQuery,
-  useGetConflictPageLayoutQuery,
+  useGetPageVersionLayoutQuery,
   useGetTemplateLayoutQuery,
   usePostTemplateLayoutMutation,
   useUpdateComponentInTemplateMutation,

@@ -37,7 +37,7 @@ const mocks = vi.hoisted(() => {
     locationPathname: '/editor',
     locationSearch: '',
     locationHash: '',
-    conflictUxEnabled: true,
+    reviewUxEnabled: true,
     invalidateBrandKitTags: vi.fn(),
     invalidateContentTags: vi.fn(),
     invalidateLayoutTags: vi.fn(),
@@ -81,7 +81,6 @@ vi.mock('@/app/hooks', async () => {
       selector({
         publishReview: {
           previousPendingChanges: undefined,
-          conflicts: undefined,
           errors: undefined,
           autoSavesHash: {},
           clientInstanceId: 'test-client-instance',
@@ -103,8 +102,9 @@ vi.mock('@/components/review/PublishReview', () => ({
   },
 }));
 
-vi.mock('@/features/conflict/conflictUtils', () => ({
-  isConflictUxEnabled: () => mocks.conflictUxEnabled,
+vi.mock('@/features/review/reviewChanges', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isReviewUxEnabled: () => mocks.reviewUxEnabled,
 }));
 
 vi.mock('@/components/workspaces/utils', async (importOriginal) => ({
@@ -201,7 +201,7 @@ describe('UnpublishedChanges', () => {
     mocks.locationPathname = '/editor';
     mocks.locationSearch = '';
     mocks.locationHash = '';
-    mocks.conflictUxEnabled = true;
+    mocks.reviewUxEnabled = true;
     mocks.publishUnwrap.mockRejectedValue({ status: 409 });
     mocks.publishAllChanges.mockReturnValue({
       unwrap: mocks.publishUnwrap,
@@ -272,8 +272,8 @@ describe('UnpublishedChanges', () => {
     });
   });
 
-  it('does not expose side-by-side review handlers when conflict UX is disabled', () => {
-    mocks.conflictUxEnabled = false;
+  it('does not expose side-by-side review handlers when the review UX is disabled', () => {
+    mocks.reviewUxEnabled = false;
 
     render(<UnpublishedChanges />);
 

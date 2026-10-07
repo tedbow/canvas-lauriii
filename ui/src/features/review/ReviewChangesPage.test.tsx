@@ -31,7 +31,7 @@ const mocks = vi.hoisted(() => ({
   publishPendingChanges: vi.fn(),
   pageComparisonProps: [] as any[],
   refetch: vi.fn(),
-  devConflictDetectionMode: true,
+  reviewUxEnabled: true,
 }));
 
 vi.mock('@/app/hooks', () => ({
@@ -102,8 +102,9 @@ vi.mock('@/features/versionComparison/PageVersionComparison', async () => {
   };
 });
 
-vi.mock('@/features/conflict/conflictUtils', () => ({
-  isConflictUxEnabled: () => mocks.devConflictDetectionMode,
+vi.mock('@/features/review/reviewChanges', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isReviewUxEnabled: () => mocks.reviewUxEnabled,
 }));
 
 vi.mock('@/services/pendingChangesApi', () => ({
@@ -202,7 +203,7 @@ describe('ReviewChangesPage', () => {
     mocks.discardChange.mockResolvedValue(undefined);
     mocks.refetch.mockResolvedValue(undefined);
     mocks.pageComparisonProps = [];
-    mocks.devConflictDetectionMode = true;
+    mocks.reviewUxEnabled = true;
   });
 
   it('renders the selected Page change with review labels', () => {
@@ -389,7 +390,7 @@ describe('ReviewChangesPage', () => {
     expect(screen.getByTestId('review-complete-state')).toBeInTheDocument();
   });
 
-  it('falls back to all non-conflicted Page changes on direct review visits', () => {
+  it('falls back to all Page changes on direct review visits', () => {
     renderReviewPage({
       initialPath: '/review',
       state: null,
@@ -401,8 +402,8 @@ describe('ReviewChangesPage', () => {
     );
   });
 
-  it('redirects to the editor when conflict detection mode is disabled', async () => {
-    mocks.devConflictDetectionMode = false;
+  it('redirects to the editor when the review UX is disabled', async () => {
+    mocks.reviewUxEnabled = false;
 
     renderReviewPage();
 

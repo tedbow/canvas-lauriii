@@ -3,7 +3,6 @@ import { createSlice } from '@reduxjs/toolkit';
 
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type {
-  ConflictError,
   ErrorResponse,
   PendingChanges,
 } from '@/services/pendingChangesApi';
@@ -12,7 +11,6 @@ import type { AutoSavesHashRecord } from '@/types/AutoSaves';
 export interface postPreviewSignalSliceState {
   postPreviewCompleted: boolean;
   previousPendingChanges?: PendingChanges;
-  conflicts?: ConflictError[];
   errors?: ErrorResponse;
   autoSavesHash: AutoSavesHashRecord;
   clientInstanceId: string;
@@ -36,9 +34,6 @@ export const publishReviewSlice = createSlice({
       action: PayloadAction<PendingChanges | undefined>,
     ) {
       state.previousPendingChanges = action.payload;
-    },
-    setConflicts(state, action: PayloadAction<ConflictError[] | undefined>) {
-      state.conflicts = action.payload;
     },
     setErrors(state, action: PayloadAction<ErrorResponse | undefined>) {
       state.errors = action.payload;
@@ -64,9 +59,6 @@ export const publishReviewSlice = createSlice({
     selectPreviousPendingChanges: (state): PendingChanges | undefined => {
       return state?.previousPendingChanges;
     },
-    selectConflicts: (state): ConflictError[] | undefined => {
-      return state?.conflicts;
-    },
     selectErrors: (state): ErrorResponse | undefined => {
       return state?.errors;
     },
@@ -82,7 +74,6 @@ export const publishReviewSlice = createSlice({
 export const {
   setPostPreviewCompleted,
   setPreviousPendingChanges,
-  setConflicts,
   setErrors,
   setAutoSavesHash,
   addOrUpdateAutoSavesHash,
@@ -91,7 +82,6 @@ export const {
 export const {
   selectPostPreviewCompletedStatus,
   selectPreviousPendingChanges,
-  selectConflicts,
   selectErrors,
   selectAutoSavesHash,
   selectClientInstanceId,

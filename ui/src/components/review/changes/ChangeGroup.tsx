@@ -2,8 +2,6 @@ import { useCallback, useMemo } from 'react';
 import { kebabCase } from 'lodash';
 import { Box, Checkbox, Flex, Text } from '@radix-ui/themes';
 
-import { isConflictUxEnabled } from '@/features/conflict/conflictUtils';
-
 import { getGroupLabel } from '../utils';
 import ChangeRow from './ChangeRow';
 
@@ -22,7 +20,6 @@ interface ChangeGroupProps {
   onDiscardClick: (change: UnpublishedChange) => void;
   onViewClick?: (change: UnpublishedChange) => void;
   isViewChangeAvailable?: (change: UnpublishedChange) => boolean;
-  onResolveConflict?: (change: UnpublishedChange) => void;
   pageStatusMap?: Record<
     string,
     { status: boolean; isNew?: boolean; hasUnsavedStatusChange?: boolean }
@@ -39,38 +36,29 @@ const ChangeGroup = ({
   onDiscardClick,
   onViewClick,
   isViewChangeAvailable,
-  onResolveConflict,
   pageStatusMap,
 }: ChangeGroupProps) => {
-  const conflictUxEnabled = isConflictUxEnabled();
   const showCheckboxes = selectable && !!setSelectedChanges;
-  const selectableChanges = useMemo(
-    () =>
-      conflictUxEnabled
-        ? changes.filter((change) => !change.hasConflict)
-        : changes,
-    [changes, conflictUxEnabled],
-  );
 
   const isGroupSelected = useMemo(() => {
-    if (!selectableChanges.length) {
+    if (!changes.length) {
       return false;
     }
 
-    const groupSelectionCount = selectableChanges.filter((change) =>
+    const groupSelectionCount = changes.filter((change) =>
       selectedChanges.some((selected) => selected.pointer === change.pointer),
     ).length;
 
     if (groupSelectionCount === 0) return false;
-    if (groupSelectionCount < selectableChanges.length) return 'indeterminate';
+    if (groupSelectionCount < changes.length) return 'indeterminate';
     return true;
-  }, [selectableChanges, selectedChanges]);
+  }, [changes, selectedChanges]);
 
   const handleGroupSelection = useCallback(() => {
     if (!setSelectedChanges) {
       return;
     }
-    const groupPointers = selectableChanges.map((change) => change.pointer);
+    const groupPointers = changes.map((change) => change.pointer);
     // If the group is fully selected, deselect all changes in the group
     if (isGroupSelected === true) {
       setSelectedChanges(
@@ -83,14 +71,14 @@ const ChangeGroup = ({
     // If the group is not fully selected, select remaining changes in the group
     setSelectedChanges([
       ...selectedChanges,
-      ...selectableChanges.filter(
+      ...changes.filter(
         (change) =>
           !selectedChanges.some(
             (selected) => selected.pointer === change.pointer,
           ),
       ),
     ]);
-  }, [isGroupSelected, selectableChanges, selectedChanges, setSelectedChanges]);
+  }, [isGroupSelected, changes, selectedChanges, setSelectedChanges]);
 
   const groupLabel = getGroupLabel(entityType);
 
@@ -101,7 +89,7 @@ const ChangeGroup = ({
           {showCheckboxes && (
             <Checkbox
               size="1"
-              disabled={isBusy || selectableChanges.length === 0}
+              disabled={isBusy || changes.length === 0}
               checked={isGroupSelected}
               onCheckedChange={handleGroupSelection}
               aria-label={`Select all changes in ${groupLabel}`}
@@ -122,7 +110,6 @@ const ChangeGroup = ({
             onDiscardClick={onDiscardClick}
             onViewClick={onViewClick}
             isViewChangeAvailable={isViewChangeAvailable}
-            onResolveConflict={onResolveConflict}
             pageStatusMap={pageStatusMap}
           />
         ))}

@@ -5,20 +5,14 @@ import { useLocation, useNavigate, useParams } from 'react-router';
 import { useAppDispatch, useAppSelector } from '@/app/hooks';
 import PublishReview from '@/components/review/PublishReview';
 import {
-  selectConflicts,
   selectErrors,
   selectPreviousPendingChanges,
-  setConflicts,
 } from '@/components/review/PublishReview.slice';
 import { usePublishPendingChanges } from '@/components/review/usePublishPendingChanges';
 import {
   resetCodeEditor,
   setForceRefresh,
 } from '@/features/code-editor/codeEditorSlice';
-import {
-  getConflictRouteForChange,
-  isConflictUxEnabled,
-} from '@/features/conflict/conflictUtils';
 import { FORM_TYPES } from '@/features/form/constants';
 import { clearFieldValues } from '@/features/form/formStateSlice';
 import { setInitialized } from '@/features/layout/layoutModelSlice';
@@ -26,6 +20,7 @@ import { selectPageData } from '@/features/pageData/pageDataSlice';
 import {
   getReviewRouteForChange,
   isReviewableChange,
+  isReviewUxEnabled,
 } from '@/features/review/reviewChanges';
 import {
   clearSelection,
@@ -58,7 +53,6 @@ const REVIEW_CHANGES_QUERY_PARAM = 'reviewChanges';
 
 const UnpublishedChanges = () => {
   const previousPendingChanges = useAppSelector(selectPreviousPendingChanges);
-  const conflicts = useAppSelector(selectConflicts);
   const errorResponse = useAppSelector(selectErrors);
   const selectedComponent = useAppSelector(selectSelectedComponentUuid);
   const [discardChange, { isLoading: isDiscarding }] =
@@ -110,7 +104,7 @@ const UnpublishedChanges = () => {
     entityType: 'canvas_page',
   });
   const pageItems = contentListData?.items;
-  const conflictUxEnabled = isConflictUxEnabled();
+  const reviewUxEnabled = isReviewUxEnabled();
 
   // If either the selected component or the preview layout is being updated, disable the Publish button.
   const isUpdating = isUpdatingComponent || isUpdatingPreview;
@@ -223,7 +217,7 @@ const UnpublishedChanges = () => {
   };
 
   const navigateToReview = (selectedChanges: UnpublishedChange[]) => {
-    if (!conflictUxEnabled) {
+    if (!reviewUxEnabled) {
       return;
     }
     const reviewableChanges = selectedChanges.filter(isReviewableChange);
@@ -244,14 +238,6 @@ const UnpublishedChanges = () => {
 
     try {
       await discardChange(selectedChange).unwrap();
-      const remainingConflicts = conflicts?.filter(
-        (conflict) => conflict.source.pointer !== selectedChange.pointer,
-      );
-      dispatch(
-        setConflicts(
-          remainingConflicts?.length ? remainingConflicts : undefined,
-        ),
-      );
       // After discarding, refresh the editor state from canonical server data.
       dispatch(componentAndLayoutApi.util.invalidateTags([{ type: 'Layout' }]));
       dispatch(
@@ -304,14 +290,6 @@ const UnpublishedChanges = () => {
     }
   };
 
-  const conflictCount = useMemo(
-    () =>
-      conflictUxEnabled
-        ? unpublishedChanges.filter((change) => change.hasConflict).length
-        : 0,
-    [conflictUxEnabled, unpublishedChanges],
-  );
-
   // Create a map of entity_id -> { status, isNew, hasUnsavedStatusChange } for quick lookup
   const pageStatusMap = useMemo(() => {
     if (!pageItems) return {};
@@ -335,26 +313,18 @@ const UnpublishedChanges = () => {
       isUpdating={isUpdating}
       isFetching={isFetching}
       changes={unpublishedChanges}
-      conflictCount={conflictCount}
       errors={errorResponse}
       workspace={activeWorkspace}
       onOpenChangeCallback={onOpenChangeHandler}
       onPublishClick={onPublishClick}
       onDiscardClick={onDiscardClick}
       onViewClick={
-        conflictUxEnabled ? (change) => navigateToReview([change]) : undefined
+        reviewUxEnabled ? (change) => navigateToReview([change]) : undefined
       }
-      isViewChangeAvailable={conflictUxEnabled ? isReviewableChange : undefined}
+      isViewChangeAvailable={reviewUxEnabled ? isReviewableChange : undefined}
       onTransitionStatus={onTransitionStatus}
       onSchedulePublish={onSchedulePublish}
       onCancelSchedule={onCancelSchedule}
-      onResolveConflict={(change) => {
-        if (change && conflictUxEnabled) {
-          navigate(getConflictRouteForChange(change));
-          return;
-        }
-        refetch();
-      }}
       isPublishing={isPublishing}
       isDiscarding={isDiscarding}
       isTransitioning={isTransitioning}

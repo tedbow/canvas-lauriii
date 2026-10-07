@@ -3,12 +3,12 @@ import { Navigate, useLocation, useNavigate, useParams } from 'react-router';
 
 import { useAppDispatch } from '@/app/hooks';
 import { usePublishPendingChanges } from '@/components/review/usePublishPendingChanges';
-import { isConflictUxEnabled } from '@/features/conflict/conflictUtils';
 import {
   findReviewIndex,
   getReviewQueue,
   getReviewRouteFromEntry,
   getReviewRouteStatePointers,
+  isReviewUxEnabled,
 } from '@/features/review/reviewChanges';
 import {
   ReviewChangesView,
@@ -40,7 +40,7 @@ const getPendingChangeFromEntry = (
 });
 
 const ReviewChangesPage = () =>
-  isConflictUxEnabled() ? (
+  isReviewUxEnabled() ? (
     <EnabledReviewChangesPage />
   ) : (
     <Navigate to="/editor" replace />
@@ -132,9 +132,7 @@ const EnabledReviewChangesPage = () => {
     () =>
       selectedPointers.flatMap((pointer) => {
         const change = pendingChangesSnapshot?.[pointer];
-        return change && !change.hasConflict
-          ? [getPendingChangeFromEntry(pointer, change)]
-          : [];
+        return change ? [getPendingChangeFromEntry(pointer, change)] : [];
       }),
     [pendingChangesSnapshot, selectedPointers],
   );

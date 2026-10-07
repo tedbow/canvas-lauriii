@@ -1,3 +1,5 @@
+import { getCanvasSettings } from '@/utils/drupal-globals';
+
 import type {
   PendingChange,
   PendingChanges,
@@ -12,14 +14,18 @@ export type ReviewChangeEntry = {
 const isPointerList = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
 
+// The side-by-side review of a Page change is only available in dev mode.
+export const isReviewUxEnabled = (): boolean =>
+  getCanvasSettings()?.devMode === true;
+
 export const getReviewRouteForChange = (
   change: Pick<UnpublishedChange, 'entity_type' | 'entity_id'>,
 ): string =>
   `/review/${change.entity_type}/${encodeURIComponent(String(change.entity_id))}`;
 
 export const isReviewableChange = (
-  change: Pick<UnpublishedChange, 'entity_type' | 'hasConflict'>,
-): boolean => change.entity_type === 'canvas_page' && !change.hasConflict;
+  change: Pick<UnpublishedChange, 'entity_type'>,
+): boolean => change.entity_type === 'canvas_page';
 
 export const getReviewRouteStatePointers = (
   state: unknown,

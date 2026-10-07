@@ -13,7 +13,7 @@ const pendingPointer = (canvasPageId: string | number) =>
 
 const getPendingChanges = async (page: Page): Promise<PendingResponse> => {
   const response = await page.request.get('/canvas/api/v0/auto-saves/pending');
-  expect([200, 409]).toContain(response.status());
+  expect(response.status()).toBe(200);
   return response.json();
 };
 
@@ -53,7 +53,7 @@ const openPublishReview = async (page: Page) => {
 
 test.describe('Review selected changes', () => {
   test.use({
-    modules: ['canvas_dev_cd'],
+    modules: ['canvas_dev_mode'],
     enableTestExtensions: true,
   });
 
@@ -98,12 +98,10 @@ test.describe('Review selected changes', () => {
       page.getByRole('button', { name: 'Publish selected changes' }),
     ).toBeEnabled();
     await expect(
-      page
-        .getByTestId('conflict-published-version-card')
-        .getByText('Old version'),
+      page.getByTestId('published-version-card').getByText('Old version'),
     ).toBeVisible();
     await expect(
-      page.getByTestId('conflict-new-version-card').getByText('New version'),
+      page.getByTestId('new-version-card').getByText('New version'),
     ).toBeVisible();
 
     await page.getByRole('button', { name: 'Next' }).click();
@@ -112,12 +110,10 @@ test.describe('Review selected changes', () => {
     );
     await expect(page.getByText('Review 2 of 2')).toBeVisible();
     await expect(
-      page
-        .getByTestId('conflict-published-version-card')
-        .getByText('Old version'),
+      page.getByTestId('published-version-card').getByText('Old version'),
     ).toBeVisible();
     await expect(
-      page.getByTestId('conflict-new-version-card').getByText('New version'),
+      page.getByTestId('new-version-card').getByText('New version'),
     ).toBeVisible();
 
     const discardRequestPromise = page.waitForRequest(
@@ -178,7 +174,7 @@ test.describe('Review selected changes disabled', () => {
     enableTestExtensions: true,
   });
 
-  test('hides side-by-side review actions and redirects direct review visits when conflict detection is disabled', async ({
+  test('hides side-by-side review actions and redirects direct review visits when dev mode is disabled', async ({
     page,
     drupal,
     canvas,

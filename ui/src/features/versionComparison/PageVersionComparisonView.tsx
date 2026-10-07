@@ -92,7 +92,7 @@ const buildPageVersionPreviewUrl = (
   entityId: string,
   published: boolean,
 ): string => {
-  const basePath = window.location.pathname.split(/\/(?:conflict|review)\b/)[0];
+  const basePath = window.location.pathname.split(/\/review\b/)[0];
   const versionParam = published ? '?version=published' : '';
   return `${window.location.origin}${basePath}/version-preview/${entityType}/${entityId}/full${versionParam}`;
 };
@@ -391,7 +391,7 @@ const PreviewCard = ({
   return (
     <section
       className={cardClassName}
-      data-testid={`conflict-${version}-version-card`}
+      data-testid={`${version}-version-card`}
       onClick={onSelect ? handleSelect : undefined}
     >
       <div className={headerClassName}>
