@@ -10,6 +10,7 @@ use Drupal\Component\Datetime\TimeInterface;
 use Drupal\Core\Cache\CacheBackendInterface;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
 use Drupal\Core\Entity\ContentEntityInterface;
+use Drupal\Core\Entity\ContentEntityTypeInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\TranslatableInterface;
@@ -137,36 +138,49 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
       if ($entity_id === NULL) {
         return;
       }
-      $to_save = $storage->loadUnchanged($entity_id);
-      if (!$to_save instanceof ContentEntityInterface) {
+      $this->persistInWorkspace(function () use ($storage, $staged, $entity_id, $row): void {
+        // A buffer row holds one translation. Apply it onto the current staged
+        // copy, loaded inside the workspace: loading outside it would overlay
+        // the row onto Live and the flush of one translation would revert the
+        // sibling translations' drafts flushed just before it.
+        $storage->resetCache([$entity_id]);
         $to_save = $storage->load($entity_id);
-      }
-      if (!$to_save instanceof ContentEntityInterface) {
-        return;
-      }
-      $to_save->enforceIsNew(FALSE);
-      // Apply the snapshot onto the translation it was taken from, not onto
-      // the default translation.
-      $langcode = $row['langcode'] ?? NULL;
-      if (\is_string($langcode) && $to_save->hasTranslation($langcode)) {
-        $to_save = $to_save->getTranslation($langcode);
-      }
-      foreach ($staged->getFields() as $field_name => $items) {
-        if (!$to_save->hasField($field_name)) {
-          continue;
+        if (!$to_save instanceof ContentEntityInterface) {
+          return;
         }
-        // Computed fields that are user-editable and persisted on save (e.g.
-        // `path`, `moderation_state`) must be applied like stored fields.
-        // @see \Drupal\canvas\AutoSave\AutoSaveManager::isPersistedComputedField()
-        if ($items->getFieldDefinition()->isComputed() && !AutoSaveManager::isPersistedComputedField($items->getFieldDefinition())) {
-          continue;
+        $to_save->enforceIsNew(FALSE);
+        // Apply the snapshot onto the translation it was taken from, not onto
+        // the default translation. A translation added in Live after the copy
+        // was staged is not on the staged copy yet: add it.
+        $langcode = $row['langcode'] ?? NULL;
+        if (\is_string($langcode) && $langcode !== $to_save->language()->getId()) {
+          $to_save = $to_save->hasTranslation($langcode)
+            ? $to_save->getTranslation($langcode)
+            : $to_save->addTranslation($langcode);
         }
-        $to_save->set($field_name, $items->getValue());
-      }
-      $this->persistInWorkspace(
-        fn () => $this->contentEntityPersist->persist($to_save, $row['client_id'] ?? NULL),
-        self::workspaceIdFromKey($key),
-      );
+        // Identity and revision metadata describe the revision the snapshot
+        // was taken from, not the staged revision being written.
+        $entity_type = $to_save->getEntityType();
+        $skip = \array_filter([
+          $entity_type->getKey('id'),
+          $entity_type->getKey('uuid'),
+          $entity_type->getKey('revision'),
+          ...($entity_type instanceof ContentEntityTypeInterface ? \array_values($entity_type->getRevisionMetadataKeys()) : []),
+        ]);
+        foreach ($staged->getFields() as $field_name => $items) {
+          if (!$to_save->hasField($field_name) || \in_array($field_name, $skip, TRUE)) {
+            continue;
+          }
+          // Computed fields that are user-editable and persisted on save (e.g.
+          // `path`, `moderation_state`) must be applied like stored fields.
+          // @see \Drupal\canvas\AutoSave\AutoSaveManager::isPersistedComputedField()
+          if ($items->getFieldDefinition()->isComputed() && !AutoSaveManager::isPersistedComputedField($items->getFieldDefinition())) {
+            continue;
+          }
+          $to_save->set($field_name, $items->getValue());
+        }
+        $this->contentEntityPersist->persist($to_save, $row['client_id'] ?? NULL);
+      }, self::workspaceIdFromKey($key));
       $this->staticCache->delete($key);
       $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
       $still = $this->buffer->get($key);
