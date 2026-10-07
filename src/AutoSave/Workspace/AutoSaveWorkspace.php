@@ -9,13 +9,9 @@ use Drupal\workspaces\WorkspaceManagerInterface;
 /**
  * Identifies the default (Main) workspace backing Canvas auto-saves.
  *
- * The ID is `canvas_default` (not `canvas_auto_save`) on purpose: Phase 2
- * retains this exact workspace as the visible "Main workspace" now that
- * Canvas editing is fully workspace-scoped, and renaming a workspace after
- * sites hold staged data would require migrating its tracked associations.
- *
  * Canvas staging targets the active workspace; this workspace is the
  * fallback for editing sessions that have not selected a named workspace.
+ * It is created at install time and cannot be deleted.
  */
 final class AutoSaveWorkspace {
 

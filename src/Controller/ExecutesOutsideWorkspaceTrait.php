@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\Controller;
 
+use Drupal\workspaces\WorkspaceManagerInterface;
+
 /**
  * Runs callables outside the auto-save workspace.
  *
@@ -11,7 +13,7 @@ namespace Drupal\canvas\Controller;
  * so the few writes that must target Live — content deletion, translation
  * removal — have to explicitly step outside it. The using class must inject
  * the `workspaces.manager` service into a nullable `$workspaceManager`
- * property.
+ * property (NULL only while a 1.x site has not run canvas_update_11201()).
  */
 trait ExecutesOutsideWorkspaceTrait {
 
@@ -25,7 +27,11 @@ trait ExecutesOutsideWorkspaceTrait {
    *   The callable's return value.
    */
   private function executeOutsideWorkspace(callable $callable): mixed {
-    return $this->workspaceManager->executeOutsideWorkspace($callable);
+    return $this->workspaceManager()->executeOutsideWorkspace($callable);
+  }
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
   }
 
 }

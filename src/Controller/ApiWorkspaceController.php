@@ -38,15 +38,14 @@ final class ApiWorkspaceController extends ApiControllerBase {
     private readonly AccountInterface $currentUser,
     #[Autowire(service: 'transliteration')]
     private readonly TransliterationInterface $transliteration,
-    // Nullable, resolved to NULL until the Workspaces module is installed
-    // (before database updates run), so the container can compile. The
-    // routes are unreachable until then.
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   private function workspaceManager(): WorkspaceManagerInterface {
-    return $this->workspaceManager;
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
   }
 
   /**

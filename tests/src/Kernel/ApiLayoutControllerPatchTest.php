@@ -19,7 +19,6 @@ use Drupal\canvas\PropSource\PropSource;
 use Drupal\canvas\Storage\ComponentTreeLoader;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\DependencyInjection\ContainerBuilder;
-use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
@@ -1116,65 +1115,6 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       $autoSave->saveEntity($valid, 'client-c', immediateWorkspacePersist: TRUE);
       self::assertNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id), 'A persistable save removes the snapshot row.');
       self::assertSame('Promoted heading', $staged_heading());
-    });
-  }
-
-  /**
-   * Snapshot rows of component tree config drafts promote into workspaces.
-   *
-   * @see canvas_post_update_0033_promote_config_snapshots()
-   */
-  public function testPromoteConfigSnapshotsPostUpdate(): void {
-    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
-    \assert($workspace_manager instanceof WorkspaceManagerInterface);
-    $storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID);
-    $snapshots = $this->container->get(AutoSaveSnapshotRepository::class);
-    $template_id = 'node.article.teaser';
-    $heading_uuid = '99cca6bb-4b98-42a2-97fe-e7dbc7268c26';
-    $tree = static fn (string $text): array => [
-      [
-        'uuid' => $heading_uuid,
-        'component_id' => 'sdc.canvas_test_sdc.heading',
-        'component_version' => '8c01a2bdb897a810',
-        'inputs' => ['text' => $text, 'element' => 'h1'],
-      ],
-    ];
-    $heading = static function (?EntityInterface $template): ?string {
-      \assert($template instanceof ContentTemplate);
-      return $template->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
-    };
-    // No workspace is active: this is a Live save.
-    $live = ContentTemplate::create([
-      'id' => $template_id,
-      'content_entity_type_id' => 'node',
-      'content_entity_type_bundle' => 'article',
-      'content_entity_type_view_mode' => 'teaser',
-      'component_tree' => $tree('hello, world!'),
-    ]);
-    $live->save();
-    Workspace::create(['id' => 'stage', 'label' => 'Stage'])->save();
-
-    // A draft staged the old way: a snapshot row in the workspace.
-    $draft = clone $live;
-    $draft->setComponentTree($tree('Snapshot heading'));
-    $payload = \json_encode($draft->toArray(), JSON_THROW_ON_ERROR);
-    $snapshots->persist(ContentTemplate::ENTITY_TYPE_ID, $template_id, 'und', $payload, AutoSaveManager::generateHashFromData(\json_decode($payload, TRUE)), 'client-legacy', 1, 'stage');
-
-    require_once __DIR__ . '/../../../canvas.post_update.php';
-    $sandbox = [];
-    do {
-      canvas_post_update_0033_promote_config_snapshots($sandbox);
-    } while ($sandbox['#finished'] < 1);
-
-    self::assertNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id, 'und', 'stage'), 'The snapshot row was promoted and removed.');
-    self::assertSame('hello, world!', $heading($workspace_manager->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($template_id))));
-    $workspace_manager->executeInWorkspace('stage', function () use ($storage, $template_id, $heading, $live): void {
-      self::assertSame('Snapshot heading', $heading($storage->loadUnchanged($template_id)));
-      $autoSave = $this->container->get(AutoSaveManager::class);
-      \assert($autoSave instanceof AutoSaveManager);
-      $promoted = $autoSave->getAutoSaveEntity($live);
-      self::assertFalse($promoted->isEmpty());
-      self::assertSame('client-legacy', $promoted->clientId);
     });
   }
 

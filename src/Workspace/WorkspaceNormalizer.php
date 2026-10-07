@@ -30,20 +30,28 @@ final class WorkspaceNormalizer {
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly AccountInterface $currentUser,
     private readonly ModuleHandlerInterface $moduleHandler,
-    // Nullable, resolved to NULL until the Workspaces module is installed
-    // (before database updates run), so the container can compile.
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'workspaces.tracker')]
-    private readonly WorkspaceTrackerInterface $workspaceTracker,
+    private readonly ?WorkspaceTrackerInterface $workspaceTracker,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
+
+  private function workspaceTracker(): WorkspaceTrackerInterface {
+    return $this->workspaceTracker ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   /**
    * The ID of the current user's active workspace, or NULL when on Live.
    */
   public function activeWorkspaceId(): ?string {
-    return $this->workspaceManager->hasActiveWorkspace()
-      ? (string) $this->workspaceManager->getActiveWorkspace()?->id()
+    return $this->workspaceManager()->hasActiveWorkspace()
+      ? (string) $this->workspaceManager()->getActiveWorkspace()?->id()
       : NULL;
   }
 
@@ -82,7 +90,7 @@ final class WorkspaceNormalizer {
    */
   private function countPendingChanges(WorkspaceInterface $workspace): int {
     $count = 0;
-    foreach ($this->workspaceTracker->getTrackedEntities((string) $workspace->id()) as $entity_type_id => $revision_map) {
+    foreach ($this->workspaceTracker()->getTrackedEntities((string) $workspace->id()) as $entity_type_id => $revision_map) {
       if ($entity_type_id === 'path_alias') {
         continue;
       }
