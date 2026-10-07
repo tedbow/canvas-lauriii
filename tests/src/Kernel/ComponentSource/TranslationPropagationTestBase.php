@@ -467,6 +467,12 @@ abstract class TranslationPropagationTestBase extends CanvasKernelTestBase {
     self::assertCount(2, $versions);
     [$active_version, $old_version] = $versions;
     self::assertSame($this->originalVersion, $old_version);
+    // The component evolved in Live, but the draft is read inside the staging
+    // workspace, where workspace_config caches workspace-safe config under a
+    // per-workspace key. A Live write only refreshes Live's cache entry, so the
+    // workspace would keep serving the pre-evolution component.
+    // @todo Remove once workspace_config invalidates per-workspace config cache entries on Live writes.
+    $this->container->get('cache.config')->deleteAll();
 
     // A single preview through the real layout GET endpoint reconciles the base
     // draft AND every translation to the new version, writing them to auto-save:
