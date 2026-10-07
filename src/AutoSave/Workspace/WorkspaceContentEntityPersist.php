@@ -23,6 +23,11 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  */
 final class WorkspaceContentEntityPersist {
 
+  /**
+   * The entity object currently being saved as a draft, if any.
+   */
+  private ?ContentEntityInterface $saving = NULL;
+
   public function __construct(
     private readonly AutoSaveSnapshotRepository $snapshotRepository,
     private readonly AutoSaveRevisionPruner $revisionPruner,
@@ -30,6 +35,18 @@ final class WorkspaceContentEntityPersist {
     #[Autowire(service: 'logger.channel.canvas')]
     private readonly LoggerInterface $logger,
   ) {}
+
+  /**
+   * Whether the given entity object is being saved as a draft right now.
+   *
+   * Lets save-time hooks tell a staged write apart from a Live save of the
+   * same entity.
+   *
+   * @see \Drupal\canvas\ContentTranslation\ComponentTreeFieldSymmetricalTranslationSynchronizer::synchronizeFields()
+   */
+  public function isStagingWriteOf(ContentEntityInterface $entity): bool {
+    return $this->saving === $entity;
+  }
 
   public function persist(ContentEntityInterface $entity, ?string $clientId): void {
     // Never mutate the caller's entity object: saving inside the auto-save
@@ -41,7 +58,13 @@ final class WorkspaceContentEntityPersist {
     $entity_id = (string) $entity->id();
     $langcode = WorkspaceAutoSave::snapshotLangcode($entity);
     try {
-      $to_save->save();
+      $this->saving = $to_save;
+      try {
+        $to_save->save();
+      }
+      finally {
+        $this->saving = NULL;
+      }
       $this->revisionPruner->recordAndPrune($to_save);
       // The revision is now the current staged state; a snapshot row from an
       // earlier failed persist would otherwise shadow it forever.
