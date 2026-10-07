@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\canvas\Kernel\Plugin\Canvas\ComponentSource;
 
+use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\ComponentSource\ComponentSourceManager;
 use Drupal\canvas\Controller\ApiAutoSaveController;
+use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\Component;
 use Drupal\canvas\Entity\ComponentInterface;
 use Drupal\canvas\Entity\Page;
@@ -24,6 +27,7 @@ use Drupal\Tests\canvas\Kernel\ApiLayoutControllerTestBase;
 use Drupal\Tests\canvas\Traits\CanvasFieldTrait;
 use Drupal\Tests\canvas\Traits\ConstraintViolationsTestTrait;
 use Drupal\Tests\media\Traits\MediaTypeCreationTrait;
+use Drupal\workspaces\Entity\Workspace;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
@@ -71,8 +75,10 @@ final class FallbackInputTest extends ApiLayoutControllerTestBase {
     'editor',
     // Our module!
     'canvas',
-    // Canvas auto-save stages changes in a workspace.
+    // Canvas auto-save stages changes in a workspace, as workspace-scoped
+    // configuration or as a snapshot.
     'workspaces',
+    'workspace_config',
     // Test components we can force fallback and recovery on.
     'datetime',
     'canvas_test_sdc',
@@ -84,9 +90,20 @@ final class FallbackInputTest extends ApiLayoutControllerTestBase {
   protected function setUp(): void {
     parent::setUp();
     // The Workspaces module hooks into every entity save, so its schemas must
-    // exist for any entity save to work.
+    // exist for any entity save to work. Auto-save staging needs the Main
+    // workspace, workspace_config's tracking entity and the snapshot entity
+    // type, exactly as on an installed site.
+    // @see \Drupal\Tests\canvas\Kernel\CanvasKernelTestBase::setUp()
     $this->installEntitySchema('workspace');
     $this->installSchema('workspaces', ['workspace_association', 'workspace_association_revision']);
+    $this->installEntitySchema('workspace_config');
+    $this->installEntitySchema(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
+    Workspace::create([
+      'id' => AutoSaveWorkspace::ID,
+      'label' => AutoSaveWorkspace::LABEL,
+      'uid' => 1,
+      'provider' => 'default',
+    ])->save();
     // Install and configure the default theme.
     $this->container->get(ThemeInstallerInterface::class)->install(['stark']);
     $this->container->get(ConfigFactoryInterface::class)->getEditable('system.theme')->set('default', 'stark')->save();
@@ -127,7 +144,15 @@ final class FallbackInputTest extends ApiLayoutControllerTestBase {
   #[TestWith([TRUE])]
   #[TestWith([FALSE])]
   public function testFallbackInputCanBeRecovered(bool $publish = FALSE): void {
-    $this->setUpCurrentUser(permissions: ['view media', 'access content', Page::EDIT_PERMISSION]);
+    $this->setUpCurrentUser(permissions: [
+      'view media',
+      'access content',
+      Page::EDIT_PERMISSION,
+      AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
+    ]);
     $component_to_recover = Component::load('sdc.canvas_test_sdc.image');
     \assert($component_to_recover instanceof ComponentInterface);
     $component_to_edit = Component::load('sdc.canvas_test_sdc.heading');
