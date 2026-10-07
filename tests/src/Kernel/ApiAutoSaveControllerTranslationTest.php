@@ -8,7 +8,6 @@ namespace Drupal\Tests\canvas\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\Controller\ApiAutoSaveController;
-use Drupal\canvas\Controller\ErrorCodesEnum;
 use Drupal\canvas\Entity\Component;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\JavaScriptComponent;
@@ -504,8 +503,8 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
   /**
    * Tests publishing an auto-saved *non-default* translation.
    *
-   * The auto-save snapshot belongs to whichever translation was edited. When a
-   * non-default translation is auto-saved and then published, the changes must
+   * The draft belongs to whichever translation was edited. When a non-default
+   * translation is auto-saved and the workspace is published, the changes must
    * land on that translation and must not clobber the default translation. The
    * edited column here is `inputs`, which is translatable in both the symmetric
    * and asymmetric models, so the outcome is identical for both.
@@ -592,25 +591,25 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $all_auto_saves = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
     self::assertArrayHasKey($page_key, $all_auto_saves, 'The auto-save entry must be stored for the Spanish translation.');
 
-    // POST must reject the non-default-translation key with 403
-    // UnexpectedItemInPublishRequest, because GET never exposes it to the
-    // client — there is nothing to publish from the client's perspective.
-    // @todo This should be publishable once https://git.drupalcode.org/project/canvas/-/work_items/3591703 is fixed and
-    //   asymmetrical translations are supported in https://git.drupalcode.org/project/canvas/-/work_items/3571130.
-    $response = $this->makePublishAllRequest([
-      $page_key => \array_diff_key($all_auto_saves[$page_key], \array_flip(AutoSaveManager::AUTO_SAVE_INTERNAL_PROPERTIES)),
-    ]);
-    self::assertEquals(Response::HTTP_FORBIDDEN, $response->getStatusCode(), (string) $response->getContent());
-    $decoded = \json_decode((string) $response->getContent(), TRUE);
-    self::assertCount(1, $decoded['errors']);
-    self::assertSame(ErrorCodesEnum::UnexpectedItemInPublishRequest->value, $decoded['errors'][0]['code']);
-    self::assertSame($page_key, $decoded['errors'][0]['source']['pointer']);
+    // The workspace is the unit of publish: the request body carries no item
+    // selection, so the hidden Spanish draft publishes along with everything
+    // else the workspace holds.
+    $response = $this->makePublishAllRequest();
+    self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+    self::assertSame([], $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
 
-    // The default-translation content must be untouched (the POST was rejected).
-    $unpublished = $page_storage->loadUnchanged($page_id);
-    \assert($unpublished instanceof Page);
-    self::assertSame('Hello A (en)', self::getItemInputText($unpublished, self::UUID_A), 'English translation must be untouched after rejected publish.');
-    self::assertSame('Hola A (es)', self::getItemInputText($unpublished->getTranslation('es'), self::UUID_A), 'Spanish translation must be untouched after rejected publish.');
+    // The Spanish edit landed on the Spanish translation only; the default
+    // translation is untouched.
+    $published = $page_storage->loadUnchanged($page_id);
+    \assert($published instanceof Page);
+    self::assertSame('Hello A (en)', self::getItemInputText($published, self::UUID_A), 'English translation must be untouched.');
+    self::assertSame('English A', self::getItem($published, self::UUID_A)->getLabel());
+    self::assertSame('/english-page', $published->get('path')->alias);
+    $es_published = $published->getTranslation('es');
+    \assert($es_published instanceof Page);
+    self::assertSame('Hola A editado (es)', self::getItemInputText($es_published, self::UUID_A), 'Spanish edit must be published.');
+    self::assertSame('Spanish A edited', self::getItem($es_published, self::UUID_A)->getLabel());
+    self::assertSame('/spanish-page-edited', $es_published->get('path')->alias);
   }
 
   /**

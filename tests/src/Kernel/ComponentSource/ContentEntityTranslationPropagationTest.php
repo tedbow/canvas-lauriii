@@ -545,7 +545,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    */
   public function testPublishAfterPropagationSucceeds(): void {
     $this->config('system.theme')->set('default', 'stark')->save();
-    $this->setUpCurrentUser([], [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], $this->previewAndPublishPermissions());
 
     $page = $this->createPageWithTranslation();
     $page_id = $page->id();
@@ -706,7 +706,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    */
   public function testDiscardAfterPropagationClearsAllTranslations(): void {
     $this->config('system.theme')->set('default', 'stark')->save();
-    $this->setUpCurrentUser([], [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], $this->previewAndPublishPermissions());
 
     $page = $this->createPageWithTranslation();
     $page_id = $page->id();
@@ -741,7 +741,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    */
   public function testDeletingTranslationDiscardsItsSnapshot(): void {
     $this->config('system.theme')->set('default', 'stark')->save();
-    $this->setUpCurrentUser([], [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], $this->previewAndPublishPermissions());
 
     $page = $this->createPageWithTranslation();
     $page_id = $page->id();
