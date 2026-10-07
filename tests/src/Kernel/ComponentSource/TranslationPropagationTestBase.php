@@ -101,6 +101,12 @@ abstract class TranslationPropagationTestBase extends CanvasKernelTestBase {
     $this->installConfig(['language']);
 
     ConfigurableLanguage::createFromLangcode('es')->save();
+    // Adding the first non-default language only invalidates the container.
+    // The config manager built during module installation still lists no
+    // `language.es` collection, so a workspace publish's ConfigImporter would
+    // write the staged `es` override through a schema-casting Config object
+    // instead of a LanguageConfigOverride. Rebuild so it knows the collection.
+    $this->container->get('kernel')->rebuildContainer();
 
     $this->jsComponent = JavaScriptComponent::create([
       'machineName' => 'translatable_js_component',

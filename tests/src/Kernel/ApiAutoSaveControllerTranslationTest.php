@@ -123,6 +123,12 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->installEntitySchema('path_alias');
     $this->installConfig(['language']);
     ConfigurableLanguage::createFromLangcode('es')->save();
+    // Adding the first non-default language only invalidates the container.
+    // The config manager built during module installation still lists no
+    // `language.es` collection, so a workspace publish's ConfigImporter would
+    // write the staged `es` override through a schema-casting Config object
+    // instead of a LanguageConfigOverride. Rebuild so it knows the collection.
+    $this->container->get('kernel')->rebuildContainer();
     $this->installEntitySchema(Page::ENTITY_TYPE_ID);
     $this->enableContentTranslation(Page::ENTITY_TYPE_ID, Page::ENTITY_TYPE_ID);
     $this->installEntitySchema('node');
