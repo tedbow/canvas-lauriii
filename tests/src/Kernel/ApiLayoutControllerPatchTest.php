@@ -17,7 +17,7 @@ use Drupal\canvas\Plugin\Field\FieldTypeOverride\ImageItemOverride;
 use Drupal\canvas\PropSource\PropSource;
 use Drupal\canvas\Storage\ComponentTreeLoader;
 use Drupal\Core\Config\ConfigFactoryInterface;
-use Drupal\Core\DependencyInjection\ContainerBuilder;
+use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
@@ -29,7 +29,6 @@ use Drupal\node\Entity\Node;
 use Drupal\Tests\canvas\TestSite\CanvasTestSetup;
 use Drupal\Tests\canvas\Traits\AutoSaveRequestTestTrait;
 use Drupal\Tests\canvas\Traits\CanvasFieldTrait;
-use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
 use Drupal\workspaces\Entity\Workspace;
 use Drupal\workspaces\WorkspaceManagerInterface;
 use Drupal\workspaces\WorkspaceTrackerInterface;
@@ -53,20 +52,8 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 #[Group('#slow')]
 final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
 
-  use WorkspaceConfigTestTrait;
   use CanvasFieldTrait;
   use AutoSaveRequestTestTrait;
-
-  /**
-   * {@inheritdoc}
-   *
-   * Publishing runs through workspace_config, which expects its key-value
-   * decoration to be in place as on a real site.
-   */
-  public function register(ContainerBuilder $container): void {
-    parent::register($container);
-    $this->registerWorkspaceConfigKeyValue($container);
-  }
 
   /**
    * {@inheritdoc}

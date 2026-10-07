@@ -10,6 +10,7 @@ use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\PageRegion;
 use Drupal\canvas\Entity\PageVariant;
 use Drupal\canvas\Plugin\Canvas\ComponentSource\Marker;
+use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Url;
@@ -20,6 +21,7 @@ use Drupal\Tests\canvas\Kernel\Traits\VfsPublicStreamUrlTrait;
 use Drupal\Tests\canvas\Traits\AutoSaveManagerTestTrait;
 use Drupal\Tests\canvas\Traits\ConstraintViolationsTestTrait;
 use Drupal\Tests\user\Traits\UserCreationTrait;
+use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -31,6 +33,7 @@ abstract class ApiLayoutControllerTestBase extends KernelTestBase {
 
   use AutoSaveManagerTestTrait;
   use ConstraintViolationsTestTrait;
+  use WorkspaceConfigTestTrait;
 
   const REGION_PATTERN = '/<!-- canvas-region-start-%1$s -->([\n\s\S]*)<!-- canvas-region-end-%1$s -->/';
 
@@ -41,6 +44,17 @@ abstract class ApiLayoutControllerTestBase extends KernelTestBase {
   use VfsPublicStreamUrlTrait;
 
   protected ?ContentEntityInterface $previewEntity;
+
+  /**
+   * {@inheritdoc}
+   *
+   * Auto-save staging and publishing run through workspace_config, which
+   * expects its key-value decoration to be in place as on a real site.
+   */
+  public function register(ContainerBuilder $container): void {
+    parent::register($container);
+    $this->registerWorkspaceConfigKeyValue($container);
+  }
 
   protected static function getAdminPermission(EntityInterface $entity): string {
     if ($entity instanceof Node) {
