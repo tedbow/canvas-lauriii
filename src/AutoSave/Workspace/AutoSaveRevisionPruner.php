@@ -37,21 +37,13 @@ final class AutoSaveRevisionPruner {
     private readonly KeyValueFactoryInterface $keyValueFactory,
   ) {}
 
-  /**
-   * The workspace pruning operates on: active, or the Main fallback.
-   */
-  private function stagingWorkspaceId(): string {
-    $active = $this->workspaceManager->getActiveWorkspace();
-    return $active === NULL ? AutoSaveWorkspace::ID : (string) $active->id();
-  }
-
   public function recordAndPrune(ContentEntityInterface $entity, int $density = self::DEFAULT_DENSITY): void {
     if ($entity->id() === NULL) {
       return;
     }
     $type = $entity->getEntityTypeId();
     $id = (string) $entity->id();
-    $workspace_id = $this->stagingWorkspaceId();
+    $workspace_id = AutoSaveWorkspace::stagingId($this->workspaceManager);
     $key = $workspace_id . ':' . $type . ':' . $id;
     $store = $this->keyValueFactory->get(self::STORE);
 
@@ -104,7 +96,7 @@ final class AutoSaveRevisionPruner {
     if ($entity->id() === NULL) {
       return;
     }
-    $this->keyValueFactory->get(self::STORE)->delete($this->stagingWorkspaceId() . ':' . $entity->getEntityTypeId() . ':' . (string) $entity->id());
+    $this->keyValueFactory->get(self::STORE)->delete(AutoSaveWorkspace::stagingId($this->workspaceManager) . ':' . $entity->getEntityTypeId() . ':' . (string) $entity->id());
   }
 
   /**
@@ -117,7 +109,7 @@ final class AutoSaveRevisionPruner {
   private function deleteRevisionInWorkspace(string $type, int $revision_id): void {
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
     $wm = $this->workspaceManager;
-    $wm->executeInWorkspace($this->stagingWorkspaceId(), function () use ($type, $revision_id): void {
+    $wm->executeInWorkspace(AutoSaveWorkspace::stagingId($this->workspaceManager), function () use ($type, $revision_id): void {
       $storage = $this->entityTypeManager->getStorage($type);
       if ($storage instanceof RevisionableStorageInterface) {
         $storage->deleteRevision($revision_id);

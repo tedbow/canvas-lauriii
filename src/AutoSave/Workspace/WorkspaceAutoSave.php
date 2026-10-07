@@ -129,12 +129,10 @@ final class WorkspaceAutoSave {
   /**
    * The workspace staging reads and writes resolve against.
    *
-   * The active workspace when one is negotiated; the Main workspace
-   * otherwise (CLI, kernel tests, sessions that never selected one).
+   * @see \Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace::stagingId()
    */
   public function getStagingWorkspaceId(): string {
-    $active = $this->workspaceManager->getActiveWorkspace();
-    return $active === NULL ? AutoSaveWorkspace::ID : (string) $active->id();
+    return AutoSaveWorkspace::stagingId($this->workspaceManager);
   }
 
   /**

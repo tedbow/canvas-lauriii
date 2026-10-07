@@ -499,8 +499,7 @@ class AutoSaveManager implements EventSubscriberInterface {
    * must wrap themselves in WorkspaceManagerInterface::executeInWorkspace().
    */
   public static function activeWorkspaceId(): string {
-    $active = \Drupal::service(WorkspaceManagerInterface::class)->getActiveWorkspace();
-    return $active === NULL ? AutoSaveWorkspace::ID : (string) $active->id();
+    return AutoSaveWorkspace::stagingId(\Drupal::service(WorkspaceManagerInterface::class));
   }
 
   /**
