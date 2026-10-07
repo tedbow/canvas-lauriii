@@ -72,6 +72,13 @@ final class WorkspaceAutoSave {
   private bool $discardingTranslation = FALSE;
 
   /**
+   * The entity object currently being saved as a content draft, if any.
+   *
+   * @see ::isStagingWriteOf()
+   */
+  private ?ContentEntityInterface $saving = NULL;
+
+  /**
    * Metadata key holding a content draft's verbatim `path` field value.
    */
   public const string DRAFT_PATH_KEY = 'draft_path';
@@ -135,6 +142,18 @@ final class WorkspaceAutoSave {
     #[Autowire(service: 'logger.channel.canvas')]
     private readonly LoggerInterface $logger,
   ) {}
+
+  /**
+   * Whether the given entity object is being saved as a content draft now.
+   *
+   * Lets save-time hooks tell a staged write apart from a Live save of the
+   * same entity.
+   *
+   * @see \Drupal\canvas\ContentTranslation\ComponentTreeFieldSymmetricalTranslationSynchronizer::synchronizeFields()
+   */
+  public function isStagingWriteOf(ContentEntityInterface $entity): bool {
+    return $this->saving === $entity;
+  }
 
   private function workspaceManager(): WorkspaceManagerInterface {
     return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
@@ -612,7 +631,13 @@ final class WorkspaceAutoSave {
     $to_save = clone $entity;
     $previous_revision_ids = $this->trackedRevisionIds($entity, $workspace_id);
     try {
-      $to_save->save();
+      $this->saving = $to_save;
+      try {
+        $to_save->save();
+      }
+      finally {
+        $this->saving = NULL;
+      }
     }
     catch (\Throwable $e) {
       $this->logger->warning('Canvas auto-save for @type @id could not be stored as a workspace revision (@message); retained in the fallback store instead.', [

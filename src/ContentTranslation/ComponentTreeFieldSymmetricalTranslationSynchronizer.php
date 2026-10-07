@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\ContentTranslation;
 
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Plugin\DataType\ComponentInputs;
 use Drupal\canvas\Plugin\Field\FieldType\ComponentTreeItem;
@@ -29,12 +30,25 @@ final class ComponentTreeFieldSymmetricalTranslationSynchronizer implements Fiel
 
   public function __construct(
     private readonly FieldTranslationSynchronizerInterface $decorated,
+    private readonly WorkspaceAutoSave $workspaceAutoSave,
   ) {}
 
   /**
    * {@inheritdoc}
+   *
+   * A draft of a non-default translation captures that translation's edit
+   * alone. Synchronization sources from the default translation, so converging
+   * the draft while it is staged would overwrite the edit being drafted and
+   * leave its recorded symmetry violation pointing at a value that no longer
+   * exists. The edit path skips synchronization for such drafts; the staged
+   * save does too. Live saves (publishing included) still converge.
+   *
+   * @see \Drupal\canvas\ContentTranslation\SymmetricalTranslationSynchronizationTrait::canSynchronizeTranslations()
    */
   public function synchronizeFields(ContentEntityInterface $entity, $sync_langcode, $original_langcode = NULL): void {
+    if (!$entity->isDefaultTranslation() && $this->workspaceAutoSave->isStagingWriteOf($entity)) {
+      return;
+    }
     $net_new = $this->getDefaultTranslationNewComponentInstanceUuids($entity);
     $this->decorated->synchronizeFields($entity, $sync_langcode, $original_langcode);
     $this->synchronizeComponentInstanceInputs($entity, $net_new);
