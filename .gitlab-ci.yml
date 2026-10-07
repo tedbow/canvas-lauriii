@@ -270,7 +270,7 @@ phpstan-is-up-to-date:
       unset COMPOSER_IGNORE_PLATFORM_REQS
 
       # PHPStan packages in composer.json to check for updates.
-      PACKAGES="phpstan/phpstan jangregor/phpstan-prophecy mglaman/phpstan-drupal phpat/phpat phpstan/phpstan-strict-rules shipmonk/dead-code-detector"
+      PACKAGES="phpstan/phpstan phpstan/phpstan-phpunit jangregor/phpstan-prophecy mglaman/phpstan-drupal phpat/phpat phpstan/phpstan-strict-rules shipmonk/dead-code-detector"
       cp composer.json composer.json.orig
 
       for PKG in $PACKAGES; do
@@ -1074,12 +1074,15 @@ release:
       npm version $VERSION --allow-same-version --no-git-tag-version
       npm run build
       cd ..
+      npx turbo run build --filter=@drupal-canvas/headless-embedded-preview
     - echo "!/ui/dist" >> .gitignore
     - echo "!/packages/astro-hydration/dist" >> .gitignore
+    - echo "!/packages/headless-embedded-preview/dist" >> .gitignore
     - git add .gitignore
     - git add ui/dist
     - git add ui/package.json
     - git add packages/astro-hydration/dist
+    - git add packages/headless-embedded-preview/dist
     - git commit -m "Add built assets for release ${VERSION}"
     - git tag -f $VERSION
     - git push origin $VERSION

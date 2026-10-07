@@ -108,7 +108,6 @@ export interface DrupalSettings {
   };
   canvasData: {
     v0: {
-      langcode: string | null;
       pageTitle: string;
       branding: {
         homeUrl: string;

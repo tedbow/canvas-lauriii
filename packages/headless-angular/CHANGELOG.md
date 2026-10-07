@@ -1,5 +1,24 @@
 # @drupal-canvas/headless-angular
 
+## 0.2.3
+
+### Patch Changes
+
+- aaaa869: Read preview context from each request so tabs do not change each
+  other's rendering settings.
+- aaaa869: Delegate eligible embedded link clicks in draft mode to the host when
+  it advertises navigation support.
+- Updated dependencies [aaaa869]
+- Updated dependencies [aaaa869]
+  - @drupal-canvas/headless@0.11.0
+
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [ed541e3]
+  - @drupal-canvas/headless@0.10.0
+
 ## 0.2.1
 
 ### Patch Changes

@@ -1438,7 +1438,6 @@ class JavaScriptComponentValidationTest extends BetterConfigEntityValidationTest
    *           [{"drupalSettings": []}, {"dataDependencies.drupalSettings": "This value should not be blank."}]
    *           [{"drupalSettings": ["v0.pageTitle", "foo"]}, {"dataDependencies.drupalSettings.1": "The value you selected is not a valid choice."}]
    *           [{"drupalSettings": ["v0.pageTitle", "v0.branding"]}, []]
-   *           [{"drupalSettings": ["v0.langcode"]}, []]
    *           [{"urls": []}, {"dataDependencies.urls": "This value should not be blank."}]
    *           [{"urls": ["https://www.drupal.org/jsonapi"]}, []]
    *           [{"drupalSettings": ["v0.pageTitle", "v0.branding"], "urls": ["https://www.drupal.org/jsonapi"], "entityFields": {"my_reference": ["ℹ︎␜entity:user␝name␞␟value"]}}, []]
@@ -1582,6 +1581,64 @@ class JavaScriptComponentValidationTest extends BetterConfigEntityValidationTest
       'entity_type' => 'entity_test',
       'bundle' => 'entity_test',
       'label' => 'Related users',
+    ])->save();
+
+    FieldStorageConfig::create([
+      'field_name' => 'field_keywords',
+      'entity_type' => 'entity_test',
+      'type' => 'list_string',
+      'cardinality' => FieldStorageDefinitionInterface::CARDINALITY_UNLIMITED,
+      'settings' => [
+        'allowed_values' => [
+          'alpha' => 'Alpha',
+          'beta' => 'Beta',
+        ],
+      ],
+    ])->save();
+    FieldConfig::create([
+      'field_name' => 'field_keywords',
+      'entity_type' => 'entity_test',
+      'bundle' => 'entity_test',
+      'label' => 'Keywords',
+      'field_type' => 'list_string',
+    ])->save();
+    FieldStorageConfig::create([
+      'field_name' => 'field_priority',
+      'entity_type' => 'entity_test',
+      'type' => 'list_integer',
+      'cardinality' => FieldStorageDefinitionInterface::CARDINALITY_UNLIMITED,
+      'settings' => [
+        'allowed_values' => [
+          1 => 'Low',
+          2 => 'Medium',
+        ],
+      ],
+    ])->save();
+    FieldConfig::create([
+      'field_name' => 'field_priority',
+      'entity_type' => 'entity_test',
+      'bundle' => 'entity_test',
+      'label' => 'Priority',
+      'field_type' => 'list_integer',
+    ])->save();
+    FieldStorageConfig::create([
+      'field_name' => 'field_scores',
+      'entity_type' => 'entity_test',
+      'type' => 'list_float',
+      'cardinality' => FieldStorageDefinitionInterface::CARDINALITY_UNLIMITED,
+      'settings' => [
+        'allowed_values' => [
+          '1.5' => 'One point five',
+          '2.5' => 'Two point five',
+        ],
+      ],
+    ])->save();
+    FieldConfig::create([
+      'field_name' => 'field_scores',
+      'entity_type' => 'entity_test',
+      'bundle' => 'entity_test',
+      'label' => 'Scores',
+      'field_type' => 'list_float',
     ])->save();
 
     // A multi-valued field on BOTH media bundles — for the case asserting a
@@ -2056,6 +2113,42 @@ class JavaScriptComponentValidationTest extends BetterConfigEntityValidationTest
         'dataDependencies.entityFields.my_reference.1' => "The field 'entity:entity_test.field_related' is multi-valued, which is not yet supported.",
         'dataDependencies.entityFields.my_reference.2' => "The field 'entity:entity_test.field_related' is multi-valued, which is not yet supported.",
       ],
+      [],
+    ];
+
+    yield 'entityFields on a supported multi-valued list field' => [
+      [
+        'entityFields' => [
+          'my_reference' => [
+            'ℹ︎␜entity:entity_test:entity_test␝field_keywords␞␟value',
+          ],
+        ],
+      ],
+      [],
+      [],
+    ];
+
+    yield 'entityFields on a supported multi-valued integer list field' => [
+      [
+        'entityFields' => [
+          'my_reference' => [
+            'ℹ︎␜entity:entity_test:entity_test␝field_priority␞␟value',
+          ],
+        ],
+      ],
+      [],
+      [],
+    ];
+
+    yield 'entityFields on a supported multi-valued float list field' => [
+      [
+        'entityFields' => [
+          'my_reference' => [
+            'ℹ︎␜entity:entity_test:entity_test␝field_scores␞␟value',
+          ],
+        ],
+      ],
+      [],
       [],
     ];
   }

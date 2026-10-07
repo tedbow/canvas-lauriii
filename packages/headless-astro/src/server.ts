@@ -16,10 +16,11 @@ import type {
   EntityResult,
   PageResult,
 } from '@drupal-canvas/headless/server';
+import type { JsonApiRuntimeConfig } from 'drupal-canvas/jsonapi-client';
 import type { AstroDraftContext } from './adapter';
 
-// One draft server per request context. All state lives in the request's
-// cookies, so this cache is purely about not re-deriving the closures when
+// One draft server per request context. Authentication and preview context
+// come from its cookies and URL. This cache avoids re-deriving closures when
 // a page and its components each ask for the server.
 const servers = new WeakMap<AstroCookies, DraftServer>();
 
@@ -27,8 +28,7 @@ type AstroCookies = AstroDraftContext['cookies'];
 
 /**
  * The draft server for one request. Pass the `Astro` global (components)
- * or the APIContext (endpoints): anything carrying the request's cookies
- * and redirect.
+ * or the APIContext (endpoints), carrying its cookies, URL, and redirect.
  */
 export function getDraftServer(context: AstroDraftContext): DraftServer {
   const existing = servers.get(context.cookies);
@@ -85,11 +85,7 @@ export function getClient(
 /** Fetches one entity by type and ID through the current draft session. */
 export function fetchEntity(
   context: AstroDraftContext,
-  options: {
-    type: string;
-    id: string;
-    viewMode?: string;
-  },
+  options: Parameters<DraftServer['fetchEntity']>[0],
 ): Promise<EntityResult | null> {
   return getDraftServer(context).fetchEntity(options);
 }
@@ -97,20 +93,35 @@ export function fetchEntity(
 /**
  * Fetches a page by its Drupal path, resolved through Drupal's routing,
  * carrying the live draft session's bearer token when there is one.
+ * An explicit previewContext replaces all URL-derived preview settings.
  */
 export function fetchPage(
   context: AstroDraftContext,
   path: string,
+  previewContext?: Parameters<DraftServer['fetchPage']>[1],
 ): Promise<PageResult | null> {
-  return getDraftServer(context).fetchPage(path);
+  return getDraftServer(context).fetchPage(path, previewContext);
 }
 
 /** Fetches one component preview through the current draft session. */
 export function fetchComponentPreview(
   context: AstroDraftContext,
   componentId: string,
+  previewUri?: string,
 ): Promise<PageResult | null> {
-  return getDraftServer(context).fetchComponentPreview(componentId);
+  return getDraftServer(context).fetchComponentPreview(componentId, previewUri);
+}
+
+/**
+ * The nonsecret JSON:API runtime configuration for this request's browser
+ * client (resolved endpoints, the proxy path, preview state). Serialize it
+ * into the page with `serializeJsonForHtml()`; `createJsonApiClient()` from
+ * `drupal-canvas/jsonapi-client` builds the browser client from it.
+ */
+export function getJsonApiRuntimeConfig(
+  context: AstroDraftContext,
+): Promise<JsonApiRuntimeConfig> {
+  return getDraftServer(context).getJsonApiRuntimeConfig();
 }
 
 export { isDraftSessionExpired };

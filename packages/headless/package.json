@@ -1,6 +1,6 @@
 {
   "name": "@drupal-canvas/headless",
-  "version": "0.9.0",
+  "version": "0.11.0",
   "engines": {
     "node": ">=22.19.0 <23 || >=24.5.0"
   },
@@ -74,7 +74,8 @@
     "type-check": "tsc --noEmit --pretty"
   },
   "dependencies": {
-    "@drupal-api-client/json-api-client": "^1.4.1"
+    "@drupal-api-client/json-api-client": "^1.4.1",
+    "drupal-canvas": "^0.7.1"
   },
   "devDependencies": {
     "@drupal-canvas/discovery": "*",
@@ -83,7 +84,7 @@
     "@types/node": "^24.10.1",
     "drupal-canvas": "*",
     "jsdom": "^26.1.0",
-    "tsdown": "^0.22.12",
+    "tsdown": "^0.23.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

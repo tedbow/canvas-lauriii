@@ -1,5 +1,25 @@
 # @drupal-canvas/headless-host
 
+## 0.5.0
+
+### Minor Changes
+
+- aaaa869: Delegate eligible embedded link clicks in draft mode to the host when
+  it advertises navigation support.
+
+### Patch Changes
+
+- Updated dependencies [aaaa869]
+- Updated dependencies [aaaa869]
+  - @drupal-canvas/headless@0.11.0
+
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [ed541e3]
+  - @drupal-canvas/headless@0.10.0
+
 ## 0.4.3
 
 ### Patch Changes
