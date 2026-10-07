@@ -58,6 +58,13 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 final class WorkspaceAutoSave {
 
   /**
+   * Whether a translation is being dropped from a staged copy right now.
+   *
+   * @see ::discardStagedTranslation()
+   */
+  private bool $discardingTranslation = FALSE;
+
+  /**
    * Staging metadata key: base hash of config created inside the workspace.
    *
    * Configuration created while a workspace is active has no Live copy to
@@ -1429,6 +1436,54 @@ final class WorkspaceAutoSave {
         $this->discardTrackedRevisions($dependent_type_id, $dependent_id);
       }
     }
+  }
+
+  /**
+   * Drops one translation from the staged revision after its Live deletion.
+   *
+   * A workspace revision carries every translation, so discarding the staged
+   * revisions would also discard the sibling translations' drafts. Only the
+   * deleted translation leaves the staged copy; the siblings stay pending and
+   * publishing no longer resurrects the deleted translation.
+   *
+   * @see \Drupal\canvas\Hook\AutoSaveHooks::entityTranslationDelete()
+   */
+  public function discardStagedTranslation(ContentEntityInterface $translation): void {
+    // Removing the translation from the staged copy saves that copy, which
+    // fires hook_entity_translation_delete() again for the staged copy's
+    // translation while the tracked revision still carries it.
+    if ($this->discardingTranslation) {
+      return;
+    }
+    $key = AutoSaveManager::getAutoSaveKey($translation);
+    $id = $translation->id();
+    $type_id = $translation->getEntityTypeId();
+    $langcode = $translation->language()->getId();
+    if ($id !== NULL) {
+      $this->snapshotRepository->deleteFor($type_id, (string) $id, self::snapshotLangcode($translation));
+    }
+    $this->pendingBuffer->delete($key);
+    if ($id !== NULL && !$translation->isDefaultTranslation() && $this->isEntityTrackedInStagingWorkspace($translation)) {
+      $this->executeInStagingWorkspaceUnchecked(function () use ($type_id, $id, $langcode): void {
+        $storage = $this->entityTypeManager->getStorage($type_id);
+        $storage->resetCache([$id]);
+        $staged = $storage->load($id);
+        if (!$staged instanceof ContentEntityInterface || !$staged->hasTranslation($langcode) || $staged->getTranslation($langcode)->isDefaultTranslation()) {
+          return;
+        }
+        $staged->removeTranslation($langcode);
+        $this->discardingTranslation = TRUE;
+        try {
+          $staged->save();
+        }
+        finally {
+          $this->discardingTranslation = FALSE;
+        }
+        $this->revisionPruner->recordAndPrune($staged);
+      });
+    }
+    $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
+    $this->cache->delete($key);
   }
 
   public function deleteEntity(EntityInterface $entity): void {

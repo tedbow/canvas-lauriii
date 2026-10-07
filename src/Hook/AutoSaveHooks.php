@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\canvas\Hook;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityFormInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\RevisionableInterface;
@@ -54,11 +55,11 @@ class AutoSaveHooks {
   public function entityTranslationDelete(EntityInterface $translation): void {
     // Deleting a single translation removes only that translation from the
     // entity, so unlike hook_entity_delete() the sibling translations' drafts
-    // must survive. Discard just the deleted translation's own snapshot,
-    // keyed by its langcode; otherwise the stale snapshot is reapplied on the
-    // next publish and silently resurrects the deleted translation.
-    // @see \Drupal\canvas\Controller\ApiAutoSaveController::applyAutoSaveTranslationSnapshots()
-    $this->autoSaveManager->delete($translation);
+    // must survive. Drop just the deleted translation from the staged copy;
+    // otherwise publishing the staged revision silently resurrects it.
+    if ($translation instanceof ContentEntityInterface) {
+      $this->autoSaveManager->deleteTranslation($translation);
+    }
   }
 
   /**

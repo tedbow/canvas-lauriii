@@ -972,8 +972,28 @@ class AutoSaveManager implements EventSubscriberInterface {
       BrandKit::clearAutoSaveFileUsage($auto_save_entity->entity, (string) $entity->id());
     }
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
-    $key = $this->getAutoSaveKey($entity);
     $this->workspaceAutoSave->deleteEntity($entity);
+    $this->deleteDraftBookkeeping($entity);
+  }
+
+  /**
+   * Discards one translation's draft after that translation was deleted.
+   *
+   * Unlike ::delete(), the sibling translations' drafts survive.
+   *
+   * @see \Drupal\canvas\Hook\AutoSaveHooks::entityTranslationDelete()
+   */
+  public function deleteTranslation(ContentEntityInterface $translation): void {
+    $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
+    $this->workspaceAutoSave->discardStagedTranslation($translation);
+    $this->deleteDraftBookkeeping($translation);
+  }
+
+  /**
+   * Removes the records kept alongside a draft: violations and health results.
+   */
+  private function deleteDraftBookkeeping(EntityInterface $entity): void {
+    $key = $this->getAutoSaveKey($entity);
     $this->formViolationsStore->delete($key);
     // A discarded auto-save entry must not leave an orphan health result.
     $this->healthRecords->deleteForEntity($entity, HealthCheck::AutoSave);
