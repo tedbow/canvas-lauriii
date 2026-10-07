@@ -15,6 +15,7 @@ use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Config\ConfigManagerInterface;
 use Drupal\Core\Config\Entity\ConfigEntityInterface;
+use Drupal\Core\Config\Entity\ConfigEntityStorageInterface;
 use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
 use Drupal\Core\Config\StorageInterface;
 use Drupal\Core\Entity\ContentEntityInterface;
@@ -978,8 +979,7 @@ final class WorkspaceAutoSave {
       return AutoSaveEntity::empty();
     }
     $key = AutoSaveManager::getAutoSaveKey($entity);
-    $storage = $this->entityTypeManager->getStorage($entity->getEntityTypeId());
-    $staged = $this->executeInStagingWorkspace(static fn () => $storage->loadUnchanged($id));
+    $staged = $this->executeInStagingWorkspace(fn () => $this->loadUnchangedConfigOverrideFree($entity->getEntityTypeId(), $id));
     if (!$staged instanceof ComponentTreeConfigEntityBase) {
       return AutoSaveEntity::empty();
     }
@@ -1202,7 +1202,7 @@ final class WorkspaceAutoSave {
     foreach ($storage->loadMultiple($entity_ids) as $row) {
       \assert($row instanceof ContentEntityInterface);
       $name = (string) $row->label();
-      $mapped = $name === '' ? NULL : $this->configManager->loadConfigEntityByName($name);
+      $mapped = $name === '' ? NULL : $this->loadConfigEntityByNameOverrideFree($name);
       $metadata = [];
       if ($mapped instanceof ConfigEntityInterface) {
         $key = $workspace_id . ':' . AutoSaveFallbackStore::targetKey($mapped);
@@ -1524,7 +1524,7 @@ final class WorkspaceAutoSave {
     foreach (\array_unique($tracked['workspace_config'] ?? []) as $row_id) {
       $row = $this->entityTypeManager->getStorage('workspace_config')->load($row_id);
       $name = $row === NULL ? '' : (string) $row->label();
-      $mapped = $name === '' ? NULL : $this->executeInStagingWorkspace(fn () => $this->configManager->loadConfigEntityByName($name));
+      $mapped = $name === '' ? NULL : $this->executeInStagingWorkspace(fn () => $this->loadConfigEntityByNameOverrideFree($name));
       if ($mapped instanceof ConfigEntityInterface) {
         $this->discardWorkspaceStagedConfig($mapped, $workspace_id);
       }
@@ -1592,7 +1592,49 @@ final class WorkspaceAutoSave {
     if ($is_config && !$this->usesWorkspaceConfigStagingForType($entityTypeId)) {
       return $storage->loadUnchanged($id);
     }
-    return $this->workspaceManager()->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($id));
+    $wm = $this->workspaceManager();
+    if ($is_config) {
+      return $wm->executeOutsideWorkspace(fn () => $this->loadUnchangedConfigOverrideFree($entityTypeId, $id));
+    }
+    return $wm->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($id));
+  }
+
+  /**
+   * Loads a config entity from storage without configuration overrides.
+   *
+   * Config entity storage applies configuration overrides on load, so in a
+   * request negotiated to a non-default language the entity's language
+   * override (its translation) would pass for the base configuration: the
+   * draft, its hash and the base hash would all shift with the request
+   * language, and reconciling the draft would write the translation into it.
+   * Staging operates on the base configuration; translations are staged as
+   * StagedLanguageConfigOverride drafts.
+   *
+   * Override-free loads share one static cache entry across workspaces, so
+   * the entity type's static cache is reset first.
+   *
+   * @see \Drupal\canvas\Entity\ComponentTreeConfigEntityBase::getTranslation()
+   * @see \Drupal\Core\Config\Entity\ConfigEntityStorage::buildCacheId()
+   */
+  private function loadUnchangedConfigOverrideFree(string $entity_type_id, string|int $id): ?ConfigEntityInterface {
+    $storage = $this->entityTypeManager->getStorage($entity_type_id);
+    \assert($storage instanceof ConfigEntityStorageInterface);
+    $storage->resetCache();
+    $entity = $storage->loadOverrideFree($id);
+    return $entity instanceof ConfigEntityInterface ? $entity : NULL;
+  }
+
+  /**
+   * Override-free counterpart of ConfigManager::loadConfigEntityByName().
+   */
+  private function loadConfigEntityByNameOverrideFree(string $name): ?ConfigEntityInterface {
+    $entity_type_id = $this->configManager->getEntityTypeIdByName($name);
+    if ($entity_type_id === NULL) {
+      return NULL;
+    }
+    $entity_type = $this->entityTypeManager->getDefinition($entity_type_id);
+    \assert($entity_type instanceof ConfigEntityTypeInterface);
+    return $this->loadUnchangedConfigOverrideFree($entity_type_id, \substr($name, \strlen($entity_type->getConfigPrefix()) + 1));
   }
 
 }
