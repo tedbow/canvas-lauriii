@@ -26,6 +26,7 @@ use Drupal\canvas\Plugin\Canvas\ComponentSource\BlockComponent;
 use Drupal\canvas\Plugin\Field\FieldType\ComponentTreeItem;
 use Drupal\Component\Serialization\Json;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
+use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
 use Drupal\Core\Config\Entity\ConfigEntityUpdater;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityDefinitionUpdateManagerInterface;
@@ -976,4 +977,52 @@ function canvas_post_update_0033_promote_config_snapshots(array &$sandbox): void
     });
   }
   $sandbox['#finished'] = \count($sandbox['ids']) === 0 ? 1 : 1 - (\count($sandbox['ids']) / $sandbox['total']);
+}
+
+/**
+ * Moves key-value staged config drafts into workspace staging.
+ *
+ * Config entities without a snapshot-backed store (staged configuration
+ * translations) kept their drafts in the `canvas.auto_save` key-value store
+ * until every draft moved into workspace staging. Each remaining row that
+ * holds a draft is persisted through the staged write path (a snapshot row
+ * for these entity types), which removes the key-value row.
+ *
+ * @see \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator
+ */
+function canvas_post_update_0034_migrate_key_value_config_drafts(array &$sandbox): void {
+  // Staging bookkeeping must resolve identically in every workspace.
+  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
+  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
+  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $kv = $keyvalue_factory->get(AutoSaveManager::AUTO_SAVE_STORE);
+  if (!isset($sandbox['keys'])) {
+    $sandbox['keys'] = \array_keys($kv->getAll());
+    $sandbox['total'] = \count($sandbox['keys']);
+  }
+  if ($sandbox['total'] === 0) {
+    $sandbox['#finished'] = 1;
+    return;
+  }
+
+  $entity_type_manager = \Drupal::entityTypeManager();
+  /** @var \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator $migrator */
+  $migrator = \Drupal::service(LegacyAutoSaveMigrator::class);
+  foreach (\array_splice($sandbox['keys'], 0, 25) as $key) {
+    $entry = $kv->get($key);
+    // Rows without a draft are staging metadata for a workspace-staged entry.
+    if (!\is_array($entry) || !isset($entry['entity_type'], $entry['entity_id'], $entry['data']) || !\is_array($entry['data'])) {
+      continue;
+    }
+    if (!$entity_type_manager->hasDefinition($entry['entity_type'])
+      || !$entity_type_manager->getDefinition($entry['entity_type']) instanceof ConfigEntityTypeInterface) {
+      continue;
+    }
+    // The draft is the only copy of these entities: reconstruct it from the
+    // row rather than loading it, which would read the (empty) staging.
+    $entity = $entity_type_manager->getStorage($entry['entity_type'])->create($entry['data']);
+    $entity->enforceIsNew(FALSE);
+    $migrator->migrateIfNeeded($entity);
+  }
+  $sandbox['#finished'] = \count($sandbox['keys']) === 0 ? 1 : 1 - (\count($sandbox['keys']) / $sandbox['total']);
 }

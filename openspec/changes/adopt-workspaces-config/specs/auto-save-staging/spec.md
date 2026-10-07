@@ -229,7 +229,7 @@ Auto-save staging SHALL keep pending changes of different translations of the sa
 
 ### Requirement: Legacy key-value auto-saves migrate losslessly
 
-Existing key-value auto-save rows SHALL migrate into workspace staging lazily on first access and eagerly through a post-update pass. Valid config rows SHALL migrate into workspace-scoped configuration; data that no primary store can hold SHALL migrate into the invalid-data store. Invalid-data store rows that hold valid configuration drafts SHALL likewise be promoted into workspace-scoped configuration of the workspace recorded on the row. Migration SHALL preserve the payload, the owning editor, and the last-edit time, and SHALL remove the source row only after the staged copy is durable. Any temporary access relaxation needed to switch workspaces during migration SHALL be confined to the update process and MUST NOT be observable by regular site traffic.
+Existing key-value auto-save rows SHALL migrate into workspace staging through a post-update pass. Valid config rows SHALL migrate into workspace-scoped configuration; data that no primary store can hold SHALL migrate into the invalid-data store. Invalid-data store rows that hold valid configuration drafts SHALL likewise be promoted into workspace-scoped configuration of the workspace recorded on the row. Migration SHALL preserve the payload, the owning editor, and the last-edit time, and SHALL remove the source row only after the staged copy is durable. Any temporary access relaxation needed to switch workspaces during migration SHALL be confined to the update process and MUST NOT be observable by regular site traffic.
 
 #### Scenario: Upgrade with pending work
 

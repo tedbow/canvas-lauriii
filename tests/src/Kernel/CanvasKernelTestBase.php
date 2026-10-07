@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\canvas\Kernel;
 
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\ComponentTreeConfigEntityBase;
 use Drupal\canvas\EventSubscriber\LanguageConfigOverrideSchemaChecker;
 use Drupal\config_translation\Form\ConfigTranslationFormBase;
@@ -17,8 +19,11 @@ use Drupal\Core\Extension\ThemeInstallerInterface;
 use Drupal\Core\Language\LanguageManagerInterface;
 use Drupal\KernelTests\KernelTestBase;
 use Drupal\language\ConfigurableLanguageManagerInterface;
+use Drupal\Tests\canvas\Kernel\Traits\CanvasWorkspaceConfigTestTrait;
 use Drupal\Tests\canvas\Traits\AssertSameInputsTrait;
 use Drupal\Tests\canvas\Traits\ConstraintViolationsTestTrait;
+use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
+use Drupal\workspaces\Entity\Workspace;
 use Symfony\Component\DependencyInjection\Reference;
 
 /**
@@ -47,7 +52,9 @@ use Symfony\Component\DependencyInjection\Reference;
 abstract class CanvasKernelTestBase extends KernelTestBase {
 
   use AssertSameInputsTrait;
+  use CanvasWorkspaceConfigTestTrait;
   use ConstraintViolationsTestTrait;
+  use WorkspaceConfigTestTrait;
 
   /**
    * {@inheritdoc}
@@ -77,6 +84,7 @@ abstract class CanvasKernelTestBase extends KernelTestBase {
     'options',
     'path',
     'workspaces',
+    'workspace_config',
     // Canvas' indirect dependencies.
     'filter',
     'media',
@@ -102,12 +110,15 @@ abstract class CanvasKernelTestBase extends KernelTestBase {
   protected function setUp(): void {
     parent::setUp();
     // The Workspaces module hooks into every entity save, so its schemas must
-    // exist for any entity save to work. Note this does not provision the
-    // shared auto-save workspace: without it, auto-save staging falls back to
-    // the key-value store.
-    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::usesKeyValueStaging()
+    // exist for any entity save to work. Auto-save staging needs the Main
+    // workspace, workspace_config's tracking entity and the snapshot entity
+    // type, exactly as on an installed site: there is no fallback store.
+    // @see canvas_install()
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::persistStagedEntity()
     $this->installEntitySchema('workspace');
     $this->installSchema('workspaces', ['workspace_association', 'workspace_association_revision']);
+    $this->installEntitySchema('workspace_config');
+    $this->installEntitySchema(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
     $this->container->get(ThemeInstallerInterface::class)->install(['stark']);
     $this->installConfig([
       // Needed for date formats.
@@ -121,6 +132,13 @@ abstract class CanvasKernelTestBase extends KernelTestBase {
       // - …
       'canvas',
     ]);
+    Workspace::create([
+      'id' => AutoSaveWorkspace::ID,
+      'label' => AutoSaveWorkspace::LABEL,
+      'uid' => 1,
+      'provider' => 'default',
+    ])->save();
+    $this->enableWorkspaceConfigKeyValueOverlay();
   }
 
   /**
@@ -128,6 +146,14 @@ abstract class CanvasKernelTestBase extends KernelTestBase {
    */
   public function register(ContainerBuilder $container): void {
     parent::register($container);
+    // Canvas staging bookkeeping stays workspace-invariant while every other
+    // key-value collection gets workspace_config's per-workspace overlay, as
+    // on a real site. Services built with the container (workspace_config's
+    // publishing subscriber among them) must receive the overlay factory;
+    // ::setUp() swaps in one bound to the final container's workspace resolver
+    // for everything resolved afterwards.
+    $this->registerCanvasStagingKeyValue($container);
+    $this->registerWorkspaceConfigKeyValue($container);
 
     if ($this->strictConfigSchema) {
       // Opt in to config validation, despite this being contrib.

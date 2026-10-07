@@ -649,7 +649,8 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    * {@inheritdoc}
    */
   protected function previewAndPublishPermissions(): array {
-    return [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION];
+    // Publishing publishes the workspace, which follows core access.
+    return [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION, 'view any workspace', 'edit any workspace'];
   }
 
   /**

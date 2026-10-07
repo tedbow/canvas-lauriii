@@ -10,6 +10,7 @@ use Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface;
 use Drupal\Core\Entity\EntityStorageException;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Language\LanguageInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
@@ -25,46 +26,27 @@ final class AutoSaveSnapshotRepository {
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly EntityLastInstalledSchemaRepositoryInterface $entityLastInstalledSchemaRepository,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager = NULL,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
+
+  /**
+   * TRUE when the snapshot entity schema is installed (not just defined).
+   *
+   * Installing the Canvas module clears plugin caches, which saves Component
+   * config entities, before the module's own entity schemas are installed;
+   * the auto-save listeners on those saves read staging, so reads must answer
+   * "nothing staged" until the schema exists. Writes are never attempted then.
+   */
+  private function isStagedStorageReady(): bool {
+    return $this->entityLastInstalledSchemaRepository->getLastInstalledDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) !== NULL;
+  }
 
   /**
    * The workspace snapshot operations default to: active, or Main.
    */
   private static function defaultWorkspaceId(): string {
     return AutoSaveManager::activeWorkspaceId();
-  }
-
-  /**
-   * TRUE when the snapshot entity schema is installed (not just defined).
-   *
-   * During multi-module install, core.extension may list canvas before its
-   * `installFieldableEntityType()` pass runs, so hasDefinition() alone is
-   * unsafe.
-   */
-  public function isStagedStorageReady(): bool {
-    if (!$this->entityTypeManager->hasDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID)) {
-      return FALSE;
-    }
-    return $this->entityLastInstalledSchemaRepository->getLastInstalledDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) !== NULL;
-  }
-
-  /**
-   * TRUE when the workspace entity schema is installed (not just defined).
-   *
-   * The Workspaces module can be enabled while its entity schema is not yet
-   * installed (kernel tests, or before database updates run); workspace-backed
-   * staging must fall back to the key-value store until it is.
-   */
-  public function isWorkspaceStorageReady(): bool {
-    if (!$this->entityTypeManager->hasDefinition('workspace')) {
-      return FALSE;
-    }
-    return $this->entityLastInstalledSchemaRepository->getLastInstalledDefinition('workspace') !== NULL;
   }
 
   public function resolveLatestStaged(string $targetEntityTypeId, string $targetEntityId, string $targetLangcode = LanguageInterface::LANGCODE_NOT_SPECIFIED, ?string $workspaceId = NULL): ?CanvasAutoSaveSnapshot {
@@ -96,9 +78,6 @@ final class AutoSaveSnapshotRepository {
    * @see \Drupal\canvas\Entity\Storage\CanvasAutoSaveSnapshotStorageSchema
    */
   public function persist(string $targetEntityTypeId, string $targetEntityId, string $targetLangcode, string $payload, string $dataHash, ?string $clientId, int $ownerId, ?string $workspaceId = NULL): CanvasAutoSaveSnapshot {
-    if (!$this->isStagedStorageReady()) {
-      throw new \RuntimeException('The canvas_auto_save_snapshot entity schema must be installed (run database updates).');
-    }
     $workspaceId ??= self::defaultWorkspaceId();
     $existing = $this->resolveLatestStaged($targetEntityTypeId, $targetEntityId, $targetLangcode, $workspaceId);
     if ($existing === NULL) {
@@ -180,18 +159,10 @@ final class AutoSaveSnapshotRepository {
    * (in which case this is a passthrough) or the Main workspace otherwise.
    */
   public function executeInStagingWorkspace(callable $callable): mixed {
-    if ($this->workspaceManager === NULL || !$this->isWorkspaceStorageReady()) {
+    if ($this->workspaceManager->hasActiveWorkspace()) {
       return $callable();
     }
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
-    if ($wm->hasActiveWorkspace()) {
-      return $callable();
-    }
-    if ($this->entityTypeManager->getStorage('workspace')->load(AutoSaveWorkspace::ID) === NULL) {
-      return $callable();
-    }
-    return $wm->executeInWorkspace(AutoSaveWorkspace::ID, $callable);
+    return $this->workspaceManager->executeInWorkspace(AutoSaveWorkspace::ID, $callable);
   }
 
 }

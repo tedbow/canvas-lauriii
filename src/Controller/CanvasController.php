@@ -45,6 +45,7 @@ use Drupal\Core\Template\Attribute;
 use Drupal\Core\Theme\ThemeInitializationInterface;
 use Drupal\Core\Theme\ThemeManagerInterface;
 use Drupal\Core\Url;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 final class CanvasController {
@@ -69,11 +70,8 @@ final class CanvasController {
     private readonly GlobalImports $globalImports,
     private readonly LanguageManagerInterface $languageManager,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager = NULL,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   private const HTML = <<<HTML
@@ -122,7 +120,7 @@ HTML;
     // none at editor open, activate the Main workspace (persisting, so
     // subsequent API requests and site preview follow it). Canvas API routes
     // themselves never force-activate a workspace.
-    if ($this->workspaceManager !== NULL && !$this->workspaceManager->hasActiveWorkspace()) {
+    if (!$this->workspaceManager->hasActiveWorkspace()) {
       /** @var \Drupal\workspaces\WorkspaceInterface|null $main_workspace */
       $main_workspace = $this->entityTypeManager->getStorage('workspace')->load(AutoSaveWorkspace::ID);
       if ($main_workspace !== NULL && $main_workspace->access('view', $this->currentUser)) {
@@ -431,12 +429,7 @@ HTML;
       'activeWorkspace' => NULL,
       'lockedInWorkspace' => NULL,
     ];
-    if ($this->workspaceManager === NULL) {
-      return $settings;
-    }
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
-    $active = $wm->hasActiveWorkspace() ? $wm->getActiveWorkspace() : NULL;
+    $active = $this->workspaceManager->getActiveWorkspace();
     if ($active !== NULL) {
       $settings['activeWorkspace'] = [
         'id' => (string) $active->id(),

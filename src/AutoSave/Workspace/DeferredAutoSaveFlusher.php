@@ -15,6 +15,7 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\TranslatableInterface;
 use Drupal\Core\Lock\LockBackendInterface;
 use Drupal\Core\Session\AccountProxyInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
@@ -38,11 +39,8 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
     private readonly WorkspaceContentEntityPersist $contentEntityPersist,
     private readonly WorkspaceConfigEntityPersist $configEntityPersist,
     private readonly EntityTypeManagerInterface $entityTypeManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager,
+    private readonly WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'lock')]
     private readonly LockBackendInterface $lock,
     private readonly TimeInterface $time,
@@ -211,15 +209,14 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
    * prefix; the flush lands there even when the user has switched workspaces
    * (or none is active) by terminate time. Terminate-time flushes must not
    * leave the workspace active for whatever runs later in the same process.
+   * A row whose workspace no longer exists is never written anywhere else:
+   * persisting it outside the workspace would silently misplace the draft.
    */
   private function persistInWorkspace(callable $persist, string $workspaceId): void {
-    if ($this->workspaceManager === NULL
-      || $this->entityTypeManager->getStorage('workspace')->load($workspaceId) === NULL) {
-      $persist();
-      return;
+    if ($this->entityTypeManager->getStorage('workspace')->load($workspaceId) === NULL) {
+      throw new \RuntimeException(\sprintf('The workspace "%s" no longer exists; the buffered auto-save was not persisted.', $workspaceId));
     }
-    if ($this->workspaceManager->hasActiveWorkspace()
-      && $this->workspaceManager->getActiveWorkspace()?->id() === $workspaceId) {
+    if ($this->workspaceManager->getActiveWorkspace()?->id() === $workspaceId) {
       $persist();
       return;
     }

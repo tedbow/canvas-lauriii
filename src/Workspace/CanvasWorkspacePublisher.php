@@ -18,6 +18,7 @@ use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Session\AccountInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Validator\ConstraintViolation;
 use Symfony\Component\Validator\ConstraintViolationListInterface;
@@ -50,13 +51,8 @@ final class CanvasWorkspacePublisher {
     private readonly AutoSaveManager $autoSaveManager,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly ModuleHandlerInterface $moduleHandler,
-    // Nullable, resolved to NULL until the Workspaces module is installed
-    // (before database updates run), so the container can compile.
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   /**
@@ -84,10 +80,6 @@ final class CanvasWorkspacePublisher {
     $workspace = $this->entityTypeManager->getStorage('workspace')->load($workspace_id);
     \assert($workspace !== NULL);
 
-    if ($this->workspaceManager === NULL) {
-      throw new \LogicException('The Workspaces module is not installed.');
-    }
-    /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
     $wm = $this->workspaceManager;
     $published_count = $wm->executeInWorkspace($workspace_id, function () use ($workspace, $account): int {
       // Flush deferred buffers so validation sees durable staged state.
@@ -177,7 +169,6 @@ final class CanvasWorkspacePublisher {
     // context) still pointing at the deleted one so the next negotiation
     // does not resolve a dead ID.
     if ($this->entityTypeManager->getStorage('workspace')->load($workspace_id) === NULL
-      && $wm->hasActiveWorkspace()
       && $wm->getActiveWorkspace()?->id() === $workspace_id) {
       $wm->switchToLive();
     }

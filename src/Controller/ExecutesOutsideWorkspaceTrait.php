@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\Controller;
 
-use Drupal\workspaces\WorkspaceManagerInterface;
-
 /**
  * Runs callables outside the auto-save workspace.
  *
@@ -27,9 +25,7 @@ trait ExecutesOutsideWorkspaceTrait {
    *   The callable's return value.
    */
   private function executeOutsideWorkspace(callable $callable): mixed {
-    return $this->workspaceManager instanceof WorkspaceManagerInterface
-      ? $this->workspaceManager->executeOutsideWorkspace($callable)
-      : $callable();
+    return $this->workspaceManager->executeOutsideWorkspace($callable);
   }
 
 }

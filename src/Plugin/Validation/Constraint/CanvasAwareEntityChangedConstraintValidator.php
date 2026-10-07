@@ -37,10 +37,7 @@ final class CanvasAwareEntityChangedConstraintValidator extends ConstraintValida
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
-    private readonly ?object $workspaceManager,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   /**
@@ -49,7 +46,7 @@ final class CanvasAwareEntityChangedConstraintValidator extends ConstraintValida
   public static function create(ContainerInterface $container): static {
     return new static(
       $container->get(EntityTypeManagerInterface::class),
-      $container->has('workspaces.manager') ? $container->get(WorkspaceManagerInterface::class) : NULL,
+      $container->get(WorkspaceManagerInterface::class),
     );
   }
 
@@ -67,8 +64,7 @@ final class CanvasAwareEntityChangedConstraintValidator extends ConstraintValida
     // timestamp; compare against the Live copy instead. Canvas staging
     // follows the active workspace, so this applies in every workspace, not
     // only the Main one.
-    $saved_entity = $this->workspaceManager !== NULL
-      && $this->workspaceManager->hasActiveWorkspace()
+    $saved_entity = $this->workspaceManager->hasActiveWorkspace()
       ? $this->workspaceManager->executeOutsideWorkspace($load)
       : $load();
     if (!$saved_entity instanceof ContentEntityInterface || !$saved_entity instanceof EntityChangedInterface) {

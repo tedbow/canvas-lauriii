@@ -32,25 +32,16 @@ final class WorkspaceNormalizer {
     private readonly ModuleHandlerInterface $moduleHandler,
     // Nullable, resolved to NULL until the Workspaces module is installed
     // (before database updates run), so the container can compile.
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceTrackerInterface|null
-     */
+    private readonly WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'workspaces.tracker')]
-    private readonly ?object $workspaceTracker,
+    private readonly WorkspaceTrackerInterface $workspaceTracker,
   ) {}
 
   /**
    * The ID of the current user's active workspace, or NULL when on Live.
    */
   public function activeWorkspaceId(): ?string {
-    if (!$this->workspaceManager instanceof WorkspaceManagerInterface) {
-      throw new \LogicException('The Workspaces module is not installed.');
-    }
     return $this->workspaceManager->hasActiveWorkspace()
       ? (string) $this->workspaceManager->getActiveWorkspace()?->id()
       : NULL;
@@ -90,9 +81,6 @@ final class WorkspaceNormalizer {
    * review manifest is the authoritative list.
    */
   private function countPendingChanges(WorkspaceInterface $workspace): int {
-    if (!$this->workspaceTracker instanceof WorkspaceTrackerInterface) {
-      throw new \LogicException('The Workspaces module is not installed.');
-    }
     $count = 0;
     foreach ($this->workspaceTracker->getTrackedEntities((string) $workspace->id()) as $entity_type_id => $revision_map) {
       if ($entity_type_id === 'path_alias') {

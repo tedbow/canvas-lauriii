@@ -58,11 +58,23 @@ unit of review and publish.
    ID, no data migration). Auto-save keys are workspace-prefixed
    (`{workspace}:{type}:{id}[:{langcode}]`), which partitions every staging
    store — snapshot rows (which gain a `workspace` field and a
-   workspace-qualified unique key), buffer rows, key-value staging, form
-   violations, pruner bookkeeping, and caches — per workspace. Buffer rows
+   workspace-qualified unique key), buffer rows, key-value staging metadata,
+   form violations, pruner bookkeeping, and caches — per workspace. Buffer rows
    flush into the workspace recorded in their key even if the user has
    switched since. Route-scoped workspace activation is removed; the editor
    activates the Main workspace (persisting) when negotiation yields none.
+   There is no fallback store: Workspaces and Workspace Config are hard
+   dependencies, so every draft is a workspace revision, workspace-scoped
+   configuration, or a snapshot row (staged configuration translations
+   included); the key-value store only holds staging metadata. The legacy
+   key-value migration runs in the update path only, and the Main workspace
+   cannot be deleted. A pending workspace revision only carries revisionable
+   fields, so every field a draft can edit is revisionable (the page owner
+   field was made so in `canvas_update_11203`), and a translation's draft is
+   the per-translation difference between the staged revision and Live: an
+   edit to one translation never reports its siblings as drafted, and resetting
+   one translation while a sibling is still drafted stays a staged write.
+   Kernel tests provision the same infrastructure as an installed site.
 
 2. **The workspace is the unit of publish.** The publish endpoint takes no
    item selection: it validates every item tracked in the active workspace

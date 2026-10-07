@@ -38,6 +38,7 @@ use Drupal\Core\Routing\RouteProviderInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\Core\Url;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -73,11 +74,8 @@ final class ApiContentControllers extends ApiControllerBase {
     #[Autowire(service: 'transliteration')]
     private readonly TransliterationInterface $transliteration,
     private readonly HomePageHelper $homePageHelper,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager = NULL,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   /**
@@ -165,9 +163,11 @@ final class ApiContentControllers extends ApiControllerBase {
    * This is restricted to never-published drafts.
    *
    * Because the auto-save key relies on the langcode, this change must be
-   * written directly to the stored entity rather than the auto-save entry.
-   * Any existing auto-save data is then migrated to the new langcode key
-   * to preserve unsaved edits and prevent conflict errors.
+   * written directly to the stored entity rather than the auto-save entry. It
+   * is a Live write on purpose: the page has never been published, and core
+   * only allows the path alias changes a langcode change entails in Live. The
+   * draft's staged revision and its staging bookkeeping are then migrated to
+   * the new langcode to preserve unsaved edits and prevent conflict errors.
    *
    * @see \Drupal\canvas\AutoSave\AutoSaveManager::entityIsConsideredNew()
    * @see \Drupal\canvas\AutoSave\AutoSaveManager::migrateLangcode()

@@ -188,7 +188,8 @@ final class PatternLayoutTest extends ApiLayoutControllerTestBase {
    * @see ui/src/features/pattern/RenamePatternDialog.tsx
    */
   public function testRenameWithPendingDraft(): void {
-    $this->setUpCurrentUser([], [Pattern::ADMIN_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    // Publishing publishes the workspace, which follows core workspace access.
+    $this->setUpCurrentUser([], [Pattern::ADMIN_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION, 'view any workspace', 'edit any workspace']);
     $pattern = self::createPattern('Original name');
     $this->createEmptyTreeDraft();
     $autoSave = $this->container->get(AutoSaveManager::class);

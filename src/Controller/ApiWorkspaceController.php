@@ -41,17 +41,11 @@ final class ApiWorkspaceController extends ApiControllerBase {
     // Nullable, resolved to NULL until the Workspaces module is installed
     // (before database updates run), so the container can compile. The
     // routes are unreachable until then.
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   private function workspaceManager(): WorkspaceManagerInterface {
-    if (!$this->workspaceManager instanceof WorkspaceManagerInterface) {
-      throw new \LogicException('The Workspaces module is not installed.');
-    }
     return $this->workspaceManager;
   }
 
@@ -117,7 +111,7 @@ final class ApiWorkspaceController extends ApiControllerBase {
       throw new ConflictHttpException('The Main workspace cannot be deleted.');
     }
     $wm = $this->workspaceManager();
-    if ($wm->hasActiveWorkspace() && $wm->getActiveWorkspace()?->id() === $workspace->id()) {
+    if ($wm->getActiveWorkspace()?->id() === $workspace->id()) {
       $wm->switchToLive();
     }
     $workspace->delete();

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Drupal\canvas\AutoSave;
 
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
-use Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator;
 use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\AutoSaveEntity;
 use Drupal\canvas\CanvasServiceProvider;
@@ -145,7 +144,6 @@ class AutoSaveManager implements EventSubscriberInterface {
     private readonly TimeInterface $time,
     private readonly HealthRecords $healthRecords,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
-    private readonly LegacyAutoSaveMigrator $legacyAutoSaveMigrator,
     private readonly ModuleHandlerInterface $moduleHandler,
   ) {
     $this->autoSaveStore = $keyValueFactory->get(self::AUTO_SAVE_STORE);
@@ -223,7 +221,6 @@ class AutoSaveManager implements EventSubscriberInterface {
   }
 
   public function saveEntity(EntityInterface $entity, ?string $clientId = NULL, bool $forcePreserve = FALSE, bool $immediateWorkspacePersist = FALSE): void {
-    $this->legacyAutoSaveMigrator->migrateIfNeeded($entity);
     $key = $this->getAutoSaveKey($entity);
     $data = self::normalizeEntity($entity);
     $data_hash = self::generateHash($data);
@@ -244,10 +241,15 @@ class AutoSaveManager implements EventSubscriberInterface {
     // \array_diff($original_hash, $data_hash)
     // @endcode
     if (!$forcePreserve && $original_hash !== NULL && \hash_equals($original_hash, $data_hash) && !$has_form_violations) {
-      // We've reset back to the original values. Clear the auto-save entry but
-      // keep the hash.
-      $this->delete($entity);
-      return;
+      // We've reset back to the original values: clear the auto-save entry.
+      // A workspace revision carries every translation of the entity, so when
+      // a sibling translation is still drafted the reset is staged as a write
+      // instead, which leaves this translation equal to Live and the sibling's
+      // draft intact.
+      if (!$this->hasDraftedSiblingTranslation($entity)) {
+        $this->delete($entity);
+        return;
+      }
     }
 
     // A payload identical to the currently staged draft from the same client
@@ -264,7 +266,10 @@ class AutoSaveManager implements EventSubscriberInterface {
     }
 
     // Avoid overwriting the original hash; it would break conflict detection.
-    $existing_entry = $this->autoSaveStore->get($key);
+    // Entries with a key-value metadata row carry it there; workspace-staged
+    // entries record it in the staging metadata.
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::getStagedEntryMetadata()
+    $existing_entry = $this->autoSaveStore->get($key) ?? $this->workspaceAutoSave->getStagedEntryMetadata($key);
     if (\is_array($existing_entry) && \array_key_exists(self::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $existing_entry)) {
       $original_hash = $existing_entry[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
     }
@@ -293,6 +298,22 @@ class AutoSaveManager implements EventSubscriberInterface {
     $this->cache->delete($key);
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
     $this->invokeStagedWriteHook();
+  }
+
+  /**
+   * Whether another translation of a content entity currently has a draft.
+   */
+  private function hasDraftedSiblingTranslation(EntityInterface $entity): bool {
+    if (!$entity instanceof ContentEntityInterface || $entity->id() === NULL) {
+      return FALSE;
+    }
+    $langcode = $entity->language()->getId();
+    foreach (\array_keys($entity->getTranslationLanguages()) as $sibling_langcode) {
+      if ($sibling_langcode !== $langcode && !$this->getAutoSaveEntity($entity->getTranslation($sibling_langcode))->isEmpty()) {
+        return TRUE;
+      }
+    }
+    return FALSE;
   }
 
   /**
@@ -426,13 +447,17 @@ class AutoSaveManager implements EventSubscriberInterface {
 
     // Exclude revision bookkeeping: a draft staged as a workspace revision
     // carries its own revision id, revision metadata (including the Workspaces
-    // module's `workspace` key) and a FALSE `revision_default` flag, none of
-    // which is user-editable content. Including them would make a draft's
-    // hash never match the Live entity's, even when the content is identical.
+    // module's `workspace` key), a FALSE `revision_default` flag and, per
+    // translation, a `revision_translation_affected` flag that is set only on
+    // the translation the staged save touched. None of that is user-editable
+    // content. Including it would make a draft's hash never match the Live
+    // entity's, even when the content is identical, and would report every
+    // untouched sibling translation of a staged entity as a pending change.
     $entity_type = $entity->getEntityType();
     if ($entity_type instanceof ContentEntityTypeInterface && $entity_type->isRevisionable()) {
       $revision_bookkeeping = \array_filter([
         $entity_type->getKey('revision'),
+        $entity_type->getKey('revision_translation_affected'),
         ...\array_values($entity_type->getRevisionMetadataKeys()),
       ]);
       $fields = \array_diff_key($fields, \array_flip($revision_bookkeeping));
@@ -486,14 +511,8 @@ class AutoSaveManager implements EventSubscriberInterface {
    * must wrap themselves in WorkspaceManagerInterface::executeInWorkspace().
    */
   public static function activeWorkspaceId(): string {
-    $manager = \Drupal::hasService('workspaces.manager') ? \Drupal::service(WorkspaceManagerInterface::class) : NULL;
-    if ($manager !== NULL && $manager->hasActiveWorkspace()) {
-      $active = $manager->getActiveWorkspace();
-      if ($active !== NULL) {
-        return (string) $active->id();
-      }
-    }
-    return AutoSaveWorkspace::ID;
+    $active = \Drupal::service(WorkspaceManagerInterface::class)->getActiveWorkspace();
+    return $active === NULL ? AutoSaveWorkspace::ID : (string) $active->id();
   }
 
   /**
@@ -522,7 +541,6 @@ class AutoSaveManager implements EventSubscriberInterface {
   }
 
   public function getAutoSaveEntity(EntityInterface $entity, bool $bypass_cache = FALSE): AutoSaveEntity {
-    $this->legacyAutoSaveMigrator->migrateIfNeeded($entity);
     return $this->workspaceAutoSave->loadAutoSaveEntity($entity, $bypass_cache);
   }
 
@@ -971,17 +989,15 @@ class AutoSaveManager implements EventSubscriberInterface {
    */
   public function groupConfigEntityAutoSaves(ComponentTreeConfigEntityBase $entity): array {
     $suffix = '.' . $entity->getConfigDependencyName();
-    $prefix = self::activeWorkspaceId() . ':';
     /** @var array<string, AutoSaveEntry> $entries */
-    $entries = $this->autoSaveStore->getAll();
+    $entries = $this->workspaceAutoSave->getAllList();
     $matches = \array_filter(
       $entries,
-      static fn (array $entry, string $key): bool =>
-        \str_starts_with($key, $prefix)
-        && $entry['entity_type'] === StagedLanguageConfigOverride::ENTITY_TYPE_ID
-        && \is_string($entry['entity_id'])
+      static fn (array $entry): bool =>
+        ($entry['entity_type'] ?? NULL) === StagedLanguageConfigOverride::ENTITY_TYPE_ID
+        && isset($entry['data'])
+        && \is_string($entry['entity_id'] ?? NULL)
         && \str_ends_with($entry['entity_id'], $suffix),
-      ARRAY_FILTER_USE_BOTH,
     );
     return \array_values(\array_map(function (array $entry): StagedLanguageConfigOverride {
       $override = $this->createEntityFromAutoSaveEntry($entry);
@@ -1213,14 +1229,13 @@ class AutoSaveManager implements EventSubscriberInterface {
    *
    * Called after a new-draft entity's langcode is changed so the auto-save
    * entry — which is keyed by entity type, ID, and langcode — follows the
-   * entity's updated language. Any existing entry stored under the old key is
-   * re-stored under the new key with its langcode metadata updated, and the
-   * old key is deleted.
+   * entity's updated language. The staged revision follows the entity by
+   * itself (the key derives from it); the staging bookkeeping recorded under
+   * the old key (client instance, stored-entity hash, draft path, conflict
+   * retention, form violations, a snapshot row) is re-keyed.
    *
-   * The memoized entry under the old key is dropped and the auto-save cache
-   * tag is invalidated so subsequent reads pick up the migrated entry. Nothing
-   * is memoized under the new key: ::getAutoSaveEntity() only caches keys that
-   * have a stored entry, and the new key had none.
+   * The memoized entries under both keys are dropped and the auto-save cache
+   * tag is invalidated so subsequent reads pick up the migrated entry.
    *
    * @param \Drupal\Core\Entity\ContentEntityInterface $entity
    *   The entity after its langcode has been updated and saved.
@@ -1228,52 +1243,30 @@ class AutoSaveManager implements EventSubscriberInterface {
    *   The langcode the entity held before the change.
    */
   public function migrateLangcode(ContentEntityInterface $entity, string $old_langcode): void {
-    $old_key = $entity->getEntityTypeId() . ':' . $entity->id() . ':' . $old_langcode;
+    $old_key = self::activeWorkspaceId() . ':' . $entity->getEntityTypeId() . ':' . $entity->id() . ':' . $old_langcode;
     $new_key = self::getAutoSaveKey($entity);
 
     if ($old_key === $new_key) {
       return;
     }
 
-    $existing = $this->autoSaveStore->get($old_key);
-    if (!\is_array($existing)) {
+    // The stored entity was just saved with the new langcode, so its hash no
+    // longer matches the one recorded when the draft was written. Advance it,
+    // otherwise the migrated draft is reported as a conflict.
+    // @see ::getConflictId()
+    $moved = $this->workspaceAutoSave->migrateStagingKey($entity, $old_langcode, $this->getUnchangedHash($entity));
+    $violations = $this->formViolationsStore->get($old_key);
+    if ($violations !== NULL) {
+      $this->formViolationsStore->set($new_key, $violations);
+      $this->formViolationsStore->delete($old_key);
+      $moved = TRUE;
+    }
+    if (!$moved) {
       return;
     }
 
-    \assert(!empty($existing));
-    $langcode_field = $entity->getEntityType()->getKey('langcode');
-    $existing['langcode'] = $entity->language()->getId();
-    // Update the serialized field data so the reconstructed entity carries
-    // the correct langcode. The data uses the field-items format produced by
-    // toStorableArray() / TypedDataHelper::castRawPhpTypes() — a plain list
-    // of field item arrays, without a per-langcode wrapper key.
-    if (\is_string($langcode_field) && isset($existing['data'][$langcode_field])) {
-      $existing['data'][$langcode_field] = [['value' => $entity->language()->getId()]];
-    }
-    // Saving the stored entity with a new langcode deletes the old path alias
-    // entity and creates a new one for the new language; the alias text itself
-    // is not lost. Drop the alias ID and language from auto-saved item 'path'
-    // so publishing creates a new alias entity using the alias text stored in
-    // auto-save item instead of trying to update the deleted one.
-    // @see \Drupal\path\Plugin\Field\FieldType\PathItem::postSave()
-    foreach ($entity->getFieldDefinitions() as $field_name => $field_definition) {
-      if ($field_definition->getType() !== 'path' || !isset($existing['data'][$field_name])) {
-        continue;
-      }
-      foreach ($existing['data'][$field_name] as &$path_item) {
-        unset($path_item['pid'], $path_item['langcode']);
-      }
-      unset($path_item);
-    }
-    // The stored entity was just saved with the new langcode, so its hash no
-    // longer matches the one recorded when the auto-save entry was written.
-    // Advance it, otherwise the migrated entry is reported as a conflict.
-    // @see ::getConflictId()
-    $existing[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY] = $this->getUnchangedHash($entity);
-    $this->autoSaveStore->set($new_key, $existing);
-    $this->autoSaveStore->delete($old_key);
-
     $this->cache->delete($old_key);
+    $this->cache->delete($new_key);
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
   }
 

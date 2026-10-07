@@ -13,6 +13,9 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
  * Migrates legacy key-value auto-save entries into workspace staging.
+ *
+ * @see canvas_post_update_0031_migrate_auto_save_to_workspace()
+ * @see canvas_post_update_0034_migrate_key_value_config_drafts()
  */
 final class LegacyAutoSaveMigrator {
 
@@ -38,13 +41,6 @@ final class LegacyAutoSaveMigrator {
         return;
       }
       $key = $unprefixed;
-    }
-    // The key-value entry IS this entity's staging (workspace infrastructure
-    // missing, or an entity type that stages in key-value by design): there is
-    // nothing to migrate into, and "migrating" would rewrite and then delete
-    // the same key-value row, losing the draft.
-    if ($this->workspaceAutoSave->usesKeyValueStaging($entity)) {
-      return;
     }
     if ($this->workspaceAutoSave->hasWorkspaceStaging($entity)) {
       $store->delete($key);

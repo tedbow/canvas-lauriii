@@ -166,6 +166,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       Page::EDIT_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     /** @var \Drupal\canvas\AutoSave\AutoSaveManager $autoSave */
@@ -325,6 +328,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       Page::EDIT_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     $autoSave = $this->container->get(AutoSaveManager::class);
@@ -513,6 +519,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       Page::EDIT_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     /** @var \Drupal\canvas\AutoSave\AutoSaveManager $autoSave */
@@ -624,6 +633,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       Page::EDIT_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     $autoSave = $this->container->get(AutoSaveManager::class);
@@ -743,6 +755,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       Page::EDIT_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     $autoSave = $this->container->get(AutoSaveManager::class);
@@ -870,6 +885,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       Page::EDIT_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     $autoSave = $this->container->get(AutoSaveManager::class);
@@ -1035,6 +1053,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     $this->setUpCurrentUser(permissions: [
       PageVariant::ADMIN_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     // 1. Create a JavaScriptComponent with two optional text props.
@@ -1186,6 +1207,9 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
       ContentTemplate::ADMIN_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
       'access content',
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     // 1. Create a JavaScriptComponent with two optional text props.

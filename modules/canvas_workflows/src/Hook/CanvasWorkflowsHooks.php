@@ -15,7 +15,9 @@ use Drupal\Core\Hook\Order\OrderAfter;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\workspaces\Hook\EntityOperations;
+use Drupal\workspaces\WorkspaceInformationInterface;
 use Drupal\workspaces\WorkspaceInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
@@ -33,16 +35,10 @@ final class CanvasWorkflowsHooks {
   public function __construct(
     private readonly WorkspaceReview $workspaceReview,
     private readonly AccountInterface $currentUser,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager = NULL,
-    /**
-     * @var \Drupal\workspaces\WorkspaceInformationInterface|null
-     */
+    private readonly WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'workspaces.information')]
-    private readonly ?object $workspaceInformation = NULL,
+    private readonly WorkspaceInformationInterface $workspaceInformation,
   ) {}
 
   /**
@@ -62,9 +58,6 @@ final class CanvasWorkflowsHooks {
    */
   #[Hook('entity_presave', order: new OrderAfter(classesAndMethods: [[EntityOperations::class, 'entityPresave']]))]
   public function demoteReviewStateOnStagedWrite(EntityInterface $entity): void {
-    if ($this->workspaceManager === NULL || $this->workspaceInformation === NULL) {
-      return;
-    }
     // Demotion saves the workspace itself, which re-enters this hook.
     if ($entity instanceof WorkspaceInterface) {
       return;

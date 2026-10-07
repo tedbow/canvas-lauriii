@@ -12,7 +12,6 @@ use Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider;
 use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
-use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Workspace\WorkspaceEntityLockedException;
 use Drupal\Component\Datetime\TimeInterface;
@@ -58,7 +57,6 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     $this->installEntitySchema('user');
     $this->installEntitySchema('entity_test');
     $this->installEntitySchema('entity_test_mulrevpub');
-    $this->installEntitySchema(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
 
     $account = $this->createUser([
       'administer workspaces',
@@ -67,13 +65,6 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     ]);
     self::assertInstanceOf(User::class, $account);
     $this->setCurrentUser($account);
-
-    Workspace::create([
-      'id' => AutoSaveWorkspace::ID,
-      'label' => AutoSaveWorkspace::LABEL,
-      'uid' => (int) $account->id(),
-      'provider' => CanvasWorkspaceProvider::getId(),
-    ])->save();
   }
 
   private function autoSaveManager(): AutoSaveManager {
@@ -343,6 +334,11 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
    * The Canvas workspace provider locks the workspace down.
    */
   public function testWorkspaceProviderAccess(): void {
+    // The base provisions the Main workspace with the ordinary provider, as a
+    // fresh install does; this test covers the transitional one.
+    $workspace = Workspace::load(AutoSaveWorkspace::ID);
+    self::assertNotNull($workspace);
+    $workspace->set('provider', CanvasWorkspaceProvider::getId())->save();
     $workspace = Workspace::load(AutoSaveWorkspace::ID);
     self::assertNotNull($workspace);
     self::assertSame(CanvasWorkspaceProvider::getId(), $workspace->get('provider')->value);

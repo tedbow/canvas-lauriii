@@ -10,6 +10,8 @@ use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\RevisionableStorageInterface;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
+use Drupal\workspaces\WorkspaceTrackerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
@@ -25,16 +27,10 @@ final class AutoSaveRevisionPruner {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceTrackerInterface|null
-     */
+    private readonly WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'workspaces.tracker')]
-    private readonly ?object $workspaceAssociation,
+    private readonly WorkspaceTrackerInterface $workspaceAssociation,
     // Staging bookkeeping must resolve identically in every workspace.
     // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
     #[Autowire(service: CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE)]
@@ -45,19 +41,11 @@ final class AutoSaveRevisionPruner {
    * The workspace pruning operates on: active, or the Main fallback.
    */
   private function stagingWorkspaceId(): string {
-    if ($this->workspaceManager !== NULL && $this->workspaceManager->hasActiveWorkspace()) {
-      $active = $this->workspaceManager->getActiveWorkspace();
-      if ($active !== NULL) {
-        return (string) $active->id();
-      }
-    }
-    return AutoSaveWorkspace::ID;
+    $active = $this->workspaceManager->getActiveWorkspace();
+    return $active === NULL ? AutoSaveWorkspace::ID : (string) $active->id();
   }
 
   public function recordAndPrune(ContentEntityInterface $entity, int $density = self::DEFAULT_DENSITY): void {
-    if ($this->workspaceManager === NULL || $this->workspaceAssociation === NULL) {
-      return;
-    }
     if ($entity->id() === NULL) {
       return;
     }

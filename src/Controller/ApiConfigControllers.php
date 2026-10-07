@@ -29,6 +29,7 @@ use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\Core\Session\AccountSwitcherInterface;
 use Drupal\Core\Session\AnonymousUserSession;
 use Drupal\Core\Url;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -70,11 +71,8 @@ final class ApiConfigControllers extends ApiControllerBase {
     private readonly AccessManagerInterface $accessManager,
     private readonly AccountProxyInterface $currentUser,
     private readonly ComponentSourceManager $componentSourceManager,
-    /**
-     * @var \Drupal\workspaces\WorkspaceManagerInterface|null
-     */
     #[Autowire(service: 'workspaces.manager')]
-    private readonly ?object $workspaceManager = NULL,
+    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   /**
