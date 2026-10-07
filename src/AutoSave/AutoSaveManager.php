@@ -104,14 +104,6 @@ class AutoSaveManager implements EventSubscriberInterface {
   const ENTITY_DUPLICATE_SUFFIX = ' (Copy)';
 
   /**
-   * Key-value staging for config entities without wrapper support.
-   *
-   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::persistStagedEntity()
-   * @see ::groupConfigEntityAutoSaves()
-   */
-  private KeyValueStoreInterface $autoSaveStore;
-
-  /**
    * @todo Remove this in https://drupal.org/i/3505018.
    */
   private KeyValueStoreInterface $formViolationsStore;
@@ -146,7 +138,6 @@ class AutoSaveManager implements EventSubscriberInterface {
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly ModuleHandlerInterface $moduleHandler,
   ) {
-    $this->autoSaveStore = $keyValueFactory->get(self::AUTO_SAVE_STORE);
     $this->formViolationsStore = $keyValueFactory->get(self::FORM_VIOLATIONS_STORE);
     $this->componentInstanceFormViolationsStore = $keyValueFactory->get(self::COMPONENT_INSTANCE_FORM_VIOLATIONS_STORE);
   }
@@ -266,10 +257,7 @@ class AutoSaveManager implements EventSubscriberInterface {
     }
 
     // Avoid overwriting the original hash; it would break conflict detection.
-    // Entries with a key-value metadata row carry it there; workspace-staged
-    // entries record it in the staging metadata.
-    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::getStagedEntryMetadata()
-    $existing_entry = $this->autoSaveStore->get($key) ?? $this->workspaceAutoSave->getStagedEntryMetadata($key);
+    $existing_entry = $this->workspaceAutoSave->getStagedEntryMetadata($key);
     if (\is_array($existing_entry) && \array_key_exists(self::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $existing_entry)) {
       $original_hash = $existing_entry[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
     }
@@ -908,9 +896,7 @@ class AutoSaveManager implements EventSubscriberInterface {
       return ConflictResolutionOutcomeEnum::NoAutoSaveItem;
     }
 
-    // Key-value-staged entries carry the stored-entity hash themselves;
-    // workspace-staged entries record it in the staging metadata.
-    $auto_save_data = $this->autoSaveStore->get($key) ?? $this->workspaceAutoSave->getStagedEntryMetadata($key);
+    $auto_save_data = $this->workspaceAutoSave->getStagedEntryMetadata($key);
     \assert(\is_array($auto_save_data));
     \assert(!$entity->isNew());
     $stored = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), (string) $entity->id());
@@ -1189,14 +1175,6 @@ class AutoSaveManager implements EventSubscriberInterface {
     // Finally: the goal: to update rather than delete the auto-save entry when
     // safe.
     if ($auto_save_update_needed) {
-      // Advance `original_hash` before `saveEntity()` so the preservation
-      // guard in `saveEntity()` picks up the already-advanced hash in a
-      // single write.
-      $this->setStoredEntityHash(
-        self::getAutoSaveKey($autoSaveEntity),
-        // Hash the freshly-saved stored entity, not the auto-save draft.
-        self::generateHash(self::normalizeEntity($entity)),
-      );
       $this->saveEntity($autoSaveEntity, $autoSaveData->clientId);
     }
   }
@@ -1280,29 +1258,6 @@ class AutoSaveManager implements EventSubscriberInterface {
       return $entity->isNew();
     }
     return (string) $entity->label() == ApiContentControllers::defaultTitle($entity->getEntityType()) || str_ends_with((string) $entity->label(), self::ENTITY_DUPLICATE_SUFFIX);
-  }
-
-  /**
-   * Sets $current_hash into the stored auto-save item's original_hash key.
-   *
-   * Callers are responsible for any cache invalidation that follows, since the
-   * appropriate scope differs per call site.
-   *
-   * @param AutoSaveEntry|null $auto_save_item
-   */
-  private function setStoredEntityHash(string $auto_save_item_key, string $current_hash, ?array $auto_save_item = NULL): void {
-    if (\is_null($auto_save_item)) {
-      $auto_save_item = $this->autoSaveStore->get($auto_save_item_key);
-      // Drafts staged as snapshot rows or workspace-scoped configuration
-      // have no key-value entry to advance; their hash bookkeeping lives
-      // with the staged entry itself.
-      // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::advanceStagedEntryOriginalHash()
-      if (\is_null($auto_save_item)) {
-        return;
-      }
-    }
-    $auto_save_item[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY] = $current_hash;
-    $this->autoSaveStore->set($auto_save_item_key, $auto_save_item);
   }
 
 }

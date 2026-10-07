@@ -775,13 +775,6 @@ final class WorkspaceAutoSave {
       $this->pendingBuffer->delete($old_key);
       $moved = TRUE;
     }
-    $kv = $this->keyValueFactory->get(AutoSaveManager::AUTO_SAVE_STORE);
-    $kv_row = $kv->get($old_key);
-    if (\is_array($kv_row)) {
-      $kv->set($new_key, $rekey($kv_row));
-      $kv->delete($old_key);
-      $moved = TRUE;
-    }
     $snapshot = $this->snapshotRepository->resolveLatestStaged($type_id, $id, $old_langcode);
     if ($snapshot !== NULL) {
       $payload = \json_decode($snapshot->getPayload(), TRUE, 512, JSON_THROW_ON_ERROR);
@@ -816,22 +809,12 @@ final class WorkspaceAutoSave {
   /**
    * Advances the recorded stored-entity hash after a conflict resolution.
    *
-   * Entries with a key-value metadata row carry the hash there; the other
-   * workspace-staged entries record it in the pending-buffer metadata.
-   *
    * @see \Drupal\canvas\AutoSave\AutoSaveManager::resolveConflict()
+   * @see ::getStagedEntryMetadata()
    */
   public function advanceStagedEntryOriginalHash(EntityInterface $entity, string $hash): void {
     $key = AutoSaveManager::getAutoSaveKey($entity);
-    $kv = $this->keyValueFactory->get(AutoSaveManager::AUTO_SAVE_STORE);
-    $row = $kv->get($key);
-    if (\is_array($row)) {
-      $row[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY] = $hash;
-      $kv->set($key, $row);
-    }
-    else {
-      $this->pendingBuffer->set($key, [AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY => $hash] + ($this->pendingBuffer->get($key) ?? []));
-    }
+    $this->pendingBuffer->set($key, [AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY => $hash] + ($this->pendingBuffer->get($key) ?? []));
     $this->cache->delete($key);
   }
 
@@ -1205,8 +1188,7 @@ final class WorkspaceAutoSave {
                 continue;
               }
             }
-            $kv_row = $this->keyValueFactory->get(AutoSaveManager::AUTO_SAVE_STORE)->get($key);
-            $metadata = self::entryMetadata(\is_array($kv_row) ? $kv_row : NULL) + self::entryMetadata($this->getStagedEntryMetadata($key));
+            $metadata = self::entryMetadata($this->getStagedEntryMetadata($key));
             // Already applied to $translation above; not a list row property.
             unset($metadata[self::DRAFT_PATH_KEY]);
             $out[$key] = $metadata + [
@@ -1445,7 +1427,6 @@ final class WorkspaceAutoSave {
     $this->pendingBuffer->delete($key);
     $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
     $this->cache->delete($key);
-    $this->keyValueFactory->get(AutoSaveManager::AUTO_SAVE_STORE)->delete($key);
   }
 
   /**
@@ -1546,7 +1527,6 @@ final class WorkspaceAutoSave {
       }
     }
     $collections = [
-      AutoSaveManager::AUTO_SAVE_STORE,
       AutoSaveManager::FORM_VIOLATIONS_STORE,
       AutoSaveManager::COMPONENT_INSTANCE_FORM_VIOLATIONS_STORE,
       AutoSaveRevisionPruner::STORE,
@@ -1588,7 +1568,6 @@ final class WorkspaceAutoSave {
         }
       }
     }
-    $this->keyValueFactory->get(AutoSaveManager::AUTO_SAVE_STORE)->deleteAll();
     $this->pendingBuffer->deleteAll();
     $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
   }

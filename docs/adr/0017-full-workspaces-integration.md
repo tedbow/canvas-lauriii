@@ -58,7 +58,7 @@ unit of review and publish.
    ID, no data migration). Auto-save keys are workspace-prefixed
    (`{workspace}:{type}:{id}[:{langcode}]`), which partitions every staging
    store — snapshot rows (which gain a `workspace` field and a
-   workspace-qualified unique key), buffer rows, key-value staging metadata,
+   workspace-qualified unique key), buffer rows and their staging metadata,
    form violations, pruner bookkeeping, and caches — per workspace. Buffer rows
    flush into the workspace recorded in their key even if the user has
    switched since. Route-scoped workspace activation is removed; the editor
@@ -66,8 +66,9 @@ unit of review and publish.
    There is no fallback store: Workspaces and Workspace Config are hard
    dependencies, so every draft is a workspace revision, workspace-scoped
    configuration, or a snapshot row (staged configuration translations
-   included); the key-value store only holds staging metadata. The legacy
-   key-value migration runs in the update path only, and the Main workspace
+   included), and the staging metadata (client instance, stored-entity hash,
+   conflict retention) lives with the draft; the `canvas.auto_save` key-value
+   store is read by the update path only. The Main workspace
    cannot be deleted. A pending workspace revision only carries revisionable
    fields, so every field a draft can edit is revisionable (the page owner
    field was made so in `canvas_update_11203`), and a translation's draft is

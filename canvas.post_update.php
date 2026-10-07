@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator;
+use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
 use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist;
 use Drupal\canvas\CanvasConfigUpdater;
@@ -980,15 +981,18 @@ function canvas_post_update_0033_promote_config_snapshots(array &$sandbox): void
 }
 
 /**
- * Moves key-value staged config drafts into workspace staging.
+ * Empties the `canvas.auto_save` key-value store into workspace staging.
  *
  * Config entities without a snapshot-backed store (staged configuration
- * translations) kept their drafts in the `canvas.auto_save` key-value store
- * until every draft moved into workspace staging. Each remaining row that
- * holds a draft is persisted through the staged write path (a snapshot row
- * for these entity types), which removes the key-value row.
+ * translations) kept their drafts there until every draft moved into
+ * workspace staging: each such row is persisted through the staged write
+ * path (a snapshot row for these entity types), which removes it. Rows
+ * without a draft held the staging metadata (stored-entity hash, conflict
+ * retention) of a workspace-staged draft; that metadata moves to the staging
+ * metadata store, where it has lived for every draft written since.
  *
  * @see \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator
+ * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::getStagedEntryMetadata()
  */
 function canvas_post_update_0034_migrate_key_value_config_drafts(array &$sandbox): void {
   // Staging bookkeeping must resolve identically in every workspace.
@@ -1008,10 +1012,20 @@ function canvas_post_update_0034_migrate_key_value_config_drafts(array &$sandbox
   $entity_type_manager = \Drupal::entityTypeManager();
   /** @var \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator $migrator */
   $migrator = \Drupal::service(LegacyAutoSaveMigrator::class);
+  /** @var \Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer $staging_metadata */
+  $staging_metadata = \Drupal::service(PendingContentAutoSaveBuffer::class);
   foreach (\array_splice($sandbox['keys'], 0, 25) as $key) {
     $entry = $kv->get($key);
-    // Rows without a draft are staging metadata for a workspace-staged entry.
-    if (!\is_array($entry) || !isset($entry['entity_type'], $entry['entity_id'], $entry['data']) || !\is_array($entry['data'])) {
+    if (!\is_array($entry)) {
+      $kv->delete($key);
+      continue;
+    }
+    if (!isset($entry['data'])) {
+      $staging_metadata->set($key, WorkspaceAutoSave::entryMetadata($entry) + ($staging_metadata->get($key) ?? []));
+      $kv->delete($key);
+      continue;
+    }
+    if (!isset($entry['entity_type'], $entry['entity_id']) || !\is_array($entry['data'])) {
       continue;
     }
     if (!$entity_type_manager->hasDefinition($entry['entity_type'])
