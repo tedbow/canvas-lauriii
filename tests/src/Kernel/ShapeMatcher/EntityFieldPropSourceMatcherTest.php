@@ -77,6 +77,7 @@ class EntityFieldPropSourceMatcherTest extends PropSourceMatcherTestBase {
     'entity:path_alias' => FALSE,
     'entity:file' => FALSE,
     'entity:workspace' => FALSE,
+    'entity:workspace_config' => FALSE,
     // This would be 99% identical to `entity:media:baby_videos`.
     'entity:media:vacation_videos' => FALSE,
     // Covered by ::testDocumentShapeFileExtensionFiltering().
