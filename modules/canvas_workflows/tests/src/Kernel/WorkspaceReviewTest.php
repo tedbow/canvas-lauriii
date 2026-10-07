@@ -51,7 +51,6 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
     $this->installEntitySchema('path_alias');
     $this->installEntitySchema('user');
     $this->installEntitySchema('entity_test_mulrevpub');
-    $this->installEntitySchema('canvas_auto_save_snapshot');
 
     $admin = $this->createUser([
       'administer workspaces',
@@ -66,11 +65,6 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
     self::assertInstanceOf(User::class, $admin);
     $this->setCurrentUser($admin);
 
-    Workspace::create([
-      'id' => AutoSaveWorkspace::ID,
-      'label' => AutoSaveWorkspace::LABEL,
-      'uid' => (int) $admin->id(),
-    ])->save();
     Workspace::create([
       'id' => 'campaign',
       'label' => 'Campaign',
@@ -239,7 +233,7 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
       $draft->set('name', 'campaign draft');
       $auto_save_manager = $this->container->get(AutoSaveManager::class);
       self::assertInstanceOf(AutoSaveManager::class, $auto_save_manager);
-      $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
+      $auto_save_manager->saveEntity($draft);
     });
 
     self::assertSame(WorkspaceReview::STATUS_DRAFT, $this->review()->getStatus($this->campaign()));
@@ -259,7 +253,7 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
       $draft->set('name', 'scheduled draft');
       $auto_save_manager = $this->container->get(AutoSaveManager::class);
       self::assertInstanceOf(AutoSaveManager::class, $auto_save_manager);
-      $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
+      $auto_save_manager->saveEntity($draft);
     });
 
     $scheduler = $this->container->get(WorkspaceScheduledPublish::class);
@@ -317,7 +311,7 @@ final class WorkspaceReviewTest extends CanvasKernelTestBase {
     $workspace_manager->executeInWorkspace('gated', function () use ($entity, $auto_save_manager): void {
       $draft = clone $entity;
       $draft->set('name', 'gated draft');
-      $auto_save_manager->saveEntity($draft, immediateWorkspacePersist: TRUE);
+      $auto_save_manager->saveEntity($draft);
     });
 
     try {

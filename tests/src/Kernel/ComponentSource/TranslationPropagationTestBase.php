@@ -435,7 +435,7 @@ abstract class TranslationPropagationTestBase extends CanvasKernelTestBase {
     $this->entity = $this->reloadEntity();
 
     // Only the default's draft is listed, at the original component version.
-    self::assertSame([$default_key], \array_keys($auto_save_manager->getAllAutoSaveList(FALSE, FALSE)));
+    self::assertSame([$default_key], \array_keys($auto_save_manager->getAllAutoSaveList(FALSE)));
     $draft = $auto_save_manager->getAutoSaveEntity($this->entity)->entity;
     \assert($draft instanceof ComponentTreeEntityInterface);
     $draft_item = $draft->getComponentTree()->getComponentTreeItemByUuid($uuid);
@@ -502,7 +502,7 @@ abstract class TranslationPropagationTestBase extends CanvasKernelTestBase {
       content: \json_encode($payload, flags: \JSON_THROW_ON_ERROR),
     ));
     self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
-    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE, FALSE));
+    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE));
 
     // Record the published "after" state for the default and the translation.
     $actual['default']['after'] = $this->defaultVersionAndInputs();

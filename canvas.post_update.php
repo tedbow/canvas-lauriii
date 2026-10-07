@@ -5,7 +5,6 @@ declare(strict_types=1);
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator;
 use Drupal\canvas\CanvasConfigUpdater;
-use Drupal\canvas\CanvasServiceProvider;
 use Drupal\canvas\ContentTranslation\ComponentTreeFieldSymmetricalTranslationSynchronizer;
 use Drupal\canvas\Entity\BrandKit;
 use Drupal\canvas\Entity\Color;
@@ -218,10 +217,7 @@ function canvas_post_update_0009_unset_category_property_on_components(array &$s
  * Migrate auto-save data from tempstore to key-value store.
  */
 function canvas_post_update_0010_migrate_auto_save(): void {
-  // Staging bookkeeping must resolve identically in every workspace.
-  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
-  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
-  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $keyvalue_factory = \Drupal::service('keyvalue');
   $tempstore_factory = \Drupal::service(SharedTempStoreFactory::class);
 
   $collections = [
@@ -681,10 +677,7 @@ function _canvas_coerce_block_label_display_in_raw(array &$data): bool {
  * @see \Drupal\canvas\AutoSave\AutoSaveManager::toStorableArray()
  */
 function canvas_post_update_0026_rehash_auto_save_items(): void {
-  // Staging bookkeeping must resolve identically in every workspace.
-  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
-  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
-  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $keyvalue_factory = \Drupal::service('keyvalue');
   $auto_save_store = $keyvalue_factory->get(AutoSaveManager::AUTO_SAVE_STORE);
   $entity_type_manager = \Drupal::service(EntityTypeManagerInterface::class);
 
@@ -714,7 +707,7 @@ function canvas_post_update_0026_rehash_auto_save_items(): void {
     // detection stays correct after the normalization change.
     $stored = $storage->loadUnchanged($item['entity_id']);
     \assert($stored instanceof EntityInterface);
-    $item[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY] = $generate_hash->invoke(NULL, $normalize->invoke(NULL, $stored));
+    $item['original_hash'] = $generate_hash->invoke(NULL, $normalize->invoke(NULL, $stored));
 
     $auto_save_store->set($key, $item);
   }
@@ -818,10 +811,7 @@ function canvas_post_update_0030_page_variant_selection_options(): void {
  * @see \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator
  */
 function canvas_post_update_0031_migrate_auto_save_to_workspace(array &$sandbox): void {
-  // Staging bookkeeping must resolve identically in every workspace.
-  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
-  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
-  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $keyvalue_factory = \Drupal::service('keyvalue');
   $kv = $keyvalue_factory->get(AutoSaveManager::AUTO_SAVE_STORE);
   if (!isset($sandbox['keys'])) {
     $sandbox['keys'] = \array_keys($kv->getAll());

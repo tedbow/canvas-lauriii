@@ -47,7 +47,7 @@ final class CanvasWorkflowsHooks {
    * Demotes the active workspace to its initial review state when this save
    * stages work in it. Covers non-Canvas writes too (node forms,
    * workspace_config rows for config edits): anything core tracks in the
-   * workspace is a staged write. Canvas's own snapshot/buffer staging
+   * workspace is a staged write. Canvas's own fallback-store staging
    * demotes via hook_canvas_workspace_staged_write().
    *
    * Runs after the Workspaces module has decided the save is a pending

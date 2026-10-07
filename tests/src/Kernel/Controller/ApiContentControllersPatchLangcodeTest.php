@@ -230,7 +230,7 @@ class ApiContentControllersPatchLangcodeTest extends CanvasKernelTestBase {
     $this->patchLangcode(['langcode' => 'de'], Response::HTTP_OK);
 
     // Old key must be gone.
-    self::assertArrayNotHasKey($old_auto_save_key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE), 'Old auto-save key deleted.');
+    self::assertArrayNotHasKey($old_auto_save_key, $autoSave->getAllAutoSaveList(with_entities: FALSE), 'Old auto-save key deleted.');
 
     // New key must exist.
     $reloaded = Page::load($this->page->id());
@@ -241,23 +241,14 @@ class ApiContentControllersPatchLangcodeTest extends CanvasKernelTestBase {
     self::assertStringEndsWith(':de', $new_auto_save_key, 'Auto-save key using de language id.');
 
     // Serialized langcode field inside the item must reflect the new language.
-    $migrated = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$new_auto_save_key] ?? NULL;
+    $migrated = $autoSave->getAllAutoSaveList(with_entities: FALSE)[$new_auto_save_key] ?? NULL;
     self::assertSame('de', $migrated['langcode'] ?? NULL);
     self::assertSame('de', $migrated['data']['langcode'][0]['value'] ?? NULL);
     self::assertSame('de', $migrated['data']['langcode'][0]['value'] ?? NULL);
 
-    // The stored entity changed (its langcode), so the migrated auto-save item's
-    // recorded stored-entity hash must have been advanced: otherwise the auto-save item
-    // is reported as a conflict.
-    $entries = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: TRUE);
-    self::assertArrayHasKey($new_auto_save_key, $entries);
-    self::assertArrayNotHasKey(AutoSaveManager::AUTO_SAVE_CONFLICT_KEY, $entries[$new_auto_save_key], 'Migrated auto-save item is not a conflict.');
-
-    // Editing continues under the new langcode, still without a conflict.
+    // Editing continues under the new langcode.
     $reloaded->set('title', 'My draft title, edited');
     $autoSave->saveEntity($reloaded);
-    $entries_after_edit = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: TRUE);
-    self::assertArrayNotHasKey(AutoSaveManager::AUTO_SAVE_CONFLICT_KEY, $entries_after_edit[$new_auto_save_key]);
     self::assertSame('My draft title, edited', $autoSave->getAutoSaveEntity($reloaded)->entity?->label());
   }
 

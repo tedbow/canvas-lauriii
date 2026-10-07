@@ -94,16 +94,11 @@ services:
     arguments: ['@datetime.time', 100]
     tags:
       - { name: cache.bin.memory }
-  Drupal\canvas\AutoSave\Workspace\AutoSaveRevisionPruner: { }
-  Drupal\canvas\AutoSave\Workspace\WorkspaceContentEntityPersist: { }
-  Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist: { }
-  Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer: { }
-  Drupal\canvas\AutoSave\Workspace\DeferredAutoSaveFlusher: { }
+  Drupal\canvas\AutoSave\Workspace\AutoSaveFallbackStore: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave: { }
   Drupal\canvas\Workspace\WorkspaceNormalizer: { }
   Drupal\canvas\Workspace\CanvasWorkspacePublisher: { }
   Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator: {}
-  Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository: { }
   Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks: {}
   Drupal\canvas\Storage\ComponentTreeLoader: {}
   Drupal\canvas\CodeComponentDataProvider: {}

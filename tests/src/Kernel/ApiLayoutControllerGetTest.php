@@ -35,7 +35,6 @@ use Drupal\user\Entity\User;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
-use PHPUnit\Framework\Attributes\TestWith;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -50,10 +49,6 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 #[Group('canvas')]
 #[Group('#slow')]
 class ApiLayoutControllerGetTest extends ApiLayoutControllerTestBase {
-
-  private const string PUBLISHED_PAGE_TITLE = 'Published version';
-  private const string AUTO_SAVE_PAGE_TITLE = 'Auto-save version';
-  private const string LAYOUT_GET_WITH_QUERY_ARGUMENT_URI_PATTERN = '%s?%s=%s';
 
   use ConstraintViolationsTestTrait;
 
@@ -403,7 +398,9 @@ class ApiLayoutControllerGetTest extends ApiLayoutControllerTestBase {
     \assert($contentTemplate instanceof ContentTemplate);
     self::assertFalse($contentTemplate->status());
     $this->setUpCurrentUser([], [self::getAdminPermission($contentTemplate)]);
-    $this->assertStatusFlags($contentTemplate, TRUE, NULL, NULL);
+    // A template is new until its first publish; this one exists in Live, so
+    // it is not new even though it is disabled.
+    $this->assertStatusFlags($contentTemplate, FALSE, NULL, NULL);
 
     $contentTemplate->setStatus(TRUE)->save();
     $this->assertStatusFlags($contentTemplate, FALSE, NULL, NULL);
@@ -495,49 +492,6 @@ class ApiLayoutControllerGetTest extends ApiLayoutControllerTestBase {
     // isPublished=TRUE (auto-saved published),
     // hasUnsavedStatusChange=TRUE (auto-save has different status than original).
     $this->assertStatusFlags($draft_page, TRUE, TRUE, TRUE);
-  }
-
-  /**
-   * Tests the `autoSaved` query argument in layout GET for Page entities.
-   */
-  #[TestWith([FALSE, self::PUBLISHED_PAGE_TITLE])]
-  #[TestWith([TRUE, self::AUTO_SAVE_PAGE_TITLE])]
-  public function testGetWithAutoSavedQueryArgument(
-    bool $auto_saved,
-    string $expected_title,
-  ): void {
-    // The `autoSaved` query argument and `updated` response property are gated
-    // behind the `canvas_dev_cd` module.
-    // @todo Remove in https://git.drupalcode.org/project/canvas/-/work_items/3591732
-    $this->enableModules(['canvas_dev_cd']);
-
-    $this->setUpCurrentUser(permissions: [Page::CREATE_PERMISSION, Page::EDIT_PERMISSION]);
-    $autoSaveManager = $this->container->get(AutoSaveManager::class);
-    \assert($autoSaveManager instanceof AutoSaveManager);
-
-    $page = Page::create([
-      'title' => self::PUBLISHED_PAGE_TITLE,
-      'status' => TRUE,
-      'components' => [],
-    ]);
-    $page->save();
-
-    // Create an auto-save item that diverges from the published entity.
-    $page->set('title', self::AUTO_SAVE_PAGE_TITLE);
-    $page->setUnpublished();
-    $autoSaveManager->saveEntity($page);
-    $auto_save_entity = $autoSaveManager->getAutoSaveEntity($page);
-
-    $url = $this->getLayoutUrl($page);
-    $response = $this->request(Request::create(\sprintf(self::LAYOUT_GET_WITH_QUERY_ARGUMENT_URI_PATTERN, $url->toString(), ApiLayoutController::AUTO_SAVED_QUERY_KEY, ($auto_saved ? '1' : '0'))));
-    self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-    $decodedResponse = static::decodeResponse($response);
-
-    self::assertStringContainsString($expected_title, $decodedResponse['html']);
-    self::assertSame($expected_title, $decodedResponse['entity_form_fields']['title[0][value]']);
-    self::assertSame(!$auto_saved, $decodedResponse['isPublished']);
-    self::assertSame($auto_saved, $decodedResponse['hasUnsavedStatusChange']);
-    self::assertSame($auto_saved ? $auto_save_entity->updated : $page->getChangedTime(), $decodedResponse['updated']);
   }
 
   private function assertStatusFlags(EntityInterface $entity, bool $isNew, ?bool $isPublished, ?bool $hasUnsavedStatusChange = NULL): void {

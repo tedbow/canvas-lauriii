@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\Hook;
 
+use Drupal\canvas\AutoSave\Workspace\AutoSaveFallbackStore;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\Core\Access\AccessResult;
@@ -33,6 +34,19 @@ final class WorkspaceAutoSaveRevisionHooks {
   #[Hook('entity_presave', order: new OrderAfter(classesAndMethods: [[EntityOperations::class, 'entityPresave']]))]
   public function stampRevisionMetadataForAutoSaveWorkspace(EntityInterface $entity): void {
     $this->workspaceAutoSave->stampAutoSaveWorkspaceRevisionMetadata($entity);
+  }
+
+  /**
+   * Implements hook_ENTITY_TYPE_presave() for workspace entities.
+   *
+   * Canvas keeps one key-value collection per workspace; the collection name
+   * embeds the workspace ID and has a length limit.
+   *
+   * @see \Drupal\canvas\AutoSave\Workspace\AutoSaveFallbackStore
+   */
+  #[Hook('workspace_presave')]
+  public static function workspacePresave(WorkspaceInterface $workspace): void {
+    AutoSaveFallbackStore::assertWorkspaceIdLength((string) $workspace->id());
   }
 
   /**

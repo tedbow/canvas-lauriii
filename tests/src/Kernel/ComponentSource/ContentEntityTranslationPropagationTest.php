@@ -516,7 +516,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
 
     // Previewing a translation creates an auto-save for translation + default.
     self::previewTranslation($page_id, 'es');
-    self::assertCount(2, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE), 'Previewing both translations creates an auto-save for each.');
+    self::assertCount(2, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE), 'Previewing both translations creates an auto-save for each.');
 
     // The ES auto-save carries the reconciled inputs (new required prop +
     // preserved translated value).
@@ -558,7 +558,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
 
     $auto_save_manager = $this->container->get(AutoSaveManager::class);
     \assert($auto_save_manager instanceof AutoSaveManager);
-    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
+    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE);
     self::assertCount(2, $all_auto_saves, 'Both EN and ES auto-saves exist after previewing.');
 
     // Only the default (EN) translation key is publishable via the endpoint.
@@ -586,7 +586,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
     }
 
     // All auto-saves (EN and ES) are consumed.
-    self::assertCount(0, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    self::assertCount(0, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE));
   }
 
   /**
@@ -665,7 +665,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
     $es_key = AutoSaveManager::getAutoSaveKey($this->reloadEntity()->getTranslation('es'));
     $expected = [$default_key, $es_key];
     \sort($expected);
-    $actual = \array_keys($auto_save_manager->getAllAutoSaveList(FALSE, FALSE));
+    $actual = \array_keys($auto_save_manager->getAllAutoSaveList(FALSE));
     \sort($actual);
     self::assertSame($expected, $actual);
   }
@@ -718,7 +718,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
 
     $auto_save_manager = $this->container->get(AutoSaveManager::class);
     \assert($auto_save_manager instanceof AutoSaveManager);
-    self::assertCount(2, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    self::assertCount(2, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE));
 
     \Drupal::entityTypeManager()->getStorage(Page::ENTITY_TYPE_ID)->resetCache();
     $page = Page::load($page_id);
@@ -729,7 +729,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
     self::assertSame(Response::HTTP_NO_CONTENT, $response->getStatusCode(), (string) $response->getContent());
 
     // Every translation's auto-save is cleared, not just the targeted one.
-    self::assertCount(0, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    self::assertCount(0, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE));
   }
 
   /**
@@ -757,7 +757,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
     $es_key = AutoSaveManager::getAutoSaveKey($page->getTranslation('es'));
     $expected_keys = [$en_key, $es_key];
     \sort($expected_keys);
-    $actual_keys = \array_keys($auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    $actual_keys = \array_keys($auto_save_manager->getAllAutoSaveList(with_entities: FALSE));
     \sort($actual_keys);
     self::assertSame($expected_keys, $actual_keys, 'Both EN and ES auto-saves exist before deleting the translation.');
 
@@ -771,11 +771,11 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
 
     // hook_entity_translation_delete() discarded only the ES snapshot; the EN
     // draft survives.
-    $remaining = \array_keys($auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    $remaining = \array_keys($auto_save_manager->getAllAutoSaveList(with_entities: FALSE));
     self::assertSame([$en_key], $remaining, 'Only the default translation snapshot remains.');
 
     // Publishing the EN draft must not rebuild the deleted ES translation.
-    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
+    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE);
     $client_payload = [$en_key => ['data_hash' => $all_auto_saves[$en_key]['data_hash']]];
     $request = Request::create('/canvas/api/v0/auto-saves/publish', 'POST', content: (string) \json_encode($client_payload));
     $publish_controller = \Drupal::classResolver(ApiAutoSaveController::class);
@@ -787,7 +787,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
     $published = Page::load($page_id);
     \assert($published instanceof Page);
     self::assertFalse($published->hasTranslation('es'), 'The deleted Spanish translation is not resurrected on publish.');
-    self::assertCount(0, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    self::assertCount(0, $auto_save_manager->getAllAutoSaveList(with_entities: FALSE));
   }
 
 }

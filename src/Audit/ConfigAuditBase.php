@@ -214,7 +214,7 @@ abstract class ConfigAuditBase {
       throw new \LogicException('not yet implemented');
     }
     $dependencies = [];
-    foreach ($this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE) as $autoSave) {
+    foreach ($this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE) as $autoSave) {
       $entity = $autoSave['entity'];
       \assert(!\is_null($entity));
       if (!$entity instanceof ComponentTreeEntityInterface) {

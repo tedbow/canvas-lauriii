@@ -112,7 +112,7 @@ final class AutoSaveTempstoreToKeyValueUpdateTest extends CanvasUpdatePathTestBa
     $this->assertNull($keyvalue_store->get($auto_save_key));
     $auto_save_manager = \Drupal::service(AutoSaveManager::class);
     \assert($auto_save_manager instanceof AutoSaveManager);
-    $list = $auto_save_manager->getAllAutoSaveList(FALSE, FALSE);
+    $list = $auto_save_manager->getAllAutoSaveList(FALSE);
     $this->assertArrayHasKey($auto_save_key, $list);
     $migrated_data = $list[$auto_save_key];
     $this->assertSame($auto_save_data['entity_type'], $migrated_data['entity_type']);

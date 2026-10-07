@@ -78,15 +78,9 @@ class ApiControllerBase {
       ], []),
     ];
 
-    // Look if any violation sets have the error code that indicates a conflict.
-    $conflict_code_found = \array_find($violationSets, static fn (ConstraintViolationListInterface $violationList) : bool =>
-      $violationList instanceof EntityConstraintViolationList && $violationList->findByCodes((string) ErrorCodesEnum::ItemEntityUpdatedExternally->value)->count() > 0
-    );
-
-    // If there are conflict errors use HTTP 409, otherwise use HTTP 422.
     return new JsonResponse(
       data: $data,
-      status: $conflict_code_found ? Response::HTTP_CONFLICT : Response::HTTP_UNPROCESSABLE_ENTITY
+      status: Response::HTTP_UNPROCESSABLE_ENTITY
     );
   }
 

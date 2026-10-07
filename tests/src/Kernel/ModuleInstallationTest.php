@@ -83,7 +83,7 @@ final class ModuleInstallationTest extends KernelTestBase {
     // Update a value to allow auto-save to be stored.
     $test_entity->set('name', 'I can haz auto save');
     $autoSave->saveEntity($test_entity);
-    self::assertCount(1, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    self::assertCount(1, $autoSave->getAllAutoSaveList(with_entities: FALSE));
 
     // Core's content uninstall validator prevents uninstalling a module that
     // provides a content entity type while content of that type exists.
@@ -95,7 +95,7 @@ final class ModuleInstallationTest extends KernelTestBase {
     $this->container->get(ModuleInstallerInterface::class)->uninstall(['canvas']);
     self::assertFalse($this->container->get(ModuleHandlerInterface::class)->moduleExists('canvas'));
     $this->assertTCanvasStarkThemeExists();
-    self::assertCount(0, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE), 'Auto-save items are removed after uninstallation.');
+    self::assertCount(0, $autoSave->getAllAutoSaveList(with_entities: FALSE), 'Auto-save items are removed after uninstallation.');
 
     // Installing the module after uninstallation does not lead to errors.
     $this->container->get(ModuleInstallerInterface::class)->install(['canvas']);

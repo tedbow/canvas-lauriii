@@ -347,7 +347,7 @@ final readonly class Inventory {
    */
   private function autoSaveItems(): array {
     $items = [];
-    foreach ($this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE) as $entry) {
+    foreach ($this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE) as $entry) {
       $entity = $entry['entity'] ?? NULL;
       // The entity behind a snapshot may no longer exist, e.g. it was
       // deleted after the snapshot was made; skip anything that didn't load.

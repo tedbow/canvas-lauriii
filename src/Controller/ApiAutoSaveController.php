@@ -19,7 +19,6 @@ use Drupal\Core\Entity\EntityConstraintViolationListInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
-use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Field\FieldItemListInterface;
 use Drupal\Core\File\FileUrlGeneratorInterface;
 use Drupal\Core\Http\Exception\CacheableAccessDeniedHttpException;
@@ -56,7 +55,6 @@ final class ApiAutoSaveController extends ApiControllerBase {
     #[Autowire(service: 'logger.channel.canvas')]
     private readonly LoggerInterface $logger,
     private readonly AccountInterface $currentUser,
-    private readonly ModuleHandlerInterface $moduleHandler,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly CanvasWorkspacePublisher $canvasWorkspacePublisher,
   ) {}
@@ -71,16 +69,14 @@ final class ApiAutoSaveController extends ApiControllerBase {
    * Pass $cache to collect cacheability metadata (needed by ::get()); omit it
    * for state-mutating callers (::post(), ::delete()).
    *
-   * @param bool $with_conflicts
-   *   Whether to populate the 'conflict_id' key on each entry.
    * @param \Drupal\Core\Cache\CacheableMetadata|null $cache
    *   Optional metadata collector; receives entity and access dependencies.
    *
    * @return array<string, AutoSaveEntry>
    *   Auto-save entries keyed by auto-save key, filtered to what GET exposes.
    */
-  private function getPublishableAutoSaves(bool $with_conflicts, ?CacheableMetadata $cache = NULL): array {
-    $all = $this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: $with_conflicts);
+  private function getPublishableAutoSaves(?CacheableMetadata $cache = NULL): array {
+    $all = $this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE);
     return \array_filter($all, function (array $item) use ($cache): bool {
       \assert($item['entity'] instanceof EntityInterface);
       $access = $item['entity']->access('view label', return_as_object: TRUE);
@@ -107,10 +103,8 @@ final class ApiAutoSaveController extends ApiControllerBase {
     $cache = new CacheableMetadata();
     // The pending list is scoped to the active workspace.
     $cache->addCacheContexts(['workspace']);
-    // @todo Remove the use of 'canvas_dev_cd' flag in https://git.drupalcode.org/project/canvas/-/work_items/3591732
-    $conflict_detection_dev_mode = $this->moduleHandler->moduleExists('canvas_dev_cd');
 
-    $filtered = $this->getPublishableAutoSaves(with_conflicts: $conflict_detection_dev_mode, cache: $cache);
+    $filtered = $this->getPublishableAutoSaves(cache: $cache);
 
     $userIds = \array_column($filtered, 'owner');
     /** @var \Drupal\user\UserInterface[] $users */
@@ -125,31 +119,8 @@ final class ApiAutoSaveController extends ApiControllerBase {
     }
     // User display names depend on configuration.
     $cache->addCacheableDependency($this->configFactory->get('user.settings'));
-    $status = Response::HTTP_OK;
 
     $body = [];
-    if (self::autoSaveListHasConflicts($filtered)) {
-      $status = Response::HTTP_CONFLICT;
-      foreach ($filtered as $key => $entry) {
-        if (isset($entry[AutoSaveManager::AUTO_SAVE_CONFLICT_KEY])) {
-          $body['errors'][] = [
-            'detail' => ErrorCodesEnum::ItemEntityUpdatedExternally->getMessage(),
-            'source' => [
-              'pointer' => $key,
-            ],
-            'code' => ErrorCodesEnum::ItemEntityUpdatedExternally->value,
-            'meta' => [
-              'entity_type' => $entry['entity_type'],
-              'entity_id' => $entry['entity_id'],
-              'label' => $entry['label'],
-              AutoSaveManager::AUTO_SAVE_CONFLICT_KEY => $entry[AutoSaveManager::AUTO_SAVE_CONFLICT_KEY],
-              self::AUTO_SAVE_KEY => $key,
-            ],
-          ];
-        }
-      }
-    }
-
     // Remove internal auto-save properties that are not used client side (like
     // 'data', 'client_id', 'entity', etc.). This will reduce the amount of data
     // sent to the client and back to the server.
@@ -175,17 +146,16 @@ final class ApiAutoSaveController extends ApiControllerBase {
       ] + $item;
     }, $filtered);
 
-    return (new CacheableJsonResponse(data: $body, status: $status))->addCacheableDependency($cache->addCacheTags([AutoSaveManager::CACHE_TAG]));
+    return (new CacheableJsonResponse(data: $body))->addCacheableDependency($cache->addCacheTags([AutoSaveManager::CACHE_TAG]));
   }
 
   /**
    * Publishes the active workspace.
    *
-   * BREAKING (Phase 2): the workspace, not the item, is the unit of publish.
-   * The request body carries no item selection; every item tracked in the
-   * active workspace is validated and access checked, and the whole
-   * workspace goes live atomically via core workspace publish — or nothing
-   * does.
+   * The workspace, not the item, is the unit of publish. The request body
+   * carries no item selection; every item tracked in the active workspace is
+   * validated and access checked, and the whole workspace goes live
+   * atomically via core workspace publish — or nothing does.
    *
    * @see \Drupal\canvas\Workspace\CanvasWorkspacePublisher
    */
@@ -278,7 +248,7 @@ final class ApiAutoSaveController extends ApiControllerBase {
     // GET and must not be directly actionable here either. An entity with no
     // publishable auto-save (either it does not exist or it is a non-default
     // translation) is treated identically as not found.
-    $publishable_auto_saves = $this->getPublishableAutoSaves(with_conflicts: FALSE);
+    $publishable_auto_saves = $this->getPublishableAutoSaves();
     $key = AutoSaveManager::getAutoSaveKey($entity);
     if (!isset($publishable_auto_saves[$key])) {
       return new JsonResponse(data: ['error' => 'No auto-save data found for this entity.'], status: Response::HTTP_NOT_FOUND);
@@ -327,17 +297,6 @@ final class ApiAutoSaveController extends ApiControllerBase {
       $map,
       ($violations instanceof EntityConstraintViolationListInterface) ? EntityConstraintViolationList::fromCoreConstraintViolationList($violations) : $violations,
     );
-  }
-
-  /**
-   * Checks if any entries in the list have the 'conflict_id' property.
-   *
-   * @param array<string, array{data: array, owner: int, updated: int, entity_type: string, entity_id: string|int, label: string, data_hash: string, client_id: ?string, langcode: ?string, entity: ?EntityInterface, conflict_id?: string,}> $auto_save_entries
-   *
-   * @return bool
-   */
-  private static function autoSaveListHasConflicts(array $auto_save_entries): bool {
-    return !empty(\array_column($auto_save_entries, AutoSaveManager::AUTO_SAVE_CONFLICT_KEY));
   }
 
 }

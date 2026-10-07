@@ -4,14 +4,12 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\Hook;
 
-use Drupal\canvas\Plugin\Validation\Constraint\CanvasAwareEntityChangedConstraint;
-use Drupal\canvas\Plugin\Validation\Constraint\CanvasAwareEntityWorkspaceConflictConstraint;
 use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
 use Drupal\Core\Hook\Attribute\Hook;
 use Drupal\workspaces\Entity\Handler\IgnoredWorkspaceHandler;
 
 /**
- * Workspace-related entity type and validation-constraint alterations.
+ * Workspace-related entity type alterations.
  *
  * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave
  */
@@ -27,9 +25,10 @@ final class WorkspaceAutoSaveHooks {
     }
     // Canvas config entities (components, code components, asset libraries,
     // patterns, folders, staged config updates, personalization segments, …)
-    // are staged by Canvas's own snapshot system, not by Workspaces. Without
-    // this, core's workspace provider forbids saving them while the Canvas
-    // auto-save workspace is active during Canvas API requests.
+    // are staged by the Workspace Config module or Canvas's fallback store,
+    // not by Workspaces itself. Without this, core's workspace provider
+    // forbids saving them while a workspace is active during Canvas API
+    // requests.
     // @see \Drupal\workspaces\Provider\WorkspaceProviderBase::entityPresave()
     foreach ($entity_types as $entity_type) {
       if (!$entity_type instanceof ConfigEntityTypeInterface || $entity_type->hasHandlerClass('workspace')) {
@@ -56,30 +55,6 @@ final class WorkspaceAutoSaveHooks {
   #[Hook('workspace_config_safe_list_alter')]
   public static function workspaceConfigSafeListAlter(array &$patterns): void {
     $patterns[] = 'canvas.page_variant.*';
-  }
-
-  /**
-   * Implements hook_validation_constraint_alter().
-   */
-  #[Hook('validation_constraint_alter')]
-  public static function validationConstraintAlter(array &$definitions): void {
-    // Entities staged in the Canvas auto-save workspace must stay editable in
-    // Live; Canvas has its own conflict detection for external edits. Swap in
-    // a validator that ignores the Canvas workspace and otherwise behaves
-    // exactly like core's.
-    // @see \Drupal\canvas\Plugin\Validation\Constraint\CanvasAwareEntityWorkspaceConflictConstraintValidator
-    if (isset($definitions['EntityWorkspaceConflict'])) {
-      $definitions['EntityWorkspaceConflict']['class'] = CanvasAwareEntityWorkspaceConflictConstraint::class;
-    }
-    // The changed timestamp of an entity's staged draft revision advances on
-    // every auto-save flush, so with the Canvas auto-save workspace active,
-    // core's workspace-aware loadUnchanged() makes concurrent Canvas preview
-    // requests record false "modified by another user" conflicts against each
-    // other. Compare against the Live entity instead.
-    // @see \Drupal\canvas\Plugin\Validation\Constraint\CanvasAwareEntityChangedConstraintValidator
-    if (isset($definitions['EntityChanged'])) {
-      $definitions['EntityChanged']['class'] = CanvasAwareEntityChangedConstraint::class;
-    }
   }
 
 }

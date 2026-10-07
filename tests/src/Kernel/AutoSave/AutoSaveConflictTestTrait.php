@@ -11,7 +11,6 @@ use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
 use Drupal\Core\Extension\ThemeInstallerInterface;
-use Drupal\Tests\canvas\Kernel\Traits\CanvasWorkspaceConfigTestTrait;
 use Drupal\Tests\canvas\TestSite\CanvasTestSetup;
 use Drupal\Tests\canvas\Traits\AutoSaveRequestTestTrait;
 use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
@@ -20,9 +19,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 trait AutoSaveConflictTestTrait {
 
-  use AutoSaveRequestTestTrait;
-  use CanvasWorkspaceConfigTestTrait;
   use WorkspaceConfigTestTrait;
+  use AutoSaveRequestTestTrait;
 
   protected EntityInterface $entity;
 
@@ -34,7 +32,6 @@ trait AutoSaveConflictTestTrait {
    */
   public function register(ContainerBuilder $container): void {
     parent::register($container);
-    $this->registerCanvasStagingKeyValue($container);
     $this->registerWorkspaceConfigKeyValue($container);
   }
 

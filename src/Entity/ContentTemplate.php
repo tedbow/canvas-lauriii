@@ -71,7 +71,7 @@ use Drupal\Core\StringTranslation\TranslatableMarkup;
     'page_variant',
   ],
 )]
-final class ContentTemplate extends ComponentTreeConfigEntityBase implements CanvasHttpApiEligibleConfigEntityInterface, EmptyTargetEntityProviderInterface, EntityViewDisplayInterface, AutoSavePublishAwareInterface {
+final class ContentTemplate extends ComponentTreeConfigEntityBase implements CanvasHttpApiEligibleConfigEntityInterface, EmptyTargetEntityProviderInterface, EntityViewDisplayInterface {
 
   public const string ENTITY_TYPE_ID = 'content_template';
 
@@ -451,14 +451,6 @@ final class ContentTemplate extends ComponentTreeConfigEntityBase implements Can
     return (bool) $changed;
   }
 
-  /**
-   * {@inheritdoc}
-   */
-  public function autoSavePublish(): self {
-    $this->setStatus(TRUE);
-    return $this;
-  }
-
   public function normalizeForClientSide(): ClientSideRepresentation {
     $entity_type_manager = $this->entityTypeManager();
     \assert(\is_string($this->content_entity_type_id));
@@ -521,7 +513,7 @@ final class ContentTemplate extends ComponentTreeConfigEntityBase implements Can
       'content_entity_type_bundle' => $bundle,
       'content_entity_type_view_mode' => $view_mode,
       'component_tree' => $data['component_tree'] ?? [],
-      'status' => $data['status'] ?? FALSE,
+      'status' => $data['status'] ?? TRUE,
       // Optional, so that a template can be created with its page template
       // already selected; omitting it falls back to the site default variant.
       // Anything that is not a non-empty string means "no selection": the

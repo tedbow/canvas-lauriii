@@ -583,7 +583,7 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     self::assertArrayNotHasKey($page_key, $pending, 'Non-default-translation auto-saves must be hidden from the pending-changes list.');
 
     // The auto-save entry is still stored internally.
-    $all_auto_saves = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
+    $all_auto_saves = $autoSave->getAllAutoSaveList(with_entities: FALSE);
     self::assertArrayHasKey($page_key, $all_auto_saves, 'The auto-save entry must be stored for the Spanish translation.');
 
     // POST must reject the non-default-translation key with 403
@@ -1158,7 +1158,7 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
 
     // 6. Verify auto-saves were created for the variant and its override.
     $auto_save_manager = $this->container->get(AutoSaveManager::class);
-    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
+    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE);
     $variant_key = AutoSaveManager::getAutoSaveKey($variant);
     self::assertArrayHasKey($variant_key, $all_auto_saves, 'PageVariant must have an auto-save after the layout GET removed a prop.');
 
@@ -1285,7 +1285,7 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
 
     // 7. Verify auto-saves were created for the template and its override.
     $auto_save_manager = $this->container->get(AutoSaveManager::class);
-    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
+    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(with_entities: FALSE);
     $template_key = AutoSaveManager::getAutoSaveKey($template);
     self::assertArrayHasKey($template_key, $all_auto_saves, 'ContentTemplate must have an auto-save after the layout GET removed a prop.');
 

@@ -107,7 +107,7 @@ final class AutoSaveRehashItemsUpdateTest extends CanvasUpdatePathTestBase {
       'is_default_translation' => $page2->isDefaultTranslation(),
       'label' => $page2->label(),
       'data_hash' => 'stale_data_hash',
-      AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY => 'stale_original_hash',
+      'original_hash' => 'stale_original_hash',
       'owner' => (int) $page2->getOwnerId(),
       'updated' => $updated,
       'client_id' => NULL,
@@ -127,14 +127,14 @@ final class AutoSaveRehashItemsUpdateTest extends CanvasUpdatePathTestBase {
     // update for the page 1 auto-save item.
     self::assertArrayHasKey('data_hash', $before[$page1_auto_save_key]);
     self::assertSame($item_without_original_hash['data_hash'], $before[$page1_auto_save_key]['data_hash']);
-    self::assertArrayNotHasKey(AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $before[$page1_auto_save_key]);
+    self::assertArrayNotHasKey('original_hash', $before[$page1_auto_save_key]);
 
     // Confirm stale data_hash and original_hash are present before the update
     // for the page 2 auto-save item.
     self::assertArrayHasKey('data_hash', $before[$page2_auto_save_key]);
     self::assertSame($item_with_original_hash['data_hash'], $before[$page2_auto_save_key]['data_hash']);
-    self::assertArrayHasKey(AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $before[$page2_auto_save_key]);
-    self::assertSame($item_with_original_hash[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY], $before[$page2_auto_save_key][AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY]);
+    self::assertArrayHasKey('original_hash', $before[$page2_auto_save_key]);
+    self::assertSame($item_with_original_hash['original_hash'], $before[$page2_auto_save_key]['original_hash']);
 
     // Run all pending updates (includes 0023).
     $this->runUpdates();
@@ -158,13 +158,13 @@ final class AutoSaveRehashItemsUpdateTest extends CanvasUpdatePathTestBase {
 
     // Update hook computed original_hash for the page 1 auto-save item, which
     // did not have it before.
-    self::assertArrayHasKey(AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $after[$page1_auto_save_key]);
-    self::assertNotEmpty($after[$page1_auto_save_key][AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY], 'original_hash must be recomputed by the rehash update.');
+    self::assertArrayHasKey('original_hash', $after[$page1_auto_save_key]);
+    self::assertNotEmpty($after[$page1_auto_save_key]['original_hash'], 'original_hash must be recomputed by the rehash update.');
 
     // Update hook recomputed original_hash for the page 2 auto-save item.
-    self::assertArrayHasKey(AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $after[$page2_auto_save_key]);
-    self::assertNotSame($before[$page2_auto_save_key][AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY], $after[$page2_auto_save_key][AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY], 'original_hash must be recomputed by the rehash update.');
-    self::assertNotEmpty($after[$page2_auto_save_key][AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY], 'original_hash must be recomputed by the rehash update.');
+    self::assertArrayHasKey('original_hash', $after[$page2_auto_save_key]);
+    self::assertNotSame($before[$page2_auto_save_key]['original_hash'], $after[$page2_auto_save_key]['original_hash'], 'original_hash must be recomputed by the rehash update.');
+    self::assertNotEmpty($after[$page2_auto_save_key]['original_hash'], 'original_hash must be recomputed by the rehash update.');
   }
 
 }

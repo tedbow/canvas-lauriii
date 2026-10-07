@@ -5,20 +5,20 @@ declare(strict_types=1);
 namespace Drupal\canvas\AutoSave\Workspace;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
-use Drupal\canvas\CanvasServiceProvider;
 use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
 use Drupal\Core\Database\Connection;
+use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\TranslatableInterface;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
  * Migrates 1.x key-value auto-save entries into workspace staging.
  *
  * Each key-value row is persisted through the staged write path into the
- * Main workspace and then deleted. The row's key is the 1.x auto-save key
+ * Main workspace (or moved as is into the Main workspace's fallback store)
+ * and then deleted. The row's key is the 1.x auto-save key
  * (`{type}:{id}[:{langcode}]`, no workspace prefix).
  *
  * @see canvas_post_update_0031_migrate_auto_save_to_workspace()
@@ -26,12 +26,10 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 final class LegacyAutoSaveMigrator {
 
   public function __construct(
-    // Staging bookkeeping must resolve identically in every workspace.
-    // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
-    #[Autowire(service: CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE)]
     private readonly KeyValueFactoryInterface $keyValueFactory,
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
+    private readonly AutoSaveFallbackStore $fallbackStore,
     private readonly Connection $database,
   ) {}
 
@@ -58,6 +56,14 @@ final class LegacyAutoSaveMigrator {
     // workspace regardless of the updating account's workspace permissions.
     $this->workspaceAutoSave->executeInWorkspaceUnchecked(AutoSaveWorkspace::ID, function () use ($store, $key, $entity, $entry): void {
       if ($this->workspaceAutoSave->hasWorkspaceStaging($entity)) {
+        $store->delete($key);
+        return;
+      }
+      // Drafts that stay key-value in 2.x (config entity types whose save has
+      // side effects) keep their 1.x row: it moves to the Main workspace's
+      // collection as is.
+      if (!$entity instanceof ContentEntityInterface && !$this->workspaceAutoSave->usesWorkspaceConfigStaging($entity)) {
+        $this->fallbackStore->drafts(AutoSaveWorkspace::ID)->set($key, $entry);
         $store->delete($key);
         return;
       }

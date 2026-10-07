@@ -137,7 +137,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
   protected function assertAutoSaveListAfterPreview(string $default_key): void {
     $auto_save_manager = $this->container->get(AutoSaveManager::class);
     \assert($auto_save_manager instanceof AutoSaveManager);
-    self::assertSame([$default_key], \array_keys($auto_save_manager->getAllAutoSaveList(FALSE, FALSE)));
+    self::assertSame([$default_key], \array_keys($auto_save_manager->getAllAutoSaveList(FALSE)));
   }
 
   /**
@@ -319,7 +319,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
     // StagedLanguageConfigOverride is stored internally but filtered from
     // getAllAutoSaveList(); it will be published implicitly when the base
     // entity is published.
-    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(FALSE, FALSE);
+    $all_auto_saves = $auto_save_manager->getAllAutoSaveList(FALSE);
     self::assertSame([
       AutoSaveManager::getAutoSaveKey($this->entity),
     ], \array_keys($all_auto_saves));
@@ -336,7 +336,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
     self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
 
     // No auto-saves left.
-    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE, FALSE));
+    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE));
 
     return $staged;
   }
@@ -441,7 +441,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
     // Deleting the entity must cascade and discard both drafts together.
     $this->entity->delete();
     self::assertSame([], $auto_save_manager->getTranslationGroupAutoSaves($this->entity));
-    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE, FALSE));
+    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE));
   }
 
   /**
@@ -517,7 +517,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
 
     // Only the base appears in the auto-save list; the override is internal.
     $base_key = AutoSaveManager::getAutoSaveKey($base);
-    $all = $auto_save_manager->getAllAutoSaveList(FALSE, FALSE);
+    $all = $auto_save_manager->getAllAutoSaveList(FALSE);
     self::assertSame([$base_key], \array_keys($all));
     self::assertFalse($auto_save_manager->getAutoSaveEntity($draft)->isEmpty(), 'The override draft is staged, just not listed.');
 
@@ -530,7 +530,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
     self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
 
     // Both base and override drafts are cleared once published.
-    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE, FALSE));
+    self::assertSame([], $auto_save_manager->getAllAutoSaveList(FALSE));
     self::assertTrue($auto_save_manager->getAutoSaveEntity($draft)->isEmpty(), 'The override draft must be cleared after the base publishes it.');
 
     // The published live override reflects the reconciled draft: the editor's

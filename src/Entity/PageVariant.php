@@ -213,7 +213,7 @@ final class PageVariant extends ComponentTreeConfigEntityBase implements CanvasH
     }
     $page_storage = $entity_type_manager->getStorage(Page::ENTITY_TYPE_ID);
     $auto_save_manager = \Drupal::service(AutoSaveManager::class);
-    foreach ($auto_save_manager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE) as $entry) {
+    foreach ($auto_save_manager->getAllAutoSaveList(with_entities: TRUE) as $entry) {
       $draft = $entry['entity'];
       if (!$draft instanceof Page || $draft->get('page_variant')->value !== $this->id()) {
         continue;
@@ -348,7 +348,7 @@ final class PageVariant extends ComponentTreeConfigEntityBase implements CanvasH
     // the draft's publish. Sweep auto-saved page drafts too, rewriting a
     // matching `page_variant` to NULL while preserving the rest of the draft.
     $auto_save_manager = \Drupal::service(AutoSaveManager::class);
-    foreach ($auto_save_manager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE) as $entry) {
+    foreach ($auto_save_manager->getAllAutoSaveList(with_entities: TRUE) as $entry) {
       $draft = $entry['entity'];
       if (!$draft instanceof Page || !$draft->hasField('page_variant')) {
         continue;

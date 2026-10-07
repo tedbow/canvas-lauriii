@@ -101,6 +101,21 @@ class ClientDataToEntityConverter {
     // @see \Drupal\canvas\ContentTranslation\SymmetricalTranslationSynchronizationTrait
     self::synchronizeTranslations($this->translationSynchronizer, $entity);
 
+    // The draft lives in the staging workspace, so it is validated there:
+    // core's workspace lock on an entity already drafted in that workspace
+    // (EntityWorkspaceConflict) passes inside it and refuses outside it.
+    $this->autoSaveManager->executeInStagingWorkspace(function () use ($entity, $entity_form_fields, $validate, $item_list): void {
+      $this->validateConverted($entity, $entity_form_fields, $validate, $item_list);
+    });
+  }
+
+  /**
+   * Applies the entity form fields and validates the converted entity.
+   *
+   * @param array<string, mixed> $entity_form_fields
+   *   The entity form fields from the client.
+   */
+  private function validateConverted(FieldableEntityInterface $entity, array $entity_form_fields, bool $validate, FieldItemListInterface $item_list): void {
     // The current user may not have access any other fields on the entity or
     // this function may have been called to only update the layout.
     $form_validation = new EntityConstraintViolationList($entity);
@@ -212,7 +227,6 @@ class ClientDataToEntityConverter {
       // submission anyway. Genuine client staleness is enforced separately,
       // through the autoSaves hashes.
       // @see \Drupal\Core\Entity\Plugin\Validation\Constraint\EntityChangedConstraintValidator
-      // @see \Drupal\canvas\AutoSave\Workspace\DeferredAutoSaveFlusher
       // @see \Drupal\canvas\Controller\ApiLayoutController::validateAutoSaves()
       $request_time = $this->time->getRequestTime();
       $entity_form_fields['changed'] = (string) $request_time;

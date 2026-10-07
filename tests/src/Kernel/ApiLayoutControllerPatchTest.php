@@ -5,8 +5,7 @@ declare(strict_types=1);
 namespace Drupal\Tests\canvas\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
-use Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository;
-use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveFallbackStore;
 use Drupal\canvas\Entity\Component;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\JavaScriptComponent;
@@ -27,7 +26,6 @@ use Drupal\file\FileInterface;
 use Drupal\media\Entity\Media;
 use Drupal\media\MediaInterface;
 use Drupal\node\Entity\Node;
-use Drupal\Tests\canvas\Kernel\Traits\CanvasWorkspaceConfigTestTrait;
 use Drupal\Tests\canvas\TestSite\CanvasTestSetup;
 use Drupal\Tests\canvas\Traits\AutoSaveRequestTestTrait;
 use Drupal\Tests\canvas\Traits\CanvasFieldTrait;
@@ -55,10 +53,9 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 #[Group('#slow')]
 final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
 
+  use WorkspaceConfigTestTrait;
   use CanvasFieldTrait;
   use AutoSaveRequestTestTrait;
-  use CanvasWorkspaceConfigTestTrait;
-  use WorkspaceConfigTestTrait;
 
   /**
    * {@inheritdoc}
@@ -68,7 +65,6 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
    */
   public function register(ContainerBuilder $container): void {
     parent::register($container);
-    $this->registerCanvasStagingKeyValue($container);
     $this->registerWorkspaceConfigKeyValue($container);
   }
 
@@ -784,7 +780,7 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
     ];
 
     $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patchData, JSON_THROW_ON_ERROR)));
-    self::assertEquals(Response::HTTP_OK, $response->getStatusCode());
+    self::assertEquals(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
 
     // Verify auto-save still has only 1 component (parent only).
     // The sidebar child should remain removed.
@@ -841,6 +837,7 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
         'content_entity_type_id' => 'node',
         'content_entity_type_bundle' => 'article',
         'content_entity_type_view_mode' => 'teaser',
+        'status' => TRUE,
         'component_tree' => [
           [
             'uuid' => $heading_uuid,
@@ -873,7 +870,9 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       $data = self::decodeResponse($response);
       $starting_point = $data['autoSaves'][$key]['autoSaveStartingPoint'];
       self::assertNotEmpty($starting_point);
-      self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
+      // Created inside the workspace, the template has no Live copy: it is a
+      // pending change of the workspace before any edit.
+      self::assertFalse($autoSave->getAutoSaveEntity($template)->isEmpty());
 
       $model = $data['model'][$heading_uuid];
       $model['resolved']['text'] = 'Updated heading';
@@ -891,15 +890,15 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       self::assertSame($starting_point, $autoSave->getClientAutoSaveData($template)['autoSaveStartingPoint']);
 
       // The draft is the workspace-scoped configuration itself, not a
-      // snapshot row: it resolves as regular configuration inside the
+      // fallback row: it resolves as regular configuration inside the
       // workspace and is still absent from Live.
       $storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID);
       $staged = $storage->loadUnchanged($template_id);
       self::assertInstanceOf(ContentTemplate::class, $staged);
       self::assertSame('Updated heading', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
-      self::assertNull($this->container->get(AutoSaveSnapshotRepository::class)->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id));
+      self::assertNull($this->container->get(AutoSaveFallbackStore::class)->getDraft('stage', AutoSaveFallbackStore::targetKey($template)));
       self::assertNull($workspace_manager->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($template_id)));
-      self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+      self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE));
 
       // The unpublished template renders entities of its bundle inside the
       // workspace, on any route: it is this workspace's own creation. Outside
@@ -928,7 +927,7 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       $autoSave->delete($template);
       self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
       self::assertNull($storage->loadUnchanged($template_id));
-      self::assertArrayNotHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+      self::assertArrayNotHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE));
     });
   }
 
@@ -961,6 +960,7 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       'content_entity_type_id' => 'node',
       'content_entity_type_bundle' => 'article',
       'content_entity_type_view_mode' => 'teaser',
+      'status' => TRUE,
       'component_tree' => [
         [
           'uuid' => $heading_uuid,
@@ -1018,14 +1018,14 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       self::assertSame('Staged heading', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
       self::assertSame('hello, world!', $live_heading());
       self::assertFalse($autoSave->getAutoSaveEntity($template)->isEmpty());
-      self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+      self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE));
       self::assertSame(['canvas.content_template.node.article.teaser'], $tracked_names());
 
       // Undoing back to the Live values is no pending change at all.
       $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch('hello, world!'), JSON_THROW_ON_ERROR)));
       self::assertSame(Response::HTTP_OK, $response->getStatusCode());
       self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
-      self::assertArrayNotHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+      self::assertArrayNotHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE));
       self::assertSame([], $tracked_names());
 
       // Discarding a draft of a Live template resets the workspace copy to
@@ -1041,52 +1041,33 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       self::assertSame('hello, world!', $live_heading());
       self::assertSame([], $tracked_names());
 
-      // On preview-critical routes the config save is deferred to kernel
-      // terminate like a content save: the draft sits in the pending buffer,
-      // readable, until a flush (here forced, as the response path does
-      // before reporting hashes) writes it as workspace-scoped configuration.
-      \putenv('CANVAS_TEST_FORCE_DEFER_AUTOSAVE=1');
-      try {
-        $draft = clone $template;
-        $draft->setComponentTree([
-          [
-            'uuid' => $heading_uuid,
-            'component_id' => 'sdc.canvas_test_sdc.heading',
-            'component_version' => '8c01a2bdb897a810',
-            'inputs' => ['text' => 'Deferred heading', 'element' => 'h1'],
-          ],
-        ]);
-        $autoSave->saveEntity($draft, 'client-b');
-        $buffer = $this->container->get(PendingContentAutoSaveBuffer::class);
-        $row = $buffer->get($key);
-        self::assertIsArray($row);
-        self::assertArrayHasKey('data', $row, 'The deferred config write sits in the pending buffer.');
-        $staged_heading = static function () use ($storage, $template_id): ?string {
-          $staged = $storage->loadUnchanged($template_id);
-          \assert($staged instanceof ContentTemplate);
-          return $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
-        };
-        self::assertSame('hello, world!', $staged_heading(), 'Nothing is written before the flush.');
-        $buffered = $autoSave->getAutoSaveEntity($template)->entity;
-        self::assertInstanceOf(ContentTemplate::class, $buffered);
-        self::assertSame('Deferred heading', $buffered->getComponentTree()->first()?->getInputs()['text'] ?? NULL, 'The buffered draft is what readers see before the flush.');
-        $autoSave->flushDeferredContentEntity($template);
-        self::assertSame('Deferred heading', $staged_heading(), 'The flush wrote the workspace-scoped copy.');
-        $sidecar = $buffer->get($key);
-        self::assertIsArray($sidecar);
-        self::assertArrayNotHasKey('data', $sidecar, 'Only the metadata sidecar remains after the flush.');
-        self::assertSame('client-b', $sidecar['client_id']);
-      }
-      finally {
-        \putenv('CANVAS_TEST_FORCE_DEFER_AUTOSAVE');
-      }
+      // A staged write on a Canvas API route is the workspace-scoped config
+      // save itself; nothing is deferred.
+      $draft = clone $template;
+      $draft->setComponentTree([
+        [
+          'uuid' => $heading_uuid,
+          'component_id' => 'sdc.canvas_test_sdc.heading',
+          'component_version' => '8c01a2bdb897a810',
+          'inputs' => ['text' => 'Staged heading', 'element' => 'h1'],
+        ],
+      ]);
+      $autoSave->saveEntity($draft, 'client-b');
+      $staged_heading = static function () use ($storage, $template_id): ?string {
+        $staged = $storage->loadUnchanged($template_id);
+        \assert($staged instanceof ContentTemplate);
+        return $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
+      };
+      self::assertSame('Staged heading', $staged_heading(), 'The staged write wrote the workspace-scoped copy.');
+      $fallback_store = $this->container->get(AutoSaveFallbackStore::class);
+      $fallback_key = AutoSaveFallbackStore::targetKey($template);
+      self::assertSame('client-b', $fallback_store->getMetadata('stage', $fallback_key)['client_id'] ?? NULL);
 
       // A draft the storage layer rejects before writing (here: config entity
       // storage refusing a UUID that differs from the stored one) is retained
-      // as a snapshot row, still read as the draft, and promoted by the next
-      // persistable save.
+      // in the fallback store, still read as the draft, and removed by the
+      // next persistable save.
       // @see \Drupal\Core\Config\Entity\ConfigEntityStorage::doSave()
-      $snapshots = $this->container->get(AutoSaveSnapshotRepository::class);
       $invalid = clone $template;
       $invalid->set('uuid', '11111111-1111-4111-8111-111111111111');
       $invalid->setComponentTree([
@@ -1097,9 +1078,9 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
           'inputs' => ['text' => 'Rejected heading', 'element' => 'h1'],
         ],
       ]);
-      $autoSave->saveEntity($invalid, 'client-c', immediateWorkspacePersist: TRUE);
-      self::assertNotNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id), 'The rejected draft fell back to a snapshot row.');
-      self::assertSame('Deferred heading', $staged_heading(), 'The workspace copy is untouched by the rejected draft.');
+      $autoSave->saveEntity($invalid, 'client-c');
+      self::assertNotNull($fallback_store->getDraft('stage', $fallback_key), 'The rejected draft fell back to the fallback store.');
+      self::assertSame('Staged heading', $staged_heading(), 'The workspace copy is untouched by the rejected draft.');
       $fallback = $autoSave->getAutoSaveEntity($template)->entity;
       self::assertInstanceOf(ContentTemplate::class, $fallback);
       self::assertSame('Rejected heading', $fallback->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
@@ -1112,8 +1093,8 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
           'inputs' => ['text' => 'Promoted heading', 'element' => 'h1'],
         ],
       ]);
-      $autoSave->saveEntity($valid, 'client-c', immediateWorkspacePersist: TRUE);
-      self::assertNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id), 'A persistable save removes the snapshot row.');
+      $autoSave->saveEntity($valid, 'client-c');
+      self::assertNull($fallback_store->getDraft('stage', $fallback_key), 'A persistable save removes the fallback row.');
       self::assertSame('Promoted heading', $staged_heading());
     });
   }

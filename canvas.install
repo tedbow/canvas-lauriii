@@ -5,7 +5,6 @@ declare(strict_types=1);
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\CanvasNotificationHandler;
-use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Health\HealthCheck;
 use Drupal\canvas\Health\HealthRecords;
@@ -194,13 +193,13 @@ function canvas_update_11200(): void {
 }
 
 /**
- * Workspaces: staging entity schema, Workspaces modules, Main workspace.
+ * Workspaces: enables the Workspaces modules and creates the Main workspace.
  *
  * Canvas drafts are staged in Drupal Workspaces: content as pending workspace
  * revisions, configuration as workspace-scoped configuration (Workspace
- * Config), and payloads neither can hold as snapshot rows. This installs that
- * infrastructure; canvas_post_update_0031_migrate_auto_save_to_workspace()
- * then moves the key-value drafts into it.
+ * Config), and the rest in a per-workspace key-value store. This installs
+ * that infrastructure; canvas_post_update_0031_migrate_auto_save_to_workspace()
+ * then moves the 1.x key-value drafts into it.
  */
 function canvas_update_11201(): void {
   /** @var \Drupal\Core\Extension\ModuleInstallerInterface $installer */
@@ -208,13 +207,6 @@ function canvas_update_11201(): void {
   $modules = \array_filter(['workspaces', 'workspace_config'], static fn (string $module): bool => !\Drupal::moduleHandler()->moduleExists($module));
   if ($modules !== []) {
     $installer->install($modules);
-  }
-
-  /** @var \Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface $repository */
-  $repository = \Drupal::service(EntityLastInstalledSchemaRepositoryInterface::class);
-  if ($repository->getLastInstalledDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) === NULL) {
-    $definition = \Drupal::entityTypeManager()->getDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
-    \Drupal::entityDefinitionUpdateManager()->installEntityType($definition);
   }
 
   _canvas_ensure_auto_save_workspace();

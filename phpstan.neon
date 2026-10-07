@@ -71,10 +71,6 @@ parameters:
       count: 1
       path: src/MediaLibraryCanvasPropOpener.php
     -
-      message: "#^Class .* extends @internal class#"
-      count: 1
-      path: src/Plugin/Validation/Constraint/CanvasAwareEntityWorkspaceConflictConstraintValidator.php
-    -
       message: "#^Method Drupal\\\\canvas\\\\Entity\\\\ComponentTreeConfigEntityBase\\:\\:preCreate\\(\\) has no return type specified\\.$#"
       identifier: missingType.return
       count: 1

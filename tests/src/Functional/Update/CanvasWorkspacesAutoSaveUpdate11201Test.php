@@ -83,7 +83,7 @@ final class CanvasWorkspacesAutoSaveUpdate11201Test extends CanvasUpdatePathTest
     // the legacy editor with the legacy edit time, not to the migration run.
     $auto_save_manager = \Drupal::service(AutoSaveManager::class);
     \assert($auto_save_manager instanceof AutoSaveManager);
-    $list = $auto_save_manager->getAllAutoSaveList(FALSE, FALSE);
+    $list = $auto_save_manager->getAllAutoSaveList(FALSE);
     $key = AutoSaveManager::getAutoSaveKey($page);
     self::assertArrayHasKey($key, $list);
     self::assertSame(1, $list[$key]['owner']);
