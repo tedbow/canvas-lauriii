@@ -39,8 +39,10 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
     private readonly WorkspaceContentEntityPersist $contentEntityPersist,
     private readonly WorkspaceConfigEntityPersist $configEntityPersist,
     private readonly EntityTypeManagerInterface $entityTypeManager,
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'lock')]
     private readonly LockBackendInterface $lock,
     private readonly TimeInterface $time,
@@ -53,6 +55,10 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
     #[Autowire(service: 'logger.channel.canvas')]
     private readonly LoggerInterface $logger,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   public static function getSubscribedEvents(): array {
     return [
@@ -216,11 +222,11 @@ final class DeferredAutoSaveFlusher implements EventSubscriberInterface {
     if ($this->entityTypeManager->getStorage('workspace')->load($workspaceId) === NULL) {
       throw new \RuntimeException(\sprintf('The workspace "%s" no longer exists; the buffered auto-save was not persisted.', $workspaceId));
     }
-    if ($this->workspaceManager->getActiveWorkspace()?->id() === $workspaceId) {
+    if ($this->workspaceManager()->getActiveWorkspace()?->id() === $workspaceId) {
       $persist();
       return;
     }
-    $this->workspaceManager->executeInWorkspace($workspaceId, $persist);
+    $this->workspaceManager()->executeInWorkspace($workspaceId, $persist);
   }
 
 }

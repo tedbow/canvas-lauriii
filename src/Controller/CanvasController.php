@@ -70,9 +70,15 @@ final class CanvasController {
     private readonly GlobalImports $globalImports,
     private readonly LanguageManagerInterface $languageManager,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   private const HTML = <<<HTML
 <!doctype html>
@@ -120,11 +126,11 @@ HTML;
     // none at editor open, activate the Main workspace (persisting, so
     // subsequent API requests and site preview follow it). Canvas API routes
     // themselves never force-activate a workspace.
-    if (!$this->workspaceManager->hasActiveWorkspace()) {
+    if (!$this->workspaceManager()->hasActiveWorkspace()) {
       /** @var \Drupal\workspaces\WorkspaceInterface|null $main_workspace */
       $main_workspace = $this->entityTypeManager->getStorage('workspace')->load(AutoSaveWorkspace::ID);
       if ($main_workspace !== NULL && $main_workspace->access('view', $this->currentUser)) {
-        $this->workspaceManager->setActiveWorkspace($main_workspace);
+        $this->workspaceManager()->setActiveWorkspace($main_workspace);
       }
     }
     // List of libraries to load in the preview iframe.
@@ -429,7 +435,7 @@ HTML;
       'activeWorkspace' => NULL,
       'lockedInWorkspace' => NULL,
     ];
-    $active = $this->workspaceManager->getActiveWorkspace();
+    $active = $this->workspaceManager()->getActiveWorkspace();
     if ($active !== NULL) {
       $settings['activeWorkspace'] = [
         'id' => (string) $active->id(),

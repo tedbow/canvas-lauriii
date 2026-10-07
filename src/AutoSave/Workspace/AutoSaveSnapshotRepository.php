@@ -26,9 +26,15 @@ final class AutoSaveSnapshotRepository {
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly EntityLastInstalledSchemaRepositoryInterface $entityLastInstalledSchemaRepository,
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   /**
    * TRUE when the snapshot entity schema is installed (not just defined).
@@ -159,10 +165,10 @@ final class AutoSaveSnapshotRepository {
    * (in which case this is a passthrough) or the Main workspace otherwise.
    */
   public function executeInStagingWorkspace(callable $callable): mixed {
-    if ($this->workspaceManager->hasActiveWorkspace()) {
+    if ($this->workspaceManager()->hasActiveWorkspace()) {
       return $callable();
     }
-    return $this->workspaceManager->executeInWorkspace(AutoSaveWorkspace::ID, $callable);
+    return $this->workspaceManager()->executeInWorkspace(AutoSaveWorkspace::ID, $callable);
   }
 
 }

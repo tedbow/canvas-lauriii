@@ -27,15 +27,25 @@ final class AutoSaveRevisionPruner {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
     #[Autowire(service: 'workspaces.tracker')]
-    private readonly WorkspaceTrackerInterface $workspaceAssociation,
+    private readonly ?WorkspaceTrackerInterface $workspaceAssociation,
     // Staging bookkeeping must resolve identically in every workspace.
     // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
     #[Autowire(service: CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE)]
     private readonly KeyValueFactoryInterface $keyValueFactory,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
+
+  private function workspaceAssociation(): WorkspaceTrackerInterface {
+    return $this->workspaceAssociation ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   public function recordAndPrune(ContentEntityInterface $entity, int $density = self::DEFAULT_DENSITY): void {
     if ($entity->id() === NULL) {
@@ -43,12 +53,12 @@ final class AutoSaveRevisionPruner {
     }
     $type = $entity->getEntityTypeId();
     $id = (string) $entity->id();
-    $workspace_id = AutoSaveWorkspace::stagingId($this->workspaceManager);
+    $workspace_id = AutoSaveWorkspace::stagingId($this->workspaceManager());
     $key = $workspace_id . ':' . $type . ':' . $id;
     $store = $this->keyValueFactory->get(self::STORE);
 
     /** @var \Drupal\workspaces\WorkspaceTrackerInterface $association */
-    $association = $this->workspaceAssociation;
+    $association = $this->workspaceAssociation();
     $tracked = $association->getTrackedEntities($workspace_id, $type, [$id]);
     $tracked_ids = [];
     if (!empty($tracked[$type])) {
@@ -96,7 +106,7 @@ final class AutoSaveRevisionPruner {
     if ($entity->id() === NULL) {
       return;
     }
-    $this->keyValueFactory->get(self::STORE)->delete(AutoSaveWorkspace::stagingId($this->workspaceManager) . ':' . $entity->getEntityTypeId() . ':' . (string) $entity->id());
+    $this->keyValueFactory->get(self::STORE)->delete(AutoSaveWorkspace::stagingId($this->workspaceManager()) . ':' . $entity->getEntityTypeId() . ':' . (string) $entity->id());
   }
 
   /**
@@ -108,8 +118,8 @@ final class AutoSaveRevisionPruner {
 
   private function deleteRevisionInWorkspace(string $type, int $revision_id): void {
     /** @var \Drupal\workspaces\WorkspaceManagerInterface $wm */
-    $wm = $this->workspaceManager;
-    $wm->executeInWorkspace(AutoSaveWorkspace::stagingId($this->workspaceManager), function () use ($type, $revision_id): void {
+    $wm = $this->workspaceManager();
+    $wm->executeInWorkspace(AutoSaveWorkspace::stagingId($this->workspaceManager()), function () use ($type, $revision_id): void {
       $storage = $this->entityTypeManager->getStorage($type);
       if ($storage instanceof RevisionableStorageInterface) {
         $storage->deleteRevision($revision_id);

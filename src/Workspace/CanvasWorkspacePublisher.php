@@ -51,9 +51,15 @@ final class CanvasWorkspacePublisher {
     private readonly AutoSaveManager $autoSaveManager,
     private readonly WorkspaceAutoSave $workspaceAutoSave,
     private readonly ModuleHandlerInterface $moduleHandler,
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   /**
    * Validates and publishes a workspace atomically.
@@ -80,7 +86,7 @@ final class CanvasWorkspacePublisher {
     $workspace = $this->entityTypeManager->getStorage('workspace')->load($workspace_id);
     \assert($workspace !== NULL);
 
-    $wm = $this->workspaceManager;
+    $wm = $this->workspaceManager();
     $published_count = $wm->executeInWorkspace($workspace_id, function () use ($workspace, $account): int {
       // Flush deferred buffers so validation sees durable staged state.
       $entries = $this->autoSaveManager->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE);

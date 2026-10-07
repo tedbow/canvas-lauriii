@@ -25,9 +25,15 @@ final class ApiTranslationControllers extends ApiControllerBase {
 
   public function __construct(
     private readonly LanguageManagerInterface $languageManager,
+    // NULL on a site updating from 1.x until canvas_update_11201() has enabled
+    // the Workspaces modules; the container must compile before that update.
     #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
+    private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
+  }
 
   /**
    * Deletes a single translation of a canvas_page entity.
