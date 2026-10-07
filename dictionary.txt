@@ -312,3 +312,5 @@ xclip
 xsel
 zencoder
 unflushed
+Differring
+numstat

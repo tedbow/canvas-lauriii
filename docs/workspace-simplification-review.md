@@ -55,7 +55,11 @@ The resulting shape:
    keep), delete the previously tracked revision of the same entity in the
    same workspace (latest-only retention, about ten lines), and record the
    client instance id and the verbatim draft `path` value in one small
-   key-value collection keyed by the auto-save key. Side effects of asset
+   key-value collection keyed by the auto-save key. **Decided 2026-10-07:**
+   a save the storage layer rejects is never refused; the draft is kept as a
+   1.x-shaped row in a per-workspace key-value collection
+   (`canvas.auto_save.{workspace_id}`, keys unchanged from 1.x), and a later
+   successful save removes the row. See decision 1 below. Side effects of asset
    entity saves (`CanvasAssetStorage::doSave()` file generation, the
    `library_info` invalidation in `JavaScriptComponent::postSave()`,
    `AssetLibrary::postSave()`, `BrandKit::postSave()`) are skipped while a
@@ -99,7 +103,8 @@ The resulting shape:
    `WorkspacePublisherInterface::getDifferringRevisionIdsOnTarget()`
    (`WorkspacePublisher.php:147-174`). Either option removes the stored
    `original_hash`, `conflict_id`, `resolveConflict()`, the retention
-   sidecar and the `canvas_dev_cd` flag.
+   sidecar and the `canvas_dev_cd` flag. **Decided 2026-10-07:** keep core's
+   lock (decision 2 below).
 
 8. **Update path.** One `canvas_update_N()` (enable both modules, make
    `canvas_page.owner` revisionable, create the Main workspace on the default
@@ -108,6 +113,11 @@ The resulting shape:
    `canvas_default` while switched to user 1 through the account switcher
    (`administer workspaces` passes `WorkspaceProviderBase::checkAccess()`,
    lines 48-50, so no provider hack is needed on web `update.php`).
+   **Done 2026-10-07** on `workspaces-split` (`26283d6a`), using the existing
+   bookkeeping switch (`executeInWorkspaceUnchecked()`) rather than the
+   account switcher; `8f5de736` restores nullable injection of the Workspaces
+   services, which the container needs to compile on a 1.x site before the
+   update runs (core's `UpdateCompilerPass` does not prune tagged iterators).
 
 9. **`canvas_workflows`.** Unchanged in function. Its coupling to `canvas`
    shrinks to `hook_canvas_workspace_normalize_alter()` and
@@ -118,13 +128,13 @@ The resulting shape:
 
 | Component | Verdict | Reason | Risk of the verdict |
 |---|---|---|---|
-| `src/Entity/CanvasAutoSaveSnapshot.php`, `src/Entity/Storage/CanvasAutoSaveSnapshotStorageSchema.php`, `src/AutoSave/Workspace/AutoSaveSnapshotRepository.php` (348 lines) | **Remove** | Three uses: (a) config entity types that are not `ComponentTreeConfigEntityBase` (`WorkspaceAutoSave.php:566-569`), which `workspace_config` already lists as workspace-safe (`WorkspaceConfigSchemaHooks.php:46-54`); the stated reason is save side effects, which are gated in one place (section 1, item 2). (b) Content the storage layer rejects. The only test case is `entity_test`, a non-revisionable type core refuses (`WorkspaceAutoSaveStagingTest.php:166-195`); Canvas does not expose such hosts. A genuine SQL rejection (for example a 300-character title in a `varchar(255)` column) is a per-write error; returning 422 and keeping the previous draft is simpler than a second storage system. (c) Invalid payloads: a myth, since storage does not validate. With it go `hasSnapshotStaging()`, `loadStagedEntitiesOfType()`, snapshot staging at publish, `canvas_post_update_0033`, `workspaceHasSnapshotRows()` and the pre-publish snapshot gate. | A storage-rejected write becomes a visible error instead of a silent retention. Needs a human decision (open question 1). |
+| `src/Entity/CanvasAutoSaveSnapshot.php`, `src/Entity/Storage/CanvasAutoSaveSnapshotStorageSchema.php`, `src/AutoSave/Workspace/AutoSaveSnapshotRepository.php` (348 lines) | **Remove** | Three uses: (a) config entity types that are not `ComponentTreeConfigEntityBase` (`WorkspaceAutoSave.php:566-569`), which `workspace_config` already lists as workspace-safe (`WorkspaceConfigSchemaHooks.php:46-54`); the stated reason is save side effects, which are gated in one place (section 1, item 2). (b) Content the storage layer rejects. The only test case is `entity_test`, a non-revisionable type core refuses (`WorkspaceAutoSaveStagingTest.php:166-195`); Canvas does not expose such hosts. A genuine SQL rejection (for example a 300-character title in a `varchar(255)` column) is a per-write error; returning 422 and keeping the previous draft is simpler than a second storage system. (c) Invalid payloads: a myth, since storage does not validate. With it go `hasSnapshotStaging()`, `loadStagedEntitiesOfType()`, snapshot staging at publish, `canvas_post_update_0033`, `workspaceHasSnapshotRows()` and the pre-publish snapshot gate. | Decided 2026-10-07: never refuse; rejected drafts go to a per-workspace key-value collection instead of the entity (decision 1). |
 | `src/AutoSave/Workspace/PendingContentAutoSaveBuffer.php` (83) and `DeferredAutoSaveFlusher.php` (226) | **Remove** | The deferral never reaches kernel terminate on the routes it was built for: `ApiLayoutController::get()`, `::patch()` and `::post()` all call `getAutoSaveHashesAfterFlush()` before responding (`ApiLayoutController.php:162,443,543,555-558`), and `ApiContentAutoSaveControllers::patch()` flushes at line 130. So every content auto-save is a key-value write, a lock acquisition, a key-value read and a reconstruction, followed by the synchronous entity save it was meant to avoid. The buffer also doubles as the metadata sidecar (client id, `original_hash`, draft path, conflict retention, `config_base_hash`); that role moves to one small map. Spec task 2.6 ("verify PATCH latency does not regress") is still unchecked. | None for latency (the write is already synchronous). Config drafts on `canvas.api.*` routes are the one path that currently defers; they would gain one config save per PATCH, which is what the Live path did before the branch. |
 | `src/AutoSave/Workspace/AutoSaveRevisionPruner.php` (120) plus key-value state plus 154 test lines | **Simplify** to latest-only | Log-spaced history is listed in ADR 0014 as a bonus ("+TO An auto-save history exists"); the key-value era kept one snapshot. Keeping only the newest tracked revision is one `getTrackedEntities()` call before save and one `deleteRevision()` after, inside the persist. No bookkeeping, no switch (`deleteRevisionInWorkspace()` at line 110-118 switches for no reason). | Loses recovery of earlier drafts, which no UI exposes. |
-| `CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()` (`src/CanvasServiceProvider.php:138-180`), `STAGING_KEY_VALUE_SERVICE` autowiring in six services, `tests/src/Kernel/Traits/CanvasWorkspaceConfigTestTrait.php`, `WorkspaceInvariantStagingStoreTest.php`, the rewrites in `canvas_post_update_0010/0026/0031/0034` | **Remove** | The premise ("workspace_config decorates keyvalue so that every collection becomes a per-workspace overlay", comment at lines 147-152) stopped being true in `workspace_config` commit `a670b91` (2026-08-03): the overlay now applies only to `config.entity.key_store.*`, `entity.definitions.bundle_field_map` and collections added through `hook_workspace_config_key_value_collections_alter()` (`WorkspaceConfigKeyValueInformation.php:30-43`; its doc says "Pass-through is the default"). Canvas's own test already records this (`WorkspaceInvariantStagingStoreTest.php:53-58`). No Canvas collection is overlaid. | Requires pinning `drupal/workspace_config` at or after `a670b91`; `composer.json` currently says `^1.0@dev`, which does not pin. |
+| `CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()` (`src/CanvasServiceProvider.php:138-180`), `STAGING_KEY_VALUE_SERVICE` autowiring in six services, `tests/src/Kernel/Traits/CanvasWorkspaceConfigTestTrait.php`, `WorkspaceInvariantStagingStoreTest.php`, the rewrites in `canvas_post_update_0010/0026/0031/0034` | **Remove** | The premise ("workspace_config decorates keyvalue so that every collection becomes a per-workspace overlay", comment at lines 147-152) stopped being true in `workspace_config` commit `a670b91` (2026-08-03): the overlay now applies only to `config.entity.key_store.*`, `entity.definitions.bundle_field_map` and collections added through `hook_workspace_config_key_value_collections_alter()` (`WorkspaceConfigKeyValueInformation.php:30-43`; its doc says "Pass-through is the default"). Canvas's own test already records this (`WorkspaceInvariantStagingStoreTest.php:53-58`). No Canvas collection is overlaid. | Decided 2026-10-07: `composer.json` pins `^1.0@beta` (1.0.0-beta1 includes `a670b91` and `d32a425`); remove (decision 6). |
 | Hash-based dirty state (`WorkspaceAutoSave::loadWorkspaceStagedContentAutoSave()` lines 457-501, `appendWorkspaceTrackedContentEntities()` lines 1134-1208, `loadWorkspaceStagedConfigAutoSave()` lines 889-914) | **Keep the comparison, simplify the code** | "Tracked in the workspace" cannot replace it: a workspace revision carries every translation, and `revision_translation_affected` means "changed since the previous revision", not "differs from Live" (`ContentEntityStorageBase.php:1168-1176`). The Live comparison is the only thing that implements per-translation drafts and the spec's "undo back to live values" scenario. But it is implemented twice (per-entity and per-list) with different helpers, and the per-list variant loads Live inside a workspace switch per entity. One helper, Live loaded once per request. | None. |
 | `CONFIG_BASE_HASH_KEY` / `ensureConfigBaseRecorded()` (`WorkspaceAutoSave.php:59-69, 945-977`), spec D7 | **Remove** | Config created inside a workspace has no Live copy; "reverted to the original" has no meaning for it. Report it as always pending and give it a constant starting point. The branch records the first staged copy as a fake base only to keep `autoSaveStartingPoint` stable, which a constant also does. | Discarding a never-published template deletes it (already the behavior of `discardWorkspaceStagedConfig()` at line 1457-1462). |
-| External-edit conflict detection: `original_hash`, `AUTO_SAVE_CONFLICT_KEY`, `getUnresolvedConflict()`, `resolveConflict()`, `advanceStagedEntryOriginalHash()`, `ConflictResolutionOutcomeEnum`, `conflictViolation()` in the publisher, `canvas_dev_cd` | **Remove** (needs decision) | Exists only because `CanvasAwareEntityWorkspaceConflictConstraintValidator` (lines 42-50) exempts Live saves of Main-tracked entities from core's lock. Keep core's lock and the problem disappears for every validated save. Programmatic Live saves (Drush, config sync) bypass validation either way; for those, core already computes the answer in `getDifferringRevisionIdsOnTarget()` (`WorkspacePublisher.php:147-174`), which a pre-publish subscriber can call to refuse the publish. Note `checkConflictsOnTarget()` is a no-op in core (lines 138-142), so without that check core would overwrite the Live edit. | Editors lose "edit a Canvas-drafted page in the node form" until the draft is published or discarded (ADR 0014 consequence 6 already accepted this). Open question 2. |
+| External-edit conflict detection: `original_hash`, `AUTO_SAVE_CONFLICT_KEY`, `getUnresolvedConflict()`, `resolveConflict()`, `advanceStagedEntryOriginalHash()`, `ConflictResolutionOutcomeEnum`, `conflictViolation()` in the publisher, `canvas_dev_cd` | **Remove** (needs decision) | Exists only because `CanvasAwareEntityWorkspaceConflictConstraintValidator` (lines 42-50) exempts Live saves of Main-tracked entities from core's lock. Keep core's lock and the problem disappears for every validated save. Programmatic Live saves (Drush, config sync) bypass validation either way; for those, core already computes the answer in `getDifferringRevisionIdsOnTarget()` (`WorkspacePublisher.php:147-174`), which a pre-publish subscriber can call to refuse the publish. Note `checkConflictsOnTarget()` is a no-op in core (lines 138-142), so without that check core would overwrite the Live edit. | Editors lose "edit a Canvas-drafted page in the node form" until the draft is published or discarded (ADR 0014 consequence 6 already accepted this). Decided 2026-10-07: remove (decision 2). |
 | `CanvasAwareEntityChangedConstraint*` (115 lines) and the `changed` injection in `ClientDataToEntityConverter.php:198-225, 376-384` | **Remove the constraint override, keep the converter change** | Two fixes for one race. The converter's request-time `changed` already makes core's comparison pass ("the request time can never be behind a flush", line 212), and with the flusher gone the cross-request flush race is the ordinary two-tabs case that `validateAutoSaves()` handles. | None identified. |
 | `WorkspaceAutoSaveHooks::entityTypeBuild()` (lines 23-43) marking every `canvas*` config entity type workspace-ignored | **Simplify** | `workspace_config` already sets `IgnoredWorkspaceHandler` on every managed config entity type (`WorkspaceConfigEntityHooks.php:49-67`). Canvas only needs to add its unlisted types (`canvas.color.*`, segments, page variants, overrides) to the safe list through the alter hook it already implements (line 56-59), so they stage like the rest. | None. |
 | `WorkspaceConfigEntityPersist.php` (158) and `WorkspaceContentEntityPersist.php` (72) | **Remove** | Both exist to catch exceptions and fall back to snapshots, and to maintain the metadata sidecar. With snapshots and the sidecar gone, each is `$entity->save()` plus the latest-only prune. The `isStagingWrite()` latch (lines 34-67) is needed only because `AutoSaveManager::onCanvasConfigEntitySave()` cannot tell a staged write from an outside edit; with staging being the config save itself, that listener ignores saves made inside a workspace (it already does at lines 1153-1159) and the latch is unnecessary. | None. |
@@ -138,7 +148,7 @@ The resulting shape:
 | Draft `path` recording (`DRAFT_PATH_KEY`, `applyRecordedDraftPath()`, lines 638-665) and dependent `path_alias` discard (lines 1377-1416) | **Keep** | Real core limitation: the computed `path` field resolves through alias storage, and a draft that cleared its alias cannot express that as a revision. Small, and the recorded value fits in the metadata map. Core issue worth filing: workspace-aware alias resolution for cleared aliases. | None. |
 | `LegacyAutoSaveMigrator.php` (63), `CanvasWorkspaceProvider.php` (84), `canvas_update_11201/11202/11203`, `canvas_post_update_0031/0032/0033/0034` (`canvas.install:95-192`, `canvas.post_update.php:293-508`), `CanvasWorkspacesAutoSaveUpdate11201Test.php` | **Replace** with one update hook and one post-update | These encode the abandoned phased shipping: 11201 installs the snapshot schema and a workspace on a legacy provider so 0031 can switch into it from web `update.php`; 0032 flips the provider and relabels; 11202 adds a `workspace` column to snapshot rows and re-prefixes five key-value collections; 0033 promotes snapshot rows into `workspace_config`; 0034 drains what 0031 left. None of that history exists on any site (ADR amendment: "Phase 1 (MR 1056) has not merged"). `CanvasWorkspaceProvider` exists only to grant `view` during `update.php`; switching to user 1 through `AccountSwitcherInterface` achieves the same without a provider. | One straight migration must still handle the pre-1.0 rows without an `id` that `importLegacyArray()` guards against (lines 509-528); carry those twelve lines. |
 | `modules/canvas_workflows` (about 1,100 source lines, 347 test lines) | **Keep**, reduce coupling | Already optional and already split. Core has no workspace review; building on core Workflows is the right call and the per-transition permissions mirror `content_moderation`. Depends on three `canvas` extension points; after this cut it needs one (`hook_canvas_workspace_normalize_alter()`) plus the ordinary `hook_entity_presave()`. `demoteOnStagedWrite()` loses its `isPublishTimeStaging()` check because core's publish promotes entities with `setSyncing(TRUE)` (`WorkspacePublisher.php:84`), which the presave hook already skips (`CanvasWorkflowsHooks.php:65`). | None. |
-| `CanvasAwareEntityWorkspaceConflictConstraint*` (92) | **Remove** if open question 2 is answered "keep core's lock"; otherwise keep | See the conflict-detection row. | See open question 2. |
+| `CanvasAwareEntityWorkspaceConflictConstraint*` (92) | **Remove** (decision 2: core's lock stays) | See the conflict-detection row. | None. |
 | UI: `ui/src/components/workspaces/*`, `ui/src/components/review/*`, `ui/src/services/workspacesApi.ts` (+1,548/−435) | **Keep** (skimmed) | The API surface they consume (list/create/activate/delete, review transitions, schedule, `lockedInWorkspace`, whole-workspace publish) survives this cut unchanged. The `PublishReview.conflict` flow shrinks or disappears with open question 2. | None beyond the conflict UI. |
 
 ## 3. Estimated reduction
@@ -169,58 +179,68 @@ Not counted: `src/AutoSave/Workspace/WorkspaceAutoSave.php` holds 19 of the
 (`executeOutsideWorkspace()` for Live loads, component generation, content and
 translation deletes, the publish transaction).
 
-## 4. Open questions that need a human decision
+## 4. Decisions (Ted Bowman, 2026-10-07)
 
-1. **May a storage-rejected auto-save return an error?** The spec says "no
-   auto-save may be refused". The only real cases are SQL-level rejections
-   (column length, type) for content; config storage rejects nothing it can
-   serialize. If a 422 for that one write (previous draft intact, client
-   keeps its state) is acceptable, the snapshot entity, both persist services
-   and the snapshot gate go. If not, the snapshot entity stays as the one
-   fallback and the rest of the cut still applies.
+1. **Storage-rejected auto-saves are never refused** (no regression from
+   1.x). Fallback store: key-value, **one collection per workspace**
+   (`canvas.auto_save.{workspace_id}`), row shape and keys exactly as in 1.x
+   (`data`, `data_hash`, `client_id`, `owner`, `updated`, `langcode`,
+   `is_default_translation`, `label`). The `CanvasAutoSaveSnapshot` entity,
+   its storage schema and `AutoSaveSnapshotRepository` go. The one-store
+   invariant stays: a successful revision or `workspace_config` persist
+   deletes the row. Consequences: the 1.x migration of rows that still cannot
+   be revisions is a single `UPDATE key_value SET collection =
+   'canvas.auto_save.canvas_default' WHERE collection = 'canvas.auto_save'`
+   after the migratable rows were persisted; workspace delete is
+   `deleteAll()` on one collection; cross-workspace lookups iterate workspace
+   IDs; uninstall enumerates `collection LIKE 'canvas.auto_save.%'`;
+   `key_value.collection` is varchar(128), so workspace IDs need a length
+   guard (or a shorter prefix). Test the fallback with a storage that throws:
+   sqlite never rejects.
 
-2. **Lock or detect?** Keep core's `EntityWorkspaceConflict` lock (a page with
-   a Canvas draft cannot be saved in the node form or via JSON:API until the
-   draft is published or discarded; ADR 0014 consequence 6 accepted this),
-   or keep the Main-workspace exemption and with it hash-based external-edit
-   detection, `resolveConflict()` and the conflict UI. The first removes
-   roughly 400 lines across `AutoSaveManager`, `WorkspaceAutoSave`, the
-   constraint override and the UI's conflict flow. Programmatic Live saves
-   are detectable at publish either way through
+2. **Keep core's `EntityWorkspaceConflict` lock.** An entity with a Canvas
+   draft cannot be saved outside its workspace until the draft is published
+   or discarded. Remove the Main-workspace exemption
+   (`CanvasAwareEntityWorkspaceConflictConstraint*`), `original_hash`,
+   `AUTO_SAVE_CONFLICT_KEY`, `getUnresolvedConflict()`, `resolveConflict()`,
+   `advanceStagedEntryOriginalHash()`, `ConflictResolutionOutcomeEnum`,
+   `conflictViolation()`, `canvas_dev_cd`, and the UI conflict flow.
+   Programmatic Live saves are refused at publish through
    `getDifferringRevisionIdsOnTarget()`.
 
-3. **Asset side effects inside a workspace.** Gating
-   `CanvasAssetStorage::doSave()`, the `library_info` invalidations and the
-   brand kit font usage sync on `hasActiveWorkspace()` means drafts of code
-   components, asset libraries and brand kits stage as `workspace_config` rows
-   like everything else, and the draft preview keeps reading compiled strings
-   from the entity (`ApiConfigAutoSaveControllers::getCss()/getJs()`, lines
-   50-72). Confirm there is no consumer that needs draft asset files on disk.
+3. **Asset side effects: decide after a spike.** Until someone verifies that
+   no consumer needs draft asset files on disk, code component, asset
+   library, brand kit and staged config update drafts stay on the fallback
+   store from decision 1. The spike: list every reader of generated asset
+   files and `library_info` for drafts; if all read compiled strings from the
+   entity (`ApiConfigAutoSaveControllers::getCss()/getJs()`), gate the side
+   effects on `hasActiveWorkspace()` and move these types to
+   `workspace_config` staging.
 
-4. **`StagedLanguageConfigOverride` and `StagedConfigUpdate`.**
-   `workspace_config` supports config collections (`collection` column,
-   `createCollection()`, `WorkspaceConfigDatabaseStorage.php:412-420`), so
-   language overrides written inside a workspace stage natively; and a
-   `StagedConfigUpdate` applied inside a workspace stages its target config
-   natively. Both entity types exist because there was no config staging.
-   Retiring them is a larger change than this review covers but removes
-   `stageLanguageOverrides()`, `groupConfigEntityAutoSaves()` and the
-   `StagedConfigEntityStorageTrait` indirection. Decide whether that is in
-   scope for 2.x.
+4. **`StagedLanguageConfigOverride` and `StagedConfigUpdate`: out of scope.**
+   Both stay, on the fallback store. Follow-up 2.x issue to retire them in
+   favor of native `workspace_config` staging.
 
-5. **Content templates "created disabled".** Spec task 2.10 defers retiring
-   it. With staged creation it guards nothing, and keeping it costs
-   `finalizeWorkspaceStagedConfig()`, `isUnpublishedWorkspaceCreation()` in
-   the view builder and the `workspace` cache context on templated renders.
-   Recommend retiring it in the same 2.x cut.
+5. **Retire "content templates are created disabled."** A template created
+   inside a workspace is that workspace's configuration until publish.
+   Remove `finalizeWorkspaceStagedConfig()`, `isUnpublishedWorkspaceCreation()`
+   in the view builder and the `workspace` cache context on templated
+   renders. ADR 0017 decision 3 must be corrected (its 2026-09-30 amendment
+   already says the rule is gone; the decision text still says the opposite).
 
-6. **Pin `drupal/workspace_config`.** The invariant key-value factory is only
-   removable with `workspace_config` at or after commit `a670b91`
-   (2026-08-03). `^1.0@dev` does not guarantee that; pin a tagged release or
-   a commit in `composer.json`.
+6. **Pin `drupal/workspace_config` to `^1.0@beta`** (1.0.0-beta1, tagged
+   2026-10-06, includes `a670b91` and `d32a425`). Remove
+   `registerWorkspaceInvariantKeyValueFactory()`, `STAGING_KEY_VALUE_SERVICE`,
+   `CanvasWorkspaceConfigTestTrait` and `WorkspaceInvariantStagingStoreTest`.
 
-7. **Upstream issues to file** (not blockers, but they drive two of the
-   remaining workarounds): `workspace_config` clearing entity field
-   definitions on every workspace switch
-   (`WorkspaceConfigSubscriber.php:25-34`); core's computed `path` field not
-   representing a cleared alias on a pending revision.
+7. **Upstream issues.** Only one is filed now, because it blocks the update
+   path: `workspace_config` decorates `cache.memory` with a constructor typed
+   `MemoryCacheInterface $inner` (`src/Cache/WorkspaceConfigMemoryCache.php:53`
+   at 1.0.0-beta1); under core's `UpdateKernel` every bin is an
+   `Drupal\Core\Update\UpdateBackend` (extends `NullBackend`), so the
+   container throws a `TypeError` on `drush updb` and update.php the moment
+   the module is enabled. Canvas's `canvas_update_11201` enables it inside an
+   update and trips it. No Canvas-side workaround: bump the constraint when
+   the fix ships. The field-definition clearing on every workspace switch and
+   the core computed `path` alias limitation stay recorded here as known
+   workarounds, not filed yet.

@@ -28,6 +28,23 @@ publish), that content templates are no longer created disabled, and how the
 base for hashes and starting points is chosen; consequence 12 records the
 accepted cache-tag invalidation cost.
 
+Amended 2026-10-07 (decided, not yet implemented; see
+`docs/workspace-simplification-review.md` section 4): drafts the storage
+layer rejects are retained in a per-workspace key-value collection, not a
+snapshot content entity; the deferred write buffer and flusher are removed
+(every editor request already flushed before responding); staged revision
+retention is latest-only; core's `EntityWorkspaceConflict` lock applies
+unchanged (no Main-workspace exemption, no hash-based external-edit conflict
+detection or resolution); content templates created inside a workspace are
+not created disabled; publish validation moves into a `WorkspacePrePublishEvent`
+subscriber so core UI and cron publishes are validated like the Canvas API;
+`drupal/workspace_config` is pinned to `^1.0@beta`, which makes the
+workspace-invariant key-value factory unnecessary. Decision 3's "still
+created disabled" sentence is superseded. Code components, asset libraries,
+brand kits, staged config updates and staged configuration translations keep
+the fallback store until a spike confirms their save side effects can be
+gated inside a workspace.
+
 Amends [ADR 14](0014-stage-autosaves-in-a-dedicated-workspace.md): the
 publish half of that decision (per-item publish, workspace publish blocked)
 is superseded; its staging mechanics are retained per workspace.
