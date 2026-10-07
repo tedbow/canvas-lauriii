@@ -36,7 +36,7 @@
 
 - [x] 4.1 Key-value migration (post-update and lazy) stages valid config rows into workspace-scoped configuration, preserving payload, editor, and timestamp. The migrator persists through the same path as a staged write (`LegacyAutoSaveMigrator::importLegacyArray()` → `WorkspaceAutoSave::persistStagedEntity()`), so component tree config rows now land as workspace-scoped configuration with the legacy entry's metadata
 - [x] 4.2 Legacy rows that cannot be persisted still migrate into the invalid-data store (the persist path's snapshot fallback)
-- [x] 4.3 Snapshot rows holding valid config drafts are promoted into workspace-scoped configuration of the workspace recorded on the row by a post-update pass (`canvas_post_update_0033_promote_config_snapshots`), and deleted once the staged copy is durable. No lazy promotion on read: a snapshot row is also the legitimate fallback for a draft the storage layer rejects, and retrying that save on every read would fail every time
+- [x] 4.3 ~~Snapshot rows holding valid config drafts are promoted into workspace-scoped configuration by a post-update~~ Dropped: no released site holds snapshot rows; the 1.x key-value migration persists config drafts straight into workspace-scoped configuration
 
 ## 5. Docs and diagram
 

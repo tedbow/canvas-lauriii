@@ -13,11 +13,11 @@ use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 /**
  * Tests the Workspaces auto-save upgrade path end-to-end on the bare Canvas dump.
  *
- * {@link canvas_update_11201()} installs the staging entity schema, ensures the
- * Workspaces module is enabled, and creates the shared auto-save workspace.
- * {@link canvas_post_update_0031_migrate_auto_save_to_workspace()} moves legacy
+ * {@link canvas_update_11201()} enables the Workspaces modules, installs the
+ * staging entity schema and creates the Main workspace.
+ * {@link canvas_post_update_0031_migrate_auto_save_to_workspace()} moves 1.x
  * `canvas.auto_save` key-value entries into workspace staging. This test seeds
- * legacy KV data before updates and asserts it is migrated away afterward (see
+ * key-value data before updates and asserts it is migrated away afterward (see
  * {@link \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator}).
  *
  * @legacy-covers \canvas_update_11201
@@ -47,7 +47,8 @@ final class CanvasWorkspacesAutoSaveUpdate11201Test extends CanvasUpdatePathTest
     $page = $storage->load(reset($ids));
     self::assertInstanceOf(Page::class, $page);
 
-    $key = AutoSaveManager::getAutoSaveKey($page);
+    // 1.x keys carry no workspace prefix.
+    $legacy_key = Page::ENTITY_TYPE_ID . ':' . $page->id() . ':' . $page->language()->getId();
     $legacy = [
       'entity_type' => Page::ENTITY_TYPE_ID,
       'entity_id' => (string) $page->id(),
@@ -64,24 +65,26 @@ final class CanvasWorkspacesAutoSaveUpdate11201Test extends CanvasUpdatePathTest
     ];
 
     $kv = \Drupal::keyValue(AutoSaveManager::AUTO_SAVE_STORE);
-    $kv->set($key, $legacy);
-    self::assertSame($legacy, $kv->get($key));
+    $kv->set($legacy_key, $legacy);
+    self::assertSame($legacy, $kv->get($legacy_key));
 
     $this->runUpdates();
 
-    self::assertNull($kv->get($key), 'Legacy key-value auto-save must be removed after migration to workspace staging.');
+    self::assertSame([], $kv->getAll(), 'Legacy key-value auto-save must be removed after migration to workspace staging.');
 
     /** @var \Drupal\workspaces\WorkspaceInterface $workspace */
     $workspace = \Drupal::entityTypeManager()->getStorage('workspace')->load(AutoSaveWorkspace::ID);
     self::assertNotNull($workspace);
     self::assertSame(AutoSaveWorkspace::LABEL, $workspace->label());
-    self::assertSame('canvas', $workspace->get('provider')->value);
+    self::assertSame('default', $workspace->get('provider')->value);
+    self::assertTrue(\Drupal::moduleHandler()->moduleExists('workspace_config'));
 
     // Migration preserves attribution: the pending change stays attributed to
     // the legacy editor with the legacy edit time, not to the migration run.
     $auto_save_manager = \Drupal::service(AutoSaveManager::class);
     \assert($auto_save_manager instanceof AutoSaveManager);
     $list = $auto_save_manager->getAllAutoSaveList(FALSE, FALSE);
+    $key = AutoSaveManager::getAutoSaveKey($page);
     self::assertArrayHasKey($key, $list);
     self::assertSame(1, $list[$key]['owner']);
     self::assertSame(1700000000, $list[$key]['updated']);

@@ -10,7 +10,6 @@ use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveRevisionPruner;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
-use Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider;
 use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
 use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Workspace\WorkspaceEntityLockedException;
@@ -331,37 +330,28 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
   }
 
   /**
-   * The Canvas workspace provider locks the workspace down.
+   * Main workspace access follows core workspace permissions.
    */
-  public function testWorkspaceProviderAccess(): void {
-    // The base provisions the Main workspace with the ordinary provider, as a
-    // fresh install does; this test covers the transitional one.
+  public function testMainWorkspaceAccess(): void {
     $workspace = Workspace::load(AutoSaveWorkspace::ID);
     self::assertNotNull($workspace);
-    $workspace->set('provider', CanvasWorkspaceProvider::getId())->save();
-    $workspace = Workspace::load(AutoSaveWorkspace::ID);
-    self::assertNotNull($workspace);
-    self::assertSame(CanvasWorkspaceProvider::getId(), $workspace->get('provider')->value);
 
-    // The transitional Canvas provider keeps the Phase 1 view grant for
-    // authenticated users until the update path maps it onto core workspace
-    // permissions; everything else follows core permissions.
     $editor = $this->createUser([AutoSaveManager::PUBLISH_PERMISSION]);
     self::assertInstanceOf(User::class, $editor);
-    self::assertTrue($workspace->access('view', $editor), 'Canvas editors may view (and therefore activate) the workspace.');
-    self::assertFalse($workspace->access('update', $editor));
-    self::assertFalse($workspace->access('publish', $editor), 'Publish follows core workspace permissions, which this account lacks.');
-    self::assertFalse($workspace->access('delete', $editor));
+    self::assertFalse($workspace->access('view', $editor), 'Canvas permissions alone grant no workspace access.');
+    self::assertFalse($workspace->access('publish', $editor));
 
     $plain = $this->createUser(['view any workspace', 'edit any workspace']);
     self::assertInstanceOf(User::class, $plain);
     self::assertTrue($workspace->access('view', $plain));
     self::assertTrue($workspace->access('publish', $plain), 'Publish follows core workspace permissions.');
+    self::assertFalse($workspace->access('delete', $plain), 'The Main workspace cannot be deleted.');
 
     $admin = $this->createUser(['administer workspaces']);
     self::assertInstanceOf(User::class, $admin);
     self::assertTrue($workspace->access('view', $admin));
     self::assertTrue($workspace->access('publish', $admin));
+    self::assertFalse($workspace->access('delete', $admin), 'The Main workspace cannot be deleted, even by administrators.');
   }
 
   /**

@@ -60,8 +60,7 @@ use Symfony\Component\Validator\ConstraintViolationListInterface;
 /**
  * Defines a class for storing and retrieving auto-save data.
  *
- * Auto-save entries are staged in the Canvas auto-save workspace and related
- * stores; legacy key-value rows may exist until migrated.
+ * Auto-save entries are staged in the active workspace and related stores.
  * Auto-save entries for an entity are cleared when:
  * - publishing an entity's auto-save entry
  * - deleting an entity
@@ -308,7 +307,7 @@ class AutoSaveManager implements EventSubscriberInterface {
   /**
    * Invokes hook_canvas_workspace_staged_write() for the staging workspace.
    *
-   * Covers the snapshot, buffer, and key-value staging paths, which do not
+   * Covers the snapshot and buffer staging paths, which do not
    * pass through a workspace-tracked entity save that hook_entity_presave()
    * implementations could react to.
    *

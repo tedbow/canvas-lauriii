@@ -265,10 +265,11 @@ final class WorkspaceAutoSave {
    * Runs a callback inside a workspace, regardless of who triggered it.
    *
    * Staging bookkeeping (pending lists, discarding staged revisions when an
-   * entity is deleted, lock lookups) runs in whichever request causes it: a
-   * field admin deleting a field storage, a content editor deleting a node.
-   * Core only lets the current user switch into a workspace they may view,
-   * but bookkeeping is not a user action, so view access is granted for the
+   * entity is deleted, lock lookups, the update path's draft migration) runs
+   * in whichever request causes it: a field admin deleting a field storage, a
+   * content editor deleting a node, an operator running update.php. Core only
+   * lets the current user switch into a workspace they may view, but
+   * bookkeeping is not a user action, so view access is granted for the
    * switch's duration through hook_workspace_access(). Access results are
    * statically cached per account: a cached denial is dropped before the
    * switch and the grant afterwards.
@@ -276,7 +277,7 @@ final class WorkspaceAutoSave {
    * @see \Drupal\workspaces\WorkspaceManager::doSwitchWorkspace()
    * @see \Drupal\canvas\Hook\WorkspaceAutoSaveRevisionHooks::workspaceAccess()
    */
-  private function executeInWorkspaceUnchecked(string $workspace_id, callable $callback): mixed {
+  public function executeInWorkspaceUnchecked(string $workspace_id, callable $callback): mixed {
     $wm = $this->workspaceManager();
     $handler = $this->entityTypeManager->getAccessControlHandler('workspace');
     $previous = $this->uncheckedSwitchWorkspaceId;

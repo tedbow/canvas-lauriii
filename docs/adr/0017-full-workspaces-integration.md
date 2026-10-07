@@ -71,7 +71,7 @@ unit of review and publish.
    store is read by the update path only. The Main workspace
    cannot be deleted. A pending workspace revision only carries revisionable
    fields, so every field a draft can edit is revisionable (the page owner
-   field was made so in `canvas_update_11203`), and a translation's draft is
+   field was made so in `canvas_update_11202`), and a translation's draft is
    the per-translation difference between the staged revision and Live: an
    edit to one translation never reports its siblings as drafted, and resetting
    one translation while a sibling is still drafted stays a staged write.
@@ -174,21 +174,22 @@ unit of review and publish.
    the UI renders whatever transitions the server offers), and
    schedule/unschedule.
 
-8. **Update path.** `canvas_update_11202` enables `workspace_config`,
-   installs the new fields, backfills snapshot rows, and re-keys the
-   key-value stores; `canvas_post_update_0032_main_workspace` (running
-   after the Phase 1 key-value migration) relabels the workspace, moves it
-   to the default provider, and maps the provider-granted access onto core
-   permissions ("view any workspace" for Canvas-editor roles; "edit any
-   workspace" and "create workspace" for publisher roles). The legacy
-   `canvas` workspace provider class remains only for the update window.
-   `canvas_update_11203` enables the Workflows module, creates the shipped
-   review workflow, converts `canvas_workspace_status` to a plain string
-   (workflow state IDs are open-ended), and installs
-   `canvas_review_workflow`;
-   `canvas_post_update_0033_review_workflow_permissions` maps the two
-   legacy review permissions onto the shipped workflow's per-transition
-   permissions and revokes them.
+8. **Update path.** One straight-line migration from 1.x:
+   `canvas_update_11201` enables `workspaces` and `workspace_config`,
+   installs the snapshot entity type and creates the Main workspace;
+   `canvas_update_11202` makes the page owner field revisionable;
+   `canvas_post_update_0031_migrate_auto_save_to_workspace` persists every
+   `canvas.auto_save` key-value row through the staged write path into the
+   Main workspace (content as pending revisions, component tree config as
+   workspace-scoped configuration, the rest as snapshot rows), preserving
+   payload, editor and edit time, and empties the store;
+   `canvas_post_update_0032_workspace_permissions` maps Canvas permissions
+   onto core workspace permissions ("view any workspace" for Canvas-editor
+   roles; "edit any workspace" and "create workspace" for publisher roles).
+   The migration switches into the Main workspace through the bookkeeping
+   switch that bypasses the per-user view check, so web update.php needs no
+   workspace permissions. The `canvas_workflows` sub-module's base fields
+   and shipped workflow install with that module.
 
 ## Consequences
 

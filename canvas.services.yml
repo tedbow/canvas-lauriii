@@ -94,9 +94,6 @@ services:
     arguments: ['@datetime.time', 100]
     tags:
       - { name: cache.bin.memory }
-  Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider:
-    tags:
-      - { name: workspace_provider }
   Drupal\canvas\AutoSave\Workspace\AutoSaveRevisionPruner: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceContentEntityPersist: { }
   Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist: { }
