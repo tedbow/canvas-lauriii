@@ -87,6 +87,10 @@ final class CanvasControllerTest extends CanvasKernelTestBase {
       'languages:language_interface',
       'theme',
       'url.site',
+      // Required cache context added by the Workspaces module, which Canvas
+      // installs for auto-save staging.
+      // @see \Drupal\workspaces\WorkspacesServiceProvider::alter()
+      'workspace',
     ];
     $actual_contexts = $response->getCacheableMetadata()->getCacheContexts();
     sort($expected_contexts);
@@ -580,6 +584,7 @@ final class CanvasControllerTest extends CanvasKernelTestBase {
         'extensionsAvailable' => FALSE,
         'aiExtensionAvailable' => FALSE,
         'personalizationExtensionAvailable' => FALSE,
+        'workflowsExtensionAvailable' => FALSE,
       ],
     ];
     yield 'ai' => [
@@ -603,11 +608,19 @@ final class CanvasControllerTest extends CanvasKernelTestBase {
         'extensionsAvailable' => TRUE,
       ],
     ];
+    yield 'workflows' => [
+      ['workflows', 'canvas_workflows'],
+      [
+        'aiExtensionAvailable' => FALSE,
+        'workflowsExtensionAvailable' => TRUE,
+      ],
+    ];
     yield 'all' => [
-      ['canvas_ai', 'canvas_personalization'],
+      ['canvas_ai', 'canvas_personalization', 'workflows', 'canvas_workflows'],
       [
         'aiExtensionAvailable' => TRUE,
         'personalizationExtensionAvailable' => TRUE,
+        'workflowsExtensionAvailable' => TRUE,
       ],
     ];
   }

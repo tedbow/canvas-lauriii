@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Drupal\Tests\canvas\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveSnapshotRepository;
+use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
 use Drupal\canvas\Entity\Component;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\JavaScriptComponent;
@@ -16,6 +18,7 @@ use Drupal\canvas\Plugin\Field\FieldTypeOverride\ImageItemOverride;
 use Drupal\canvas\PropSource\PropSource;
 use Drupal\canvas\Storage\ComponentTreeLoader;
 use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
@@ -27,6 +30,9 @@ use Drupal\node\Entity\Node;
 use Drupal\Tests\canvas\TestSite\CanvasTestSetup;
 use Drupal\Tests\canvas\Traits\AutoSaveRequestTestTrait;
 use Drupal\Tests\canvas\Traits\CanvasFieldTrait;
+use Drupal\workspaces\Entity\Workspace;
+use Drupal\workspaces\WorkspaceManagerInterface;
+use Drupal\workspaces\WorkspaceTrackerInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
@@ -537,6 +543,9 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
       'edit any article content',
       JavaScriptComponent::ADMIN_PERMISSION,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing goes through the workspace: core's publish operation maps
+      // to this permission.
+      'edit any workspace',
     ]);
 
     // Create a JS component with TWO slots: 'description' and 'sidebar'.
@@ -786,6 +795,370 @@ final class ApiLayoutControllerPatchTest extends ApiLayoutControllerTestBase {
     self::assertCount(1, $finalTree, 'Published node should only have parent after all slots removed');
     self::assertSame($parent_uuid, $finalTree[0]['uuid']);
     self::assertCount(0, $updatedNode->getTypedData()->validate());
+  }
+
+  /**
+   * A content template that exists only in a workspace has a starting point.
+   *
+   * With Workspace Config, a template created while a workspace is active is
+   * staged in that workspace's config partition and is absent from Live until
+   * the workspace is published. Layout GET and PATCH must still resolve its
+   * auto-save starting point, and successive auto-saves must not change it.
+   *
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::loadUnchangedBase()
+   */
+  public function testWorkspaceStagedContentTemplate(): void {
+    $this->setUpCurrentUser([], [
+      'administer url aliases',
+      ContentTemplate::ADMIN_PERMISSION,
+      'edit any article content',
+    ]);
+    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
+    \assert($workspace_manager instanceof WorkspaceManagerInterface);
+    $template_id = 'node.article.teaser';
+    $heading_uuid = '99cca6bb-4b98-42a2-97fe-e7dbc7268c26';
+    Workspace::create(['id' => 'stage', 'label' => 'Stage'])->save();
+
+    $workspace_manager->executeInWorkspace('stage', static function () use ($template_id, $heading_uuid): void {
+      ContentTemplate::create([
+        'id' => $template_id,
+        'content_entity_type_id' => 'node',
+        'content_entity_type_bundle' => 'article',
+        'content_entity_type_view_mode' => 'teaser',
+        'component_tree' => [
+          [
+            'uuid' => $heading_uuid,
+            'component_id' => 'sdc.canvas_test_sdc.heading',
+            'component_version' => '8c01a2bdb897a810',
+            'inputs' => [
+              'text' => 'hello, world!',
+              'element' => 'h1',
+            ],
+          ],
+        ],
+      ])->save();
+      self::assertInstanceOf(ContentTemplate::class, ContentTemplate::load($template_id));
+    });
+    // The template is staged in the workspace only.
+    self::assertNull($workspace_manager->executeOutsideWorkspace(static fn () => ContentTemplate::load($template_id)));
+
+    $this->previewEntity = Node::load(1);
+    $workspace_manager->executeInWorkspace('stage', function () use ($template_id, $heading_uuid, $workspace_manager): void {
+      $template = ContentTemplate::load($template_id);
+      \assert($template instanceof ContentTemplate);
+      $key = AutoSaveManager::getAutoSaveKey($template);
+      $url = $this->getLayoutUrl($template)->toString();
+      $autoSave = $this->container->get(AutoSaveManager::class);
+      \assert($autoSave instanceof AutoSaveManager);
+
+      $response = $this->parentRequest(Request::create($url));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      $this->assertResponseAutoSaves($response, [$template]);
+      $data = self::decodeResponse($response);
+      $starting_point = $data['autoSaves'][$key]['autoSaveStartingPoint'];
+      self::assertNotEmpty($starting_point);
+      self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
+
+      $model = $data['model'][$heading_uuid];
+      $model['resolved']['text'] = 'Updated heading';
+      $patch = [
+        'model' => $model,
+        'componentType' => 'sdc.canvas_test_sdc.heading@8c01a2bdb897a810',
+        'componentInstanceUuid' => $heading_uuid,
+      ] + $this->getPatchContentsDefaults([$template]);
+      $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch, JSON_THROW_ON_ERROR)));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      self::assertSame($starting_point, self::decodeResponse($response)['autoSaves'][$key]['autoSaveStartingPoint']);
+
+      // The draft exists, and the staged base it started from is unchanged.
+      self::assertFalse($autoSave->getAutoSaveEntity($template)->isEmpty());
+      self::assertSame($starting_point, $autoSave->getClientAutoSaveData($template)['autoSaveStartingPoint']);
+
+      // The draft is the workspace-scoped configuration itself, not a
+      // snapshot row: it resolves as regular configuration inside the
+      // workspace and is still absent from Live.
+      $storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID);
+      $staged = $storage->loadUnchanged($template_id);
+      self::assertInstanceOf(ContentTemplate::class, $staged);
+      self::assertSame('Updated heading', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
+      self::assertNull($this->container->get(AutoSaveSnapshotRepository::class)->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id));
+      self::assertNull($workspace_manager->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($template_id)));
+      self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+
+      // The unpublished template renders entities of its bundle inside the
+      // workspace, on any route: it is this workspace's own creation. Outside
+      // the workspace the core display renders them.
+      $node = Node::load(1);
+      \assert($node instanceof Node);
+      $render_teaser = function () use ($node): string {
+        $build = $this->container->get(EntityTypeManagerInterface::class)->getViewBuilder('node')->view($node, 'teaser');
+        return (string) $this->container->get('renderer')->renderInIsolation($build);
+      };
+      self::assertStringContainsString('Updated heading', $render_teaser());
+      self::assertStringNotContainsString('Updated heading', $workspace_manager->executeOutsideWorkspace($render_teaser));
+
+      // A further auto-save keeps the starting point.
+      $model['resolved']['text'] = 'Updated heading again';
+      $patch['model'] = $model;
+      $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch, JSON_THROW_ON_ERROR)));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      self::assertSame($starting_point, self::decodeResponse($response)['autoSaves'][$key]['autoSaveStartingPoint']);
+      $staged = $storage->loadUnchanged($template_id);
+      self::assertInstanceOf(ContentTemplate::class, $staged);
+      self::assertSame('Updated heading again', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
+
+      // Discarding a template created inside the workspace removes it: there
+      // is no Live copy to fall back to.
+      $autoSave->delete($template);
+      self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
+      self::assertNull($storage->loadUnchanged($template_id));
+      self::assertArrayNotHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    });
+  }
+
+  /**
+   * A Live content template edited inside a workspace stages there only.
+   *
+   * Every auto-save is a config save inside the workspace: Live keeps its
+   * values, the workspace copy carries the draft, dirty state is derived by
+   * comparing the two, and discarding resets the workspace copy to Live and
+   * stops tracking it.
+   *
+   * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::persistConfigEntity()
+   */
+  public function testWorkspaceStagedContentTemplateWithLiveCopy(): void {
+    $this->setUpCurrentUser([], [
+      'administer url aliases',
+      ContentTemplate::ADMIN_PERMISSION,
+      'edit any article content',
+    ]);
+    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
+    \assert($workspace_manager instanceof WorkspaceManagerInterface);
+    $tracker = $this->container->get(WorkspaceTrackerInterface::class);
+    \assert($tracker instanceof WorkspaceTrackerInterface);
+    $storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID);
+    $template_id = 'node.article.teaser';
+    $heading_uuid = '99cca6bb-4b98-42a2-97fe-e7dbc7268c26';
+    // No workspace is active: this is a Live save.
+    ContentTemplate::create([
+      'id' => $template_id,
+      'content_entity_type_id' => 'node',
+      'content_entity_type_bundle' => 'article',
+      'content_entity_type_view_mode' => 'teaser',
+      'component_tree' => [
+        [
+          'uuid' => $heading_uuid,
+          'component_id' => 'sdc.canvas_test_sdc.heading',
+          'component_version' => '8c01a2bdb897a810',
+          'inputs' => [
+            'text' => 'hello, world!',
+            'element' => 'h1',
+          ],
+        ],
+      ],
+    ])->save();
+    Workspace::create(['id' => 'stage', 'label' => 'Stage'])->save();
+    $live_heading = static function () use ($workspace_manager, $storage, $template_id): ?string {
+      $live = $workspace_manager->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($template_id));
+      \assert($live instanceof ContentTemplate);
+      return $live->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
+    };
+    $workspace_config_storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage('workspace_config');
+    $tracked_names = static function () use ($tracker, $workspace_config_storage): array {
+      $rows = $tracker->getTrackedEntities('stage', 'workspace_config');
+      $names = [];
+      foreach ($workspace_config_storage->loadMultiple(\array_unique($rows['workspace_config'] ?? [])) as $row) {
+        $names[] = (string) $row->label();
+      }
+      return $names;
+    };
+
+    $this->previewEntity = Node::load(1);
+    $workspace_manager->executeInWorkspace('stage', function () use ($template_id, $heading_uuid, $storage, $live_heading, $tracked_names): void {
+      $template = ContentTemplate::load($template_id);
+      \assert($template instanceof ContentTemplate);
+      $key = AutoSaveManager::getAutoSaveKey($template);
+      $url = $this->getLayoutUrl($template)->toString();
+      $autoSave = $this->container->get(AutoSaveManager::class);
+      \assert($autoSave instanceof AutoSaveManager);
+      $data = self::decodeResponse($this->parentRequest(Request::create($url)));
+      $starting_point = $data['autoSaves'][$key]['autoSaveStartingPoint'];
+      $patch = function (string $text) use ($data, $heading_uuid, $template): array {
+        $model = $data['model'][$heading_uuid];
+        $model['resolved']['text'] = $text;
+        return [
+          'model' => $model,
+          'componentType' => 'sdc.canvas_test_sdc.heading@8c01a2bdb897a810',
+          'componentInstanceUuid' => $heading_uuid,
+        ] + $this->getPatchContentsDefaults([$template]);
+      };
+
+      // A draft stages in the workspace; Live is untouched.
+      $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch('Staged heading'), JSON_THROW_ON_ERROR)));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      self::assertSame($starting_point, self::decodeResponse($response)['autoSaves'][$key]['autoSaveStartingPoint']);
+      $staged = $storage->loadUnchanged($template_id);
+      self::assertInstanceOf(ContentTemplate::class, $staged);
+      self::assertSame('Staged heading', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
+      self::assertSame('hello, world!', $live_heading());
+      self::assertFalse($autoSave->getAutoSaveEntity($template)->isEmpty());
+      self::assertArrayHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+      self::assertSame(['canvas.content_template.node.article.teaser'], $tracked_names());
+
+      // Undoing back to the Live values is no pending change at all.
+      $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch('hello, world!'), JSON_THROW_ON_ERROR)));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
+      self::assertArrayNotHasKey($key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+      self::assertSame([], $tracked_names());
+
+      // Discarding a draft of a Live template resets the workspace copy to
+      // the Live values and stops tracking it.
+      $response = $this->request(Request::create($url, method: 'PATCH', content: \json_encode($patch('Staged again'), JSON_THROW_ON_ERROR)));
+      self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+      self::assertFalse($autoSave->getAutoSaveEntity($template)->isEmpty());
+      $autoSave->delete($template);
+      self::assertTrue($autoSave->getAutoSaveEntity($template)->isEmpty());
+      $staged = $storage->loadUnchanged($template_id);
+      self::assertInstanceOf(ContentTemplate::class, $staged);
+      self::assertSame('hello, world!', $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
+      self::assertSame('hello, world!', $live_heading());
+      self::assertSame([], $tracked_names());
+
+      // On preview-critical routes the config save is deferred to kernel
+      // terminate like a content save: the draft sits in the pending buffer,
+      // readable, until a flush (here forced, as the response path does
+      // before reporting hashes) writes it as workspace-scoped configuration.
+      \putenv('CANVAS_TEST_FORCE_DEFER_AUTOSAVE=1');
+      try {
+        $draft = clone $template;
+        $draft->setComponentTree([
+          [
+            'uuid' => $heading_uuid,
+            'component_id' => 'sdc.canvas_test_sdc.heading',
+            'component_version' => '8c01a2bdb897a810',
+            'inputs' => ['text' => 'Deferred heading', 'element' => 'h1'],
+          ],
+        ]);
+        $autoSave->saveEntity($draft, 'client-b');
+        $buffer = $this->container->get(PendingContentAutoSaveBuffer::class);
+        $row = $buffer->get($key);
+        self::assertIsArray($row);
+        self::assertArrayHasKey('data', $row, 'The deferred config write sits in the pending buffer.');
+        $staged_heading = static function () use ($storage, $template_id): ?string {
+          $staged = $storage->loadUnchanged($template_id);
+          \assert($staged instanceof ContentTemplate);
+          return $staged->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
+        };
+        self::assertSame('hello, world!', $staged_heading(), 'Nothing is written before the flush.');
+        $buffered = $autoSave->getAutoSaveEntity($template)->entity;
+        self::assertInstanceOf(ContentTemplate::class, $buffered);
+        self::assertSame('Deferred heading', $buffered->getComponentTree()->first()?->getInputs()['text'] ?? NULL, 'The buffered draft is what readers see before the flush.');
+        $autoSave->flushDeferredContentEntity($template);
+        self::assertSame('Deferred heading', $staged_heading(), 'The flush wrote the workspace-scoped copy.');
+        $sidecar = $buffer->get($key);
+        self::assertIsArray($sidecar);
+        self::assertArrayNotHasKey('data', $sidecar, 'Only the metadata sidecar remains after the flush.');
+        self::assertSame('client-b', $sidecar['client_id']);
+      }
+      finally {
+        \putenv('CANVAS_TEST_FORCE_DEFER_AUTOSAVE');
+      }
+
+      // A draft the storage layer rejects before writing (here: config entity
+      // storage refusing a UUID that differs from the stored one) is retained
+      // as a snapshot row, still read as the draft, and promoted by the next
+      // persistable save.
+      // @see \Drupal\Core\Config\Entity\ConfigEntityStorage::doSave()
+      $snapshots = $this->container->get(AutoSaveSnapshotRepository::class);
+      $invalid = clone $template;
+      $invalid->set('uuid', '11111111-1111-4111-8111-111111111111');
+      $invalid->setComponentTree([
+        [
+          'uuid' => $heading_uuid,
+          'component_id' => 'sdc.canvas_test_sdc.heading',
+          'component_version' => '8c01a2bdb897a810',
+          'inputs' => ['text' => 'Rejected heading', 'element' => 'h1'],
+        ],
+      ]);
+      $autoSave->saveEntity($invalid, 'client-c', immediateWorkspacePersist: TRUE);
+      self::assertNotNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id), 'The rejected draft fell back to a snapshot row.');
+      self::assertSame('Deferred heading', $staged_heading(), 'The workspace copy is untouched by the rejected draft.');
+      $fallback = $autoSave->getAutoSaveEntity($template)->entity;
+      self::assertInstanceOf(ContentTemplate::class, $fallback);
+      self::assertSame('Rejected heading', $fallback->getComponentTree()->first()?->getInputs()['text'] ?? NULL);
+      $valid = clone $template;
+      $valid->setComponentTree([
+        [
+          'uuid' => $heading_uuid,
+          'component_id' => 'sdc.canvas_test_sdc.heading',
+          'component_version' => '8c01a2bdb897a810',
+          'inputs' => ['text' => 'Promoted heading', 'element' => 'h1'],
+        ],
+      ]);
+      $autoSave->saveEntity($valid, 'client-c', immediateWorkspacePersist: TRUE);
+      self::assertNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id), 'A persistable save removes the snapshot row.');
+      self::assertSame('Promoted heading', $staged_heading());
+    });
+  }
+
+  /**
+   * Snapshot rows of component tree config drafts promote into workspaces.
+   *
+   * @see canvas_post_update_0033_promote_config_snapshots()
+   */
+  public function testPromoteConfigSnapshotsPostUpdate(): void {
+    $workspace_manager = $this->container->get(WorkspaceManagerInterface::class);
+    \assert($workspace_manager instanceof WorkspaceManagerInterface);
+    $storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID);
+    $snapshots = $this->container->get(AutoSaveSnapshotRepository::class);
+    $template_id = 'node.article.teaser';
+    $heading_uuid = '99cca6bb-4b98-42a2-97fe-e7dbc7268c26';
+    $tree = static fn (string $text): array => [
+      [
+        'uuid' => $heading_uuid,
+        'component_id' => 'sdc.canvas_test_sdc.heading',
+        'component_version' => '8c01a2bdb897a810',
+        'inputs' => ['text' => $text, 'element' => 'h1'],
+      ],
+    ];
+    $heading = static function (?EntityInterface $template): ?string {
+      \assert($template instanceof ContentTemplate);
+      return $template->getComponentTree()->first()?->getInputs()['text'] ?? NULL;
+    };
+    // No workspace is active: this is a Live save.
+    $live = ContentTemplate::create([
+      'id' => $template_id,
+      'content_entity_type_id' => 'node',
+      'content_entity_type_bundle' => 'article',
+      'content_entity_type_view_mode' => 'teaser',
+      'component_tree' => $tree('hello, world!'),
+    ]);
+    $live->save();
+    Workspace::create(['id' => 'stage', 'label' => 'Stage'])->save();
+
+    // A draft staged the old way: a snapshot row in the workspace.
+    $draft = clone $live;
+    $draft->setComponentTree($tree('Snapshot heading'));
+    $payload = \json_encode($draft->toArray(), JSON_THROW_ON_ERROR);
+    $snapshots->persist(ContentTemplate::ENTITY_TYPE_ID, $template_id, 'und', $payload, AutoSaveManager::generateHashFromData(\json_decode($payload, TRUE)), 'client-legacy', 1, 'stage');
+
+    require_once __DIR__ . '/../../../canvas.post_update.php';
+    $sandbox = [];
+    do {
+      canvas_post_update_0033_promote_config_snapshots($sandbox);
+    } while ($sandbox['#finished'] < 1);
+
+    self::assertNull($snapshots->resolveLatestStaged(ContentTemplate::ENTITY_TYPE_ID, $template_id, 'und', 'stage'), 'The snapshot row was promoted and removed.');
+    self::assertSame('hello, world!', $heading($workspace_manager->executeOutsideWorkspace(static fn () => $storage->loadUnchanged($template_id))));
+    $workspace_manager->executeInWorkspace('stage', function () use ($storage, $template_id, $heading, $live): void {
+      self::assertSame('Snapshot heading', $heading($storage->loadUnchanged($template_id)));
+      $autoSave = $this->container->get(AutoSaveManager::class);
+      \assert($autoSave instanceof AutoSaveManager);
+      $promoted = $autoSave->getAutoSaveEntity($live);
+      self::assertFalse($promoted->isEmpty());
+      self::assertSame('client-legacy', $promoted->clientId);
+    });
   }
 
 }

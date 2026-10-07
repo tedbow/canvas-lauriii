@@ -4,9 +4,7 @@ import type { Spec } from '@json-render/core';
 import type { DiscoveryResult, DiscoveryWarning } from './discovery-client';
 
 export type PreviewIneligibilityReason =
-  | 'invalid_metadata'
-  | 'missing_js_entry'
-  | 'unsupported_js_extension';
+  'invalid_metadata' | 'missing_js_entry' | 'unsupported_js_extension';
 
 export interface PreviewComponentMetadataError {
   sourcePath: string;
@@ -64,6 +62,7 @@ export interface PreviewManifest {
   components: PreviewManifestComponent[];
   warnings: PreviewWarning[];
   globalCssUrl: string | null;
+  brandKitCssUrl: string | null;
 }
 
 /** Parent tells the preview iframe to refetch discovery/manifest without remounting (e.g. after page JSON save). */
@@ -244,6 +243,7 @@ export function buildPreviewManifest(
     components: discoveryResult.components.map(toPreviewManifestComponent),
     warnings: discoveryResult.warnings,
     globalCssUrl: null,
+    brandKitCssUrl: null,
   };
 }
 

@@ -21,18 +21,29 @@ import {
   parseDraftData,
   serializeDraftData,
 } from '../draft-data';
+import { parsePreviewRequest } from '../preview-context';
 import { resolveDraftConfig } from './config';
 import { fetchPage } from './content-api';
 import { buildClearedDraftCookie, buildDraftCookie } from './cookies';
 import { fetchEntity } from './entity-api';
-import { getDraftClient, getPublicClient } from './json-api-client';
+import {
+  getDraftClient,
+  getPublicClient,
+  resolveJsonApiRuntimeConfig,
+} from './json-api-client';
+import { createJsonApiProxyHandler } from './jsonapi-proxy';
 import { codeChallenge, generateCodeVerifier } from './pkce';
+import { createApiPrefixResolver } from './site-data';
 import { exchangeAssertion } from './token-exchange';
 
-import type { JsonApiClient } from '@drupal-api-client/json-api-client';
+import type {
+  CanvasJsonApiClient,
+  JsonApiRuntimeConfig,
+} from 'drupal-canvas/jsonapi-client';
 import type { DraftData } from '../draft-data';
 import type { EntityResult } from '../entity';
 import type { PageResult } from '../page';
+import type { PreviewContext } from '../preview-context';
 import type { DraftServerAdapter } from './adapter';
 import type { DraftConfig } from './config';
 
@@ -41,18 +52,28 @@ import type { DraftConfig } from './config';
  * established draft session, or the error Response to answer with.
  */
 export type RedemptionResult =
-  | { ok: true; draftData: DraftData }
+  | { ok: true; draftData: DraftData; previewPath: string }
   | { ok: false; response: Response };
 
 /**
  * A site-relative path: exactly one leading slash. Rejects protocol-relative
  * forms (`//host`) and backslash tricks, mirroring the check Drupal's
- * renewal endpoints apply before minting. Assertions are Drupal-signed, so
- * a malformed path should never arrive — this is the app-side backstop for
- * the same invariant, since the path ends up in a redirect().
+ * renewal endpoints apply before minting. Also checks URL normalization when
+ * restoring a local navigation target from a rejected assertion. This check
+ * permits navigation only; it does not validate any session claims.
  */
 function isSiteRelativePath(path: string): boolean {
-  return path.startsWith('/') && !path.startsWith('//') && !path.includes('\\');
+  try {
+    return (
+      path.startsWith('/') &&
+      !path.startsWith('//') &&
+      !path.includes('\\') &&
+      new URL(path, 'https://canvas.invalid').origin ===
+        'https://canvas.invalid'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -94,25 +115,6 @@ export async function redeemAssertion(
   const path = typeof claims?.path === 'string' ? claims.path : null;
   const resourceVersion =
     typeof claims?.resourceVersion === 'string' ? claims.resourceVersion : null;
-  const rawPreviewContext =
-    typeof claims?.previewContext === 'object' && claims.previewContext !== null
-      ? (claims.previewContext as Record<string, unknown>)
-      : null;
-  const previewContext =
-    rawPreviewContext &&
-    (rawPreviewContext.viewMode === undefined ||
-      typeof rawPreviewContext.viewMode === 'string') &&
-    (rawPreviewContext.pageVariant === undefined ||
-      typeof rawPreviewContext.pageVariant === 'string')
-      ? {
-          ...(typeof rawPreviewContext.viewMode === 'string' && {
-            viewMode: rawPreviewContext.viewMode,
-          }),
-          ...(typeof rawPreviewContext.pageVariant === 'string' && {
-            pageVariant: rawPreviewContext.pageVariant,
-          }),
-        }
-      : undefined;
   const sub = typeof claims?.sub === 'string' && claims.sub ? claims.sub : null;
   const renewUrl =
     typeof claims?.renewUrl === 'string' && /^https?:\/\//.test(claims.renewUrl)
@@ -138,10 +140,10 @@ export async function redeemAssertion(
 
   return {
     ok: true,
+    previewPath: path,
     draftData: {
-      path,
+      path: parsePreviewRequest(path).requestUri,
       resourceVersion,
-      ...(previewContext && { previewContext }),
       sub,
       renewUrl,
       accessToken: exchange.accessToken,
@@ -198,37 +200,72 @@ export interface DraftServer {
   getDraftData(): Promise<DraftData | null>;
   /** The resolved configuration. */
   getConfig(): DraftConfig;
-  /** A client for public content: unauthenticated, published content only. */
-  getPublicClient(): JsonApiClient;
+  /**
+   * A client for public content: unauthenticated, published content only.
+   * Resolves the site's JSON:API prefix on first use — see getClient().
+   */
+  getPublicClient(): Promise<CanvasJsonApiClient>;
   /**
    * A client for draft content, authenticated with the session's
    * user-bound access token. Throws when the session has expired.
+   * Resolves the site's JSON:API prefix on first use — see getClient().
    */
-  getDraftClient(draftData: DraftData): JsonApiClient;
+  getDraftClient(draftData: DraftData): Promise<CanvasJsonApiClient>;
   /**
    * The right client for the current request: the draft client (user-bound
    * session token, working copies) while the draft session is live,
    * otherwise the public client. An expired draft session falls back to
    * anonymous fetching — the draft indicator makes that state visible
    * instead of letting anonymous-visible content masquerade as a draft.
+   *
+   * The client's JSON:API prefix comes from the site's public site-data
+   * endpoint (fetched once per server instance), so sites serving JSON:API
+   * from a non-default prefix (e.g. `/api`) work without configuration. When
+   * the endpoint is unreachable the CANVAS_JSONAPI_PREFIX environment
+   * variable (or a config override) applies, then the client's `/jsonapi`
+   * default. An explicit CANVAS_JSONAPI_URL override wins over discovery.
    */
-  getClient(): Promise<JsonApiClient>;
+  getClient(): Promise<CanvasJsonApiClient>;
+  /**
+   * The nonsecret JSON:API runtime configuration for the current request's
+   * browser client: resolved upstream endpoints, the application's proxy
+   * path, and the session's resource version while the draft session is
+   * live. Framework adapters pass it to the React rendering integration,
+   * which creates the browser client from it. Safe to serialize.
+   */
+  getJsonApiRuntimeConfig(): Promise<JsonApiRuntimeConfig>;
+  /**
+   * Body of the same-origin JSON:API proxy route (any method, mounted at the
+   * configured proxy path with a catch-all suffix). Forwards browser
+   * requests from portable Code Components to the configured Drupal backend
+   * with the session's credentials; see ./jsonapi-proxy.
+   */
+  handleJsonApiProxy(request: Request): Promise<Response>;
   /**
    * Fetches a page by its Drupal path (see ./content-api), carrying the
-   * live draft session's bearer token when there is one.
+   * live draft session's bearer token when there is one. The adapter provides
+   * this request's preview context; reserved parameters in path override it.
+   * An explicit previewContext replaces all URL-derived preview settings.
    */
-  fetchPage(path: string): Promise<PageResult | null>;
+  fetchPage(
+    path: string,
+    previewContext?: PreviewContext,
+  ): Promise<PageResult | null>;
   /** Fetches one entity by type and ID, optionally in a specific view mode. */
   fetchEntity(options: {
     type: string;
     id: string;
     viewMode?: string;
+    excludeAutoSave?: boolean;
   }): Promise<EntityResult | null>;
   /**
    * Fetches one component preview through the current draft session without
    * changing that session's entry path.
    */
-  fetchComponentPreview(componentId: string): Promise<PageResult | null>;
+  fetchComponentPreview(
+    componentId: string,
+    previewUri?: string,
+  ): Promise<PageResult | null>;
 }
 
 /**
@@ -245,6 +282,11 @@ export function createDraftServer(options: DraftServerOptions): DraftServer {
       return null;
     }
     return parseDraftData(await adapter.getCookie(DRAFT_DATA_COOKIE_NAME));
+  };
+
+  const getPreviewContext = async (path: string) => {
+    const requestUrl = await adapter.getRequestUrl?.();
+    return parsePreviewRequest(path, parsePreviewRequest(requestUrl ?? '/'));
   };
 
   /**
@@ -270,6 +312,14 @@ export function createDraftServer(options: DraftServerOptions): DraftServer {
     );
   };
 
+  let resolveApiPrefix: ReturnType<typeof createApiPrefixResolver> | undefined;
+  const resolveClientConfig = async (): Promise<DraftConfig> => {
+    const clientConfig = getConfig();
+    resolveApiPrefix ??= createApiPrefixResolver(clientConfig, fetchImpl);
+    const apiPrefix = await resolveApiPrefix();
+    return { ...clientConfig, ...(apiPrefix && { apiPrefix }) };
+  };
+
   return {
     getConfig,
     getDraftData,
@@ -290,7 +340,16 @@ export function createDraftServer(options: DraftServerOptions): DraftServer {
         // into it instead of stranding the user on an error page.
         const existingSession = await getDraftData();
         if (existingSession && !isDraftSessionExpired(existingSession)) {
-          return adapter.redirect(existingSession.path);
+          // A second tab may have replaced the cookie's entry path. Use this
+          // request's local navigation target, without adopting any session
+          // claims from the rejected assertion or changing its permissions.
+          const requestedPath = decodeAssertionClaims(assertion)?.path;
+          return adapter.redirect(
+            typeof requestedPath === 'string' &&
+              isSiteRelativePath(requestedPath)
+              ? requestedPath
+              : existingSession.path,
+          );
         }
 
         return result.response;
@@ -301,7 +360,7 @@ export function createDraftServer(options: DraftServerOptions): DraftServer {
       // The path was signed into the assertion Drupal accepted, and is
       // additionally constrained to a site-relative path (no scheme, host,
       // or protocol-relative form) in redeemAssertion().
-      return adapter.redirect(result.draftData.path);
+      return adapter.redirect(result.previewPath);
     },
 
     /**
@@ -424,21 +483,40 @@ export function createDraftServer(options: DraftServerOptions): DraftServer {
       return new Response(null, { status: 303, headers: { Location: '/' } });
     },
 
-    getPublicClient: () => getPublicClient(getConfig()),
-    getDraftClient: (draftData) => getDraftClient(getConfig(), draftData),
+    getPublicClient: async () => getPublicClient(await resolveClientConfig()),
+    getDraftClient: async (draftData) =>
+      getDraftClient(await resolveClientConfig(), draftData),
 
-    async getClient(): Promise<JsonApiClient> {
-      const draftData = await getDraftData();
-      return draftData && !isDraftSessionExpired(draftData)
-        ? getDraftClient(getConfig(), draftData)
-        : getPublicClient(getConfig());
+    async getJsonApiRuntimeConfig(): Promise<JsonApiRuntimeConfig> {
+      return resolveJsonApiRuntimeConfig(
+        await resolveClientConfig(),
+        await getDraftData(),
+      );
     },
 
-    async fetchPage(path: string): Promise<PageResult | null> {
+    handleJsonApiProxy: createJsonApiProxyHandler({
+      getConfig: resolveClientConfig,
+      isDraftModeEnabled: () => adapter.isDraftFlagEnabled(),
+      getDraftData,
+      fetchImpl,
+    }),
+
+    async getClient(): Promise<CanvasJsonApiClient> {
+      const draftData = await getDraftData();
+      return draftData && !isDraftSessionExpired(draftData)
+        ? getDraftClient(await resolveClientConfig(), draftData)
+        : getPublicClient(await resolveClientConfig());
+    },
+
+    async fetchPage(
+      path: string,
+      previewContext?: PreviewContext,
+    ): Promise<PageResult | null> {
       const draftData = await getDraftData();
       return fetchPage(path, {
         baseUrl: getConfig().baseUrl,
         draftData,
+        previewContext: previewContext ?? (await getPreviewContext(path)),
         fetchImpl,
       });
     },
@@ -455,15 +533,17 @@ export function createDraftServer(options: DraftServerOptions): DraftServer {
 
     async fetchComponentPreview(
       componentId: string,
+      previewUri?: string,
     ): Promise<PageResult | null> {
       const draftData = await getDraftData();
       if (!draftData || componentId === '') {
         return null;
       }
-      return fetchPage(draftData.path, {
+      return fetchPage('/', {
         baseUrl: getConfig().baseUrl,
         draftData,
         componentPreviewId: componentId,
+        previewContext: await getPreviewContext(previewUri ?? '/'),
         fetchImpl,
       });
     },

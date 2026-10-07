@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\AutoSave;
 
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\AutoSaveEntity;
+use Drupal\canvas\CanvasServiceProvider;
 use Drupal\canvas\Controller\ApiContentControllers;
 use Drupal\canvas\Controller\ConflictResolutionOutcomeEnum;
 use Drupal\canvas\Entity\BrandKit;
@@ -38,13 +41,17 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\FieldableEntityInterface;
 use Drupal\Core\Entity\RevisionableInterface;
 use Drupal\Core\Entity\TranslatableInterface;
+use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Field\FieldDefinitionInterface;
 use Drupal\Core\Field\FieldItemInterface;
 use Drupal\Core\Field\FieldItemListInterface;
 use Drupal\Core\KeyValueStore\KeyValueFactoryInterface;
 use Drupal\Core\KeyValueStore\KeyValueStoreInterface;
 use Drupal\Core\Session\AccountProxyInterface;
+use Drupal\metatag\Plugin\Field\FieldType\MetatagFieldItem;
 use Drupal\path\Plugin\Field\FieldType\PathFieldItemList;
+use Drupal\workspaces\WorkspaceInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Validator\ConstraintViolationList;
@@ -53,9 +60,9 @@ use Symfony\Component\Validator\ConstraintViolationListInterface;
 /**
  * Defines a class for storing and retrieving auto-save data.
  *
- * Auto-save data is stored forever in the key-value store. So in principle, it
- * can grow forever.
- * However, auto-save entries for a (content or config) entity are deleted when:
+ * Auto-save entries are staged in the Canvas auto-save workspace and related
+ * stores; legacy key-value rows may exist until migrated.
+ * Auto-save entries for an entity are cleared when:
  * - publishing an entity's auto-save entry
  * - deleting an entity
  *
@@ -93,10 +100,9 @@ class AutoSaveManager implements EventSubscriberInterface {
     self::AUTO_SAVE_STORED_ENTITY_HASH_KEY,
     self::AUTO_SAVE_CONFLICT_KEY,
     'is_default_translation',
+    WorkspaceAutoSave::DRAFT_PATH_KEY,
   ];
   const ENTITY_DUPLICATE_SUFFIX = ' (Copy)';
-
-  private KeyValueStoreInterface $autoSaveStore;
 
   /**
    * @todo Remove this in https://drupal.org/i/3505018.
@@ -123,13 +129,16 @@ class AutoSaveManager implements EventSubscriberInterface {
     // @see \Drupal\metatag\Plugin\Field\MetatagEntityFieldItemList::computeValue()
     #[Autowire(service: 'canvas.auto_save.entity_memory_cache')]
     private readonly CacheBackendInterface $cache,
-    #[Autowire(service: 'keyvalue')]
+    // Staging bookkeeping must resolve identically in every workspace.
+    // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
+    #[Autowire(service: CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE)]
     KeyValueFactoryInterface $keyValueFactory,
     private readonly AccountProxyInterface $currentUser,
     private readonly TimeInterface $time,
     private readonly HealthRecords $healthRecords,
+    private readonly WorkspaceAutoSave $workspaceAutoSave,
+    private readonly ModuleHandlerInterface $moduleHandler,
   ) {
-    $this->autoSaveStore = $keyValueFactory->get(self::AUTO_SAVE_STORE);
     $this->formViolationsStore = $keyValueFactory->get(self::FORM_VIOLATIONS_STORE);
     $this->componentInstanceFormViolationsStore = $keyValueFactory->get(self::COMPONENT_INSTANCE_FORM_VIOLATIONS_STORE);
   }
@@ -170,9 +179,11 @@ class AutoSaveManager implements EventSubscriberInterface {
    * instances as it walks the fields.
    *
    * @see self::isPersistedComputedField()
+   *
+   * @internal
    * @see \Drupal\canvas\Utility\TypedDataHelper::castRawPhpTypes()
    */
-  private static function toStorableArray(EntityInterface $entity): array {
+  public static function toStorableArray(EntityInterface $entity): array {
     if ($entity instanceof FieldableEntityInterface) {
       $values = [];
       foreach ($entity->getFields(include_computed: TRUE) as $name => $field_item_list) {
@@ -201,7 +212,7 @@ class AutoSaveManager implements EventSubscriberInterface {
     return $entity->toArray();
   }
 
-  public function saveEntity(EntityInterface $entity, ?string $clientId = NULL): void {
+  public function saveEntity(EntityInterface $entity, ?string $clientId = NULL, bool $forcePreserve = FALSE, bool $immediateWorkspacePersist = FALSE): void {
     $key = $this->getAutoSaveKey($entity);
     $data = self::normalizeEntity($entity);
     $data_hash = self::generateHash($data);
@@ -221,15 +232,33 @@ class AutoSaveManager implements EventSubscriberInterface {
     // \array_diff($data_hash, $original_hash)
     // \array_diff($original_hash, $data_hash)
     // @endcode
-    if ($original_hash !== NULL && \hash_equals($original_hash, $data_hash) && !$has_form_violations) {
-      // We've reset back to the original values. Clear the auto-save entry but
-      // keep the hash.
-      $this->delete($entity);
-      return;
+    if (!$forcePreserve && $original_hash !== NULL && \hash_equals($original_hash, $data_hash) && !$has_form_violations) {
+      // We've reset back to the original values: clear the auto-save entry.
+      // A workspace revision carries every translation of the entity, so when
+      // a sibling translation is still drafted the reset is staged as a write
+      // instead, which leaves this translation equal to Live and the sibling's
+      // draft intact.
+      if (!$this->hasDraftedSiblingTranslation($entity)) {
+        $this->delete($entity);
+        return;
+      }
+    }
+
+    // A payload identical to the currently staged draft from the same client
+    // instance is a retry (e.g. after a response timeout): re-staging it
+    // would only churn workspace revisions.
+    if (!$forcePreserve && !$has_form_violations) {
+      $staged = $this->workspaceAutoSave->loadAutoSaveEntity($entity);
+      if (!$staged->isEmpty()
+        && \is_string($staged->hash)
+        && \hash_equals($staged->hash, $data_hash)
+        && $staged->clientId === $clientId) {
+        return;
+      }
     }
 
     // Avoid overwriting the original hash; it would break conflict detection.
-    $existing_entry = $this->autoSaveStore->get($key);
+    $existing_entry = $this->workspaceAutoSave->getStagedEntryMetadata($key);
     if (\is_array($existing_entry) && \array_key_exists(self::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $existing_entry)) {
       $original_hash = $existing_entry[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
     }
@@ -254,9 +283,62 @@ class AutoSaveManager implements EventSubscriberInterface {
     ];
     \assert(!\is_null($auto_save_data['entity_id']));
 
-    $this->autoSaveStore->set($key, $auto_save_data);
+    $this->workspaceAutoSave->persistStagedEntity($entity, $clientId, $immediateWorkspacePersist, $auto_save_data);
     $this->cache->delete($key);
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
+    $this->invokeStagedWriteHook();
+  }
+
+  /**
+   * Whether another translation of a content entity currently has a draft.
+   */
+  private function hasDraftedSiblingTranslation(EntityInterface $entity): bool {
+    if (!$entity instanceof ContentEntityInterface || $entity->id() === NULL) {
+      return FALSE;
+    }
+    $langcode = $entity->language()->getId();
+    foreach (\array_keys($entity->getTranslationLanguages()) as $sibling_langcode) {
+      if ($sibling_langcode !== $langcode && !$this->getAutoSaveEntity($entity->getTranslation($sibling_langcode))->isEmpty()) {
+        return TRUE;
+      }
+    }
+    return FALSE;
+  }
+
+  /**
+   * Invokes hook_canvas_workspace_staged_write() for the staging workspace.
+   *
+   * Covers the snapshot, buffer, and key-value staging paths, which do not
+   * pass through a workspace-tracked entity save that hook_entity_presave()
+   * implementations could react to.
+   *
+   * @see hook_canvas_workspace_staged_write()
+   */
+  private function invokeStagedWriteHook(): void {
+    if (!$this->moduleHandler->hasImplementations('canvas_workspace_staged_write')
+      || !$this->entityTypeManager->hasDefinition('workspace')) {
+      return;
+    }
+    $workspace = $this->entityTypeManager->getStorage('workspace')->load(self::activeWorkspaceId());
+    if ($workspace instanceof WorkspaceInterface) {
+      $this->moduleHandler->invokeAll('canvas_workspace_staged_write', [$workspace]);
+    }
+  }
+
+  /**
+   * Flushes deferred workspace persists so autoSave hashes match DB state.
+   */
+  public function flushDeferredContentEntity(EntityInterface $entity): void {
+    $this->workspaceAutoSave->flushDeferredContentEntity($entity);
+  }
+
+  /**
+   * @param iterable<EntityInterface> $entities
+   */
+  public function flushDeferredContentEntities(iterable $entities): void {
+    foreach ($entities as $entity) {
+      $this->flushDeferredContentEntity($entity);
+    }
   }
 
   /**
@@ -300,10 +382,10 @@ class AutoSaveManager implements EventSubscriberInterface {
    */
   public function saveComponentInstanceFormViolations(string $component_uuid, ?ConstraintViolationListInterface $violations = NULL): self {
     if ($violations === NULL) {
-      $this->componentInstanceFormViolationsStore->delete($component_uuid);
+      $this->componentInstanceFormViolationsStore->delete(self::componentInstanceViolationsKey($component_uuid));
       return $this;
     }
-    $this->componentInstanceFormViolationsStore->set($component_uuid, $violations);
+    $this->componentInstanceFormViolationsStore->set(self::componentInstanceViolationsKey($component_uuid), $violations);
     return $this;
   }
 
@@ -312,10 +394,24 @@ class AutoSaveManager implements EventSubscriberInterface {
    *    https://drupal.org/i/3500795.
    */
   public function getComponentInstanceFormViolations(string $component_uuid): ConstraintViolationListInterface {
-    return $this->componentInstanceFormViolationsStore->get($component_uuid) ?? new ConstraintViolationList();
+    return $this->componentInstanceFormViolationsStore->get(self::componentInstanceViolationsKey($component_uuid)) ?? new ConstraintViolationList();
   }
 
-  private static function normalizeEntity(EntityInterface $entity): array {
+  /**
+   * The store key for a component instance's form violations.
+   *
+   * Workspace-prefixed like every other staging key: config drafts can hold
+   * the same component UUID in different workspaces, and one workspace's
+   * violations must not leak into another.
+   */
+  private static function componentInstanceViolationsKey(string $component_uuid): string {
+    return self::activeWorkspaceId() . ':' . $component_uuid;
+  }
+
+  /**
+   * @internal
+   */
+  public static function normalizeEntity(EntityInterface $entity): array {
     if (!$entity instanceof FieldableEntityInterface) {
       return self::toStorableArray($entity);
     }
@@ -338,8 +434,25 @@ class AutoSaveManager implements EventSubscriberInterface {
     // persisted elsewhere on save (path aliases, moderation states).
     $fields = \array_filter($fields, static fn (FieldItemListInterface $field) => !$field->getFieldDefinition()->isComputed() || self::isPersistedComputedField($field->getFieldDefinition()));
 
-    foreach (\array_keys($fields) as $name) {
-      $items = $entity->get($name);
+    // Exclude revision bookkeeping: a draft staged as a workspace revision
+    // carries its own revision id, revision metadata (including the Workspaces
+    // module's `workspace` key), a FALSE `revision_default` flag and, per
+    // translation, a `revision_translation_affected` flag that is set only on
+    // the translation the staged save touched. None of that is user-editable
+    // content. Including it would make a draft's hash never match the Live
+    // entity's, even when the content is identical, and would report every
+    // untouched sibling translation of a staged entity as a pending change.
+    $entity_type = $entity->getEntityType();
+    if ($entity_type instanceof ContentEntityTypeInterface && $entity_type->isRevisionable()) {
+      $revision_bookkeeping = \array_filter([
+        $entity_type->getKey('revision'),
+        $entity_type->getKey('revision_translation_affected'),
+        ...\array_values($entity_type->getRevisionMetadataKeys()),
+      ]);
+      $fields = \array_diff_key($fields, \array_flip($revision_bookkeeping));
+    }
+
+    foreach ($fields as $items) {
       // Exclude items that are empty.
       if ($items->isEmpty()) {
         continue;
@@ -356,18 +469,77 @@ class AutoSaveManager implements EventSubscriberInterface {
           continue;
         }
       }
-      $normalized[$name] = TypedDataHelper::castRawPhpTypes($items);
+      // Canonicalize metatag values before hashing: run each item through
+      // MetatagFieldItem::preSave() so it holds what a real entity save would
+      // store. Values arriving from the editor have never been processed by
+      // ::preSave() — persisting an auto-save entry does not run it — while the
+      // stored entity's values were processed by it on the last real save.
+      // Without that asymmetry removed, an unchanged editor round-trip hashes
+      // differently than the stored entity, in two ways. First, the field
+      // stores its tags as one order-sensitive JSON string: ::preSave() sorts
+      // them by key, but the metatag_firehose widget re-emits them in form
+      // order. Second, ::preSave() strips tags matching metatag's config
+      // defaults, but the widget prefills those very defaults into empty tags,
+      // so a page stored without metatag data (e.g. created before the metatag
+      // module was installed) echoes them back on every layout POST — and
+      // publishing that difference can never converge, because ::preSave()
+      // strips the tags again.
+      // @see \Drupal\metatag\Plugin\Field\FieldType\MetatagFieldItem::preSave()
+      // @see \Drupal\metatag\Plugin\Field\FieldWidget\MetatagFirehose::formElement()
+      // @todo Generalize handling of field types whose ::preSave() canonicalizes the stored value in https://git.drupalcode.org/project/canvas/-/work_items/3592013
+      if ($items->getFieldDefinition()->getType() === 'metatag') {
+        $values = [];
+        foreach ($items as $delta => $item) {
+          \assert($item instanceof MetatagFieldItem);
+          // ::preSave() only rewrites the item's own value; cloning first
+          // keeps the live entity untouched, because Map::__clone deep-clones
+          // the property objects.
+          $item = clone $item;
+          $item->preSave();
+          // ::preSave() reduces an item holding only default tags to the
+          // encoding of an empty array, which ::isEmpty() reports as empty;
+          // skipping such items matches an entity stored without metatag
+          // data.
+          if (!$item->isEmpty()) {
+            $values[$delta] = TypedDataHelper::castRawPhpTypes($item);
+          }
+        }
+        if ($values !== []) {
+          $normalized[$items->getName()] = $values;
+        }
+        continue;
+      }
+      $normalized[$items->getName()] = TypedDataHelper::castRawPhpTypes($items);
     }
     return $normalized;
   }
 
   public static function getAutoSaveKey(EntityInterface $entity): string {
     // @todo Make use of https://www.drupal.org/project/drupal/issues/3026957
-    // @todo This will likely to also take into account the workspace ID.
+    // The key is workspace-scoped: the same target entity may hold staged
+    // state in several workspaces (config entities are not covered by core's
+    // one-workspace-per-entity tracking), and every key-value store, cache
+    // entry, and client-visible pointer must partition per workspace so
+    // switching workspaces cannot produce false conflict or dirty signals.
+    $key = self::activeWorkspaceId() . ':' . $entity->getEntityTypeId() . ':' . $entity->id();
     if ($entity instanceof TranslatableInterface) {
-      return $entity->getEntityTypeId() . ':' . $entity->id() . ':' . $entity->language()->getId();
+      $key .= ':' . $entity->language()->getId();
     }
-    return $entity->getEntityTypeId() . ':' . $entity->id();
+    return $key;
+  }
+
+  /**
+   * The workspace that staging reads and writes resolve against.
+   *
+   * The active workspace when one is negotiated; the Main workspace
+   * otherwise (CLI, kernel tests, editing sessions that never selected a
+   * named workspace). Static because ::getAutoSaveKey() is called from
+   * static contexts throughout the codebase; operations that act on a
+   * specific non-active workspace (e.g. post-publish cleanup during cron)
+   * must wrap themselves in WorkspaceManagerInterface::executeInWorkspace().
+   */
+  public static function activeWorkspaceId(): string {
+    return AutoSaveWorkspace::stagingId(\Drupal::service(WorkspaceManagerInterface::class));
   }
 
   /**
@@ -377,70 +549,37 @@ class AutoSaveManager implements EventSubscriberInterface {
   public function getClientAutoSaveData(EntityInterface $entity): array {
     $autoSaveEntity = $this->getAutoSaveEntity($entity);
 
-    // We need to load the stored entity to be able to construct the auto-save
-    // starting point.
-    \assert($entity->id() !== NULL);
-    $savedEntity = $this->entityTypeManager->getStorage($entity->getEntityTypeId())
-      ->loadUnchanged($entity->id());
-    \assert($savedEntity instanceof EntityInterface);
+    $auto_save_start_point = $this->workspaceAutoSave->getAutoSaveStartingPoint($entity);
 
-    // If available we must use the revision ID and the changed time because
-    // not all entity types will increment the revision ID on every change.
-    $autoSaveStartRevision = $savedEntity instanceof RevisionableInterface
-      ? $savedEntity->getRevisionId()
-      : \hash('xxh64', \json_encode($savedEntity->toArray(), JSON_THROW_ON_ERROR));
-    if ($savedEntity instanceof EntityChangedInterface) {
-      $autoSaveStartRevision .= '-' . $savedEntity->getChangedTime();
-    }
     return [
-      'autoSaveStartingPoint' => $autoSaveStartRevision,
+      'autoSaveStartingPoint' => $auto_save_start_point,
       'hash' => $autoSaveEntity->hash,
     ];
   }
 
   private function getUnchangedHash(EntityInterface $entity): ?string {
     \assert(!\is_null($entity->id()));
-    $original = $this->entityTypeManager->getStorage($entity->getEntityTypeId())->loadUnchanged($entity->id());
-    if ($original === NULL) {
-      return NULL;
-    }
-    return self::generateHash(self::normalizeEntity($original));
+    // Compare against the saved base, never the staged copy: with the staging
+    // workspace active, a plain loadUnchanged() would return the draft itself,
+    // making every re-save of the draft look like a reset to the original
+    // values.
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::getBaseHash()
+    return $this->workspaceAutoSave->getBaseHash($entity);
   }
 
   public function getAutoSaveEntity(EntityInterface $entity, bool $bypass_cache = FALSE): AutoSaveEntity {
-    $key = $this->getAutoSaveKey($entity);
-    if (!$bypass_cache) {
-      $cached = $this->cache->get($key);
-      if ($cached) {
-        \assert($cached->data instanceof AutoSaveEntity);
-        return $cached->data;
-      }
-    }
-    $auto_save_data = $this->autoSaveStore->get($key);
-    if (\is_null($auto_save_data)) {
-      return AutoSaveEntity::empty();
-    }
+    return $this->workspaceAutoSave->loadAutoSaveEntity($entity, $bypass_cache);
+  }
 
-    /** @var AutoSaveEntry $auto_save_data */
-    \assert(\is_array($auto_save_data));
-    \assert(\array_key_exists('data', $auto_save_data));
-    \assert(\array_key_exists('entity_type', $auto_save_data));
-    \assert(\is_array($auto_save_data['data']));
-    $entity = $this->createEntityFromAutoSaveEntry($auto_save_data);
-    $auto_save_entity = new AutoSaveEntity(
-      entity: $entity,
-      hash: $auto_save_data['data_hash'],
-      clientId: $auto_save_data['client_id'],
-      // Used to populate "Updated" element in the side-by-side comparison UI.
-      // @see \Drupal\canvas\ControllerApiLayoutController::get()
-      // @todo Revisit as part of https://www.drupal.org/project/canvas/issues/3591544
-      updated: $auto_save_data['updated']
-    );
-    // Memoize the reconstructed entity to avoid calling ::create() repeatedly
-    // during layout preview rendering. $this->cache MUST be a non-serializing
-    // backend; see the $cache constructor parameter for why.
-    $this->cache->set($key, $auto_save_entity, tags: [self::CACHE_TAG]);
-    return $auto_save_entity;
+  /**
+   * Resolves the entity revision used to build layout JSON and preview HTML.
+   *
+   * Route upcasting can yield the default revision while pending edits exist on
+   * a workspace-tracked revision; this always prefers auto-save data or an
+   * explicit load inside the auto-save workspace.
+   */
+  public function getEntityForLayoutEditing(ContentEntityInterface $entity): ContentEntityInterface {
+    return $this->workspaceAutoSave->getEntityForLayoutEditing($entity);
   }
 
   /**
@@ -641,7 +780,7 @@ class AutoSaveManager implements EventSubscriberInterface {
    */
   public function getAllAutoSaveList(bool $with_entities, bool $with_conflicts): array {
     /** @var array<string, AutoSaveEntry> $entries */
-    $entries = $this->autoSaveStore->getAll();
+    $entries = $this->workspaceAutoSave->getAllList();
 
     // StagedLanguageConfigOverride entries are internal implementation details:
     // they are published implicitly when their base config entity is published
@@ -657,7 +796,7 @@ class AutoSaveManager implements EventSubscriberInterface {
     // @todo Remove this filtering in https://git.drupalcode.org/project/canvas/-/work_items/3591703.
     $entries = \array_filter(
       $entries,
-      static fn (array $entry): bool => ($entry['entity_type'] ?? NULL) !== StagedLanguageConfigOverride::ENTITY_TYPE_ID,
+      static fn (array $entry): bool => $entry['entity_type'] !== StagedLanguageConfigOverride::ENTITY_TYPE_ID,
     );
 
     // Sort by key to ensure consistent ordering.
@@ -668,8 +807,9 @@ class AutoSaveManager implements EventSubscriberInterface {
     // upon request.
     [
       // Remove the unique session key for anonymous users.
-      'owner' => \is_numeric($entry['owner']) ? (int) $entry['owner'] : 0,
-      'entity' => $with_entities ? $this->createEntityFromAutoSaveEntry($entry) : NULL,
+      'owner' => 0,
+      // Metadata-only rows can lack the entity keys.
+      'entity' => $with_entities && isset($entry['entity_type'], $entry['data']) ? $this->createEntityFromAutoSaveEntry($entry) : NULL,
     ], $entries);
 
     if ($with_conflicts) {
@@ -700,46 +840,6 @@ class AutoSaveManager implements EventSubscriberInterface {
   }
 
   /**
-   * Groups content entity auto-save entries by entity, one per translation.
-   *
-   * A single content entity may have multiple auto-save entries when several
-   * translations were edited independently. Each entry holds a snapshot for one
-   * translation. This method collects all snapshots for the same entity into a
-   * group so they can be passed to
-   * ApiAutoSaveController::applyAutoSaveTranslationSnapshots(), which applies
-   * them all onto one loaded copy in a single save.
-   *
-   * Content entity coalescing lives here rather than in getAutoSaveEntity() /
-   * getAllAutoSaveList() because it requires loadUnchanged() to merge
-   * field-level changes onto the stored entity — a publish-specific operation
-   * that must not run at reconstruction time. This method therefore only groups
-   * the raw snapshots; the actual merge happens in the controller at publish
-   * time.
-   * Contrast with config entities, where coalescing is non-destructive and
-   * happens at load time in ComponentTreeConfigEntityBase::getTranslation().
-   *
-   * @param array<string, AutoSaveEntry> $auto_saves
-   *   A subset of the getAllAutoSaveList() result, already filtered to the
-   *   entries that should be published, with 'entity' populated.
-   *
-   * @return array<string, \Drupal\Core\Entity\ContentEntityInterface[]>
-   *   Snapshot entities grouped by "{entity_type}:{entity_id}", preserving the
-   *   order of the input. Config entity entries are silently skipped.
-   */
-  public static function groupContentEntityAutoSaves(array $auto_saves): array {
-    $groups = [];
-    foreach ($auto_saves as $entry) {
-      $entity = $entry['entity'];
-      if (!$entity instanceof ContentEntityInterface) {
-        continue;
-      }
-      $group_key = $entity->getEntityTypeId() . ':' . $entity->id();
-      $groups[$group_key][] = $entity;
-    }
-    return $groups;
-  }
-
-  /**
    * Checks if there is an unresolved conflict and returns its id.
    *
    * This method only handles conflicts in scenarios where an entity on which
@@ -766,7 +866,9 @@ class AutoSaveManager implements EventSubscriberInterface {
       return NULL;
     }
 
-    $entity = $this->entityTypeManager->getStorage($entry['entity_type'])->loadUnchanged($entry['entity_id']);
+    // The conflict basis is the Live copy: with the auto-save workspace
+    // active, loadUnchanged() would return the staged revision.
+    $entity = $this->workspaceAutoSave->loadUnchangedBase($entry['entity_type'], $entry['entity_id']);
     \assert(!\is_null($entity));
 
     // Compare the original_hash in auto-save entry vs latest entity hash.
@@ -797,7 +899,7 @@ class AutoSaveManager implements EventSubscriberInterface {
    */
   public function getUnresolvedConflictForEntity(Page $entity): string|NULL {
     $key = $this->getAutoSaveKey($entity);
-    $auto_save_data = $this->autoSaveStore->get($key);
+    $auto_save_data = $this->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$key] ?? NULL;
     // No auto-save, no conflict.
     if (\is_null($auto_save_data)) {
       return NULL;
@@ -827,15 +929,16 @@ class AutoSaveManager implements EventSubscriberInterface {
    */
   public function resolveConflict(EntityInterface $entity, string $resolved_conflict_id): ConflictResolutionOutcomeEnum {
     $key = $this->getAutoSaveKey($entity);
-    $auto_save_data = $this->autoSaveStore->get($key);
 
     // No auto-save entry, so there is nothing to resolve.
-    if (\is_null($auto_save_data)) {
+    if ($this->getAutoSaveEntity($entity)->isEmpty()) {
       return ConflictResolutionOutcomeEnum::NoAutoSaveItem;
     }
 
+    $auto_save_data = $this->workspaceAutoSave->getStagedEntryMetadata($key);
+    \assert(\is_array($auto_save_data));
     \assert(!$entity->isNew());
-    $stored = $this->entityTypeManager->getStorage($entity->getEntityTypeId())->loadUnchanged($entity->id());
+    $stored = $this->workspaceAutoSave->loadUnchangedBase($entity->getEntityTypeId(), (string) $entity->id());
     \assert(!\is_null($stored));
     $current_hash = self::generateHash(self::normalizeEntity($stored));
     /** @var AutoSaveEntry $auto_save_data */
@@ -852,8 +955,8 @@ class AutoSaveManager implements EventSubscriberInterface {
     if ($active_conflict !== $resolved_conflict_id) {
       return ConflictResolutionOutcomeEnum::ConflictMismatch;
     }
-    // Advance stored entity hash.
-    $this->setStoredEntityHash($key, $current_hash, $auto_save_data);
+    // Advance original_hash to the current stored entity hash.
+    $this->workspaceAutoSave->advanceStagedEntryOriginalHash($entity, $current_hash);
     $this->cache->delete($key);
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
 
@@ -869,8 +972,28 @@ class AutoSaveManager implements EventSubscriberInterface {
       BrandKit::clearAutoSaveFileUsage($auto_save_entity->entity, (string) $entity->id());
     }
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
+    $this->workspaceAutoSave->deleteEntity($entity);
+    $this->deleteDraftBookkeeping($entity);
+  }
+
+  /**
+   * Discards one translation's draft after that translation was deleted.
+   *
+   * Unlike ::delete(), the sibling translations' drafts survive.
+   *
+   * @see \Drupal\canvas\Hook\AutoSaveHooks::entityTranslationDelete()
+   */
+  public function deleteTranslation(ContentEntityInterface $translation): void {
+    $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
+    $this->workspaceAutoSave->discardStagedTranslation($translation);
+    $this->deleteDraftBookkeeping($translation);
+  }
+
+  /**
+   * Removes the records kept alongside a draft: violations and health results.
+   */
+  private function deleteDraftBookkeeping(EntityInterface $entity): void {
     $key = $this->getAutoSaveKey($entity);
-    $this->autoSaveStore->delete($key);
     $this->formViolationsStore->delete($key);
     // A discarded auto-save entry must not leave an orphan health result.
     $this->healthRecords->deleteForEntity($entity, HealthCheck::AutoSave);
@@ -887,7 +1010,10 @@ class AutoSaveManager implements EventSubscriberInterface {
         ...$carry,
         ...\array_column($entity->get($field_name)->getValue(), 'uuid'),
       ], []);
-      $this->componentInstanceFormViolationsStore->deleteMultiple(\array_unique($component_uuids));
+      $this->componentInstanceFormViolationsStore->deleteMultiple(\array_map(
+        self::componentInstanceViolationsKey(...),
+        \array_unique($component_uuids),
+      ));
     }
   }
 
@@ -898,9 +1024,7 @@ class AutoSaveManager implements EventSubscriberInterface {
    * StagedLanguageConfigOverride drafts are separate auto-save entries that
    * must be discarded (and, eventually, published) together: each override's
    * entity ID is "{langcode}.{config_name}", so they are matched by config
-   * name. This is the config-translation sibling of
-   * ::groupContentEntityAutoSaves(), which groups a content entity's
-   * per-translation snapshots.
+   * name.
    *
    * @param \Drupal\canvas\Entity\ComponentTreeConfigEntityBase $entity
    *   The config entity whose staged translation drafts to collect.
@@ -911,13 +1035,14 @@ class AutoSaveManager implements EventSubscriberInterface {
   public function groupConfigEntityAutoSaves(ComponentTreeConfigEntityBase $entity): array {
     $suffix = '.' . $entity->getConfigDependencyName();
     /** @var array<string, AutoSaveEntry> $entries */
-    $entries = $this->autoSaveStore->getAll();
+    $entries = $this->workspaceAutoSave->getAllList();
     $matches = \array_filter(
       $entries,
       static fn (array $entry): bool =>
         ($entry['entity_type'] ?? NULL) === StagedLanguageConfigOverride::ENTITY_TYPE_ID
+        && isset($entry['data'])
         && \is_string($entry['entity_id'] ?? NULL)
-        && \str_ends_with((string) $entry['entity_id'], $suffix),
+        && \str_ends_with($entry['entity_id'], $suffix),
     );
     return \array_values(\array_map(function (array $entry): StagedLanguageConfigOverride {
       $override = $this->createEntityFromAutoSaveEntry($entry);
@@ -987,13 +1112,20 @@ class AutoSaveManager implements EventSubscriberInterface {
 
   public function deleteAll(): void {
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
-    $this->autoSaveStore->deleteAll();
+    $this->workspaceAutoSave->deleteAll();
     $this->formViolationsStore->deleteAll();
     $this->componentInstanceFormViolationsStore->deleteAll();
     $this->healthRecords->clear(HealthCheck::AutoSave);
   }
 
   private static function generateHash(array $data): string {
+    return self::generateHashFromData($data);
+  }
+
+  /**
+   * @internal
+   */
+  public static function generateHashFromData(array $data): string {
     // When called from ::recordInitialClientSideRepresentation() and ::save()
     // the keys for an individual component are in different orders. This causes
     // the hash to be different though the data is functionally the same.
@@ -1014,6 +1146,14 @@ class AutoSaveManager implements EventSubscriberInterface {
       return;
     }
 
+    // Publish-time staging saves the draft itself: the auto-save entry is
+    // about to be consumed by the publish, so there is nothing to update —
+    // and re-staging it here would write into the workspace mid-publish.
+    // A Canvas staged config write likewise saves the draft itself.
+    if ($this->workspaceAutoSave->isPublishTimeStaging() || $this->workspaceAutoSave->isStagingConfigWrite()) {
+      return;
+    }
+
     $entity = $this->configManager->loadConfigEntityByName($event->getConfig()->getName());
     if (!$entity) {
       return;
@@ -1021,6 +1161,20 @@ class AutoSaveManager implements EventSubscriberInterface {
     // Auto-saves can only occur for Canvas config entities modified by the
     // Canvas UI.
     if (!$entity instanceof CanvasHttpApiEligibleConfigEntityInterface) {
+      return;
+    }
+
+    // Inside a workspace, a save of config staged as workspace-scoped
+    // configuration (the config API, a config form) writes the workspace's
+    // copy, which is the draft: there is no separate draft to update or
+    // discard. Saves outside any workspace are Live edits; they are
+    // reconciled against the Main workspace's draft below, like any other
+    // outside edit.
+    if ($entity instanceof ComponentTreeConfigEntityBase
+      && $this->workspaceAutoSave->usesWorkspaceConfigStaging($entity)
+      && $this->workspaceAutoSave->hasActiveWorkspace()) {
+      $this->workspaceAutoSave->onWorkspaceStagedConfigSaved($entity);
+      $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
       return;
     }
 
@@ -1080,23 +1234,17 @@ class AutoSaveManager implements EventSubscriberInterface {
     // Finally: the goal: to update rather than delete the auto-save entry when
     // safe.
     if ($auto_save_update_needed) {
-      // Advance `original_hash` before `saveEntity()` so the preservation
-      // guard in `saveEntity()` picks up the already-advanced hash in a
-      // single write.
-      $this->setStoredEntityHash(
-        self::getAutoSaveKey($autoSaveEntity),
-        // Hash the freshly-saved stored entity, not the auto-save draft.
-        self::generateHash(self::normalizeEntity($entity)),
-      );
       $this->saveEntity($autoSaveEntity, $autoSaveData->clientId);
     }
   }
 
   public function onCanvasConfigDelete(ConfigCrudEvent $event): void {
-    $autoSaveEntities = $this->getAllAutoSaveList(with_entities: TRUE, with_conflicts: FALSE);
-    $autoSaveEntities = array_filter($autoSaveEntities, fn($entityData) => $entityData['entity'] instanceof StagedConfigUpdate);
-    foreach ($autoSaveEntities as $autoSaveEntity) {
-      $staged_config_update = $autoSaveEntity['entity'];
+    // This fires for every config deletion, by any user (or none, e.g. web
+    // update.php runs): only reconstruct StagedConfigUpdate drafts, which
+    // stage without workspace involvement, instead of building the full
+    // auto-save list, which requires workspace view access.
+    // @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::loadStagedEntitiesOfType()
+    foreach ($this->workspaceAutoSave->loadStagedEntitiesOfType(StagedConfigUpdate::ENTITY_TYPE_ID) as $staged_config_update) {
       \assert($staged_config_update instanceof StagedConfigUpdate);
       if ($staged_config_update->getTarget() === $event->getConfig()->getName()) {
         $this->delete($staged_config_update);
@@ -1118,14 +1266,13 @@ class AutoSaveManager implements EventSubscriberInterface {
    *
    * Called after a new-draft entity's langcode is changed so the auto-save
    * entry — which is keyed by entity type, ID, and langcode — follows the
-   * entity's updated language. Any existing entry stored under the old key is
-   * re-stored under the new key with its langcode metadata updated, and the
-   * old key is deleted.
+   * entity's updated language. The staged revision follows the entity by
+   * itself (the key derives from it); the staging bookkeeping recorded under
+   * the old key (client instance, stored-entity hash, draft path, conflict
+   * retention, form violations, a snapshot row) is re-keyed.
    *
-   * The memoized entry under the old key is dropped and the auto-save cache
-   * tag is invalidated so subsequent reads pick up the migrated entry. Nothing
-   * is memoized under the new key: ::getAutoSaveEntity() only caches keys that
-   * have a stored entry, and the new key had none.
+   * The memoized entries under both keys are dropped and the auto-save cache
+   * tag is invalidated so subsequent reads pick up the migrated entry.
    *
    * @param \Drupal\Core\Entity\ContentEntityInterface $entity
    *   The entity after its langcode has been updated and saved.
@@ -1133,52 +1280,30 @@ class AutoSaveManager implements EventSubscriberInterface {
    *   The langcode the entity held before the change.
    */
   public function migrateLangcode(ContentEntityInterface $entity, string $old_langcode): void {
-    $old_key = $entity->getEntityTypeId() . ':' . $entity->id() . ':' . $old_langcode;
+    $old_key = self::activeWorkspaceId() . ':' . $entity->getEntityTypeId() . ':' . $entity->id() . ':' . $old_langcode;
     $new_key = self::getAutoSaveKey($entity);
 
     if ($old_key === $new_key) {
       return;
     }
 
-    $existing = $this->autoSaveStore->get($old_key);
-    if (!\is_array($existing)) {
+    // The stored entity was just saved with the new langcode, so its hash no
+    // longer matches the one recorded when the draft was written. Advance it,
+    // otherwise the migrated draft is reported as a conflict.
+    // @see ::getConflictId()
+    $moved = $this->workspaceAutoSave->migrateStagingKey($entity, $old_langcode, $this->getUnchangedHash($entity));
+    $violations = $this->formViolationsStore->get($old_key);
+    if ($violations !== NULL) {
+      $this->formViolationsStore->set($new_key, $violations);
+      $this->formViolationsStore->delete($old_key);
+      $moved = TRUE;
+    }
+    if (!$moved) {
       return;
     }
 
-    \assert(!empty($existing));
-    $langcode_field = $entity->getEntityType()->getKey('langcode');
-    $existing['langcode'] = $entity->language()->getId();
-    // Update the serialized field data so the reconstructed entity carries
-    // the correct langcode. The data uses the field-items format produced by
-    // toStorableArray() / TypedDataHelper::castRawPhpTypes() — a plain list
-    // of field item arrays, without a per-langcode wrapper key.
-    if (\is_string($langcode_field) && isset($existing['data'][$langcode_field])) {
-      $existing['data'][$langcode_field] = [['value' => $entity->language()->getId()]];
-    }
-    // Saving the stored entity with a new langcode deletes the old path alias
-    // entity and creates a new one for the new language; the alias text itself
-    // is not lost. Drop the alias ID and language from auto-saved item 'path'
-    // so publishing creates a new alias entity using the alias text stored in
-    // auto-save item instead of trying to update the deleted one.
-    // @see \Drupal\path\Plugin\Field\FieldType\PathItem::postSave()
-    foreach ($entity->getFieldDefinitions() as $field_name => $field_definition) {
-      if ($field_definition->getType() !== 'path' || !isset($existing['data'][$field_name])) {
-        continue;
-      }
-      foreach ($existing['data'][$field_name] as &$path_item) {
-        unset($path_item['pid'], $path_item['langcode']);
-      }
-      unset($path_item);
-    }
-    // The stored entity was just saved with the new langcode, so its hash no
-    // longer matches the one recorded when the auto-save entry was written.
-    // Advance it, otherwise the migrated entry is reported as a conflict.
-    // @see ::getConflictId()
-    $existing[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY] = $this->getUnchangedHash($entity);
-    $this->autoSaveStore->set($new_key, $existing);
-    $this->autoSaveStore->delete($old_key);
-
     $this->cache->delete($old_key);
+    $this->cache->delete($new_key);
     $this->cacheTagsInvalidator->invalidateTags([self::CACHE_TAG]);
   }
 
@@ -1192,23 +1317,6 @@ class AutoSaveManager implements EventSubscriberInterface {
       return $entity->isNew();
     }
     return (string) $entity->label() == ApiContentControllers::defaultTitle($entity->getEntityType()) || str_ends_with((string) $entity->label(), self::ENTITY_DUPLICATE_SUFFIX);
-  }
-
-  /**
-   * Sets $current_hash into the stored auto-save item's original_hash key.
-   *
-   * Callers are responsible for any cache invalidation that follows, since the
-   * appropriate scope differs per call site.
-   *
-   * @param AutoSaveEntry|null $auto_save_item
-   */
-  private function setStoredEntityHash(string $auto_save_item_key, string $current_hash, ?array $auto_save_item = NULL): void {
-    if (\is_null($auto_save_item)) {
-      $auto_save_item = $this->autoSaveStore->get($auto_save_item_key);
-      \assert(!\is_null($auto_save_item));
-    }
-    $auto_save_item[self::AUTO_SAVE_STORED_ENTITY_HASH_KEY] = $current_hash;
-    $this->autoSaveStore->set($auto_save_item_key, $auto_save_item);
   }
 
 }

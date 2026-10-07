@@ -1,5 +1,29 @@
 # @drupal-canvas/create
 
+## 1.9.1
+
+### Patch Changes
+
+- 614dfb4: Update runtime dependencies to compatible versions.
+
+## 1.9.0
+
+### Minor Changes
+
+- 00fae2f: Make all headless templates available in the interactive template
+  picker without an experimental flag.
+  - Remove `--experimental-headless` from existing commands; the flag is no
+    longer supported.
+  - Keep selecting the `default` template in non-interactive runs that omit
+    `--template`.
+
+## 1.8.0
+
+### Minor Changes
+
+- 732b7e5: Add the experimental Angular starter to the template registry and
+  framework selection flow.
+
 ## 1.7.0
 
 ### Minor Changes

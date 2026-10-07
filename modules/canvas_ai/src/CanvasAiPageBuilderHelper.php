@@ -5,12 +5,9 @@ namespace Drupal\canvas_ai;
 use Drupal\canvas\Component\Schema\PropMetadataNormalizer;
 use Drupal\canvas\Controller\ApiConfigControllers;
 use Drupal\canvas\Entity\Component;
-use Drupal\canvas\Entity\PageVariant;
-use Drupal\canvas\PageVariantResolver;
 use Drupal\canvas\Plugin\Canvas\ComponentSource\BlockComponent;
 use Drupal\canvas\Plugin\Canvas\ComponentSource\JsComponent;
 use Drupal\canvas\Plugin\Canvas\ComponentSource\SingleDirectoryComponent;
-use Drupal\canvas\Plugin\DisplayVariant\CanvasPageVariant;
 use Drupal\Component\Render\MarkupInterface;
 use Drupal\Component\Serialization\Json;
 use Drupal\Component\Utility\DiffArray;
@@ -20,7 +17,6 @@ use Drupal\Core\Cache\VariationCacheInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Config\TypedConfigManagerInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
-use Drupal\Core\Entity\FieldableEntityInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
 use Drupal\Core\Template\Attribute as TemplateAttribute;
@@ -58,8 +54,6 @@ class CanvasAiPageBuilderHelper {
    * @param \Drupal\Core\Cache\VariationCacheInterface $memoryVariationCache
    *   The in-request variation cache, backed by the memory bin so it honors
    *   tag invalidations that happen mid-request.
-   * @param \Drupal\canvas\PageVariantResolver $pageVariantResolver
-   *   Resolves the page variant that renders a given entity.
    * @param \Drupal\canvas\Component\Schema\PropMetadataNormalizer $propMetadataNormalizer
    *   The prop metadata normalizer.
    * @param \Drupal\canvas\Controller\ApiConfigControllers $apiConfigControllers
@@ -79,7 +73,6 @@ class CanvasAiPageBuilderHelper {
     private readonly VariationCacheInterface $variationCache,
     #[Autowire(service: 'cache.variation.canvas_ai_memory')]
     private readonly VariationCacheInterface $memoryVariationCache,
-    private readonly PageVariantResolver $pageVariantResolver,
     private readonly PropMetadataNormalizer $propMetadataNormalizer,
     private readonly ApiConfigControllers $apiConfigControllers,
     #[Autowire(service: 'logger.factory')]
@@ -1465,6 +1458,29 @@ class CanvasAiPageBuilderHelper {
   }
 
   /**
+   * Validates a component slot target.
+   *
+   * @param string $target
+   *   The target in the form "parent_uuid/slot_name".
+   * @param array $components_by_uuid
+   *   The current page's components, keyed by UUID.
+   *
+   * @return string|null
+   *   An error message, or NULL when the target exists.
+   */
+  public function validateSlotTargetExists(string $target, array $components_by_uuid): ?string {
+    [$parent_uuid, $slot_name] = explode('/', $target, 2);
+    if (!isset($components_by_uuid[$parent_uuid])) {
+      return \sprintf('Invalid slot "%s". Component with UUID "%s" not found in layout', $target, $parent_uuid);
+    }
+    if (!\in_array($target, $components_by_uuid[$parent_uuid]['slots'], TRUE)) {
+      return \sprintf('Slot "%s" does not exist on component "%s".', $slot_name, $parent_uuid);
+    }
+
+    return NULL;
+  }
+
+  /**
    * Gets the region indices from the current layout.
    *
    * @param string $current_layout
@@ -1509,90 +1525,6 @@ class CanvasAiPageBuilderHelper {
       $region,
       implode(', ', \array_keys($layout_regions)),
     );
-  }
-
-  /**
-   * Gets the available regions from the current layout along with their descriptions, if configured.
-   *
-   * A page renders inside a single "content" region; the surrounding chrome is
-   * supplied by the page variant. The admin describes how each page variant
-   * should be used in the AI settings form, so the resolved variant's
-   * description guides the content region the agent fills.
-   *
-   * @param string $current_layout
-   *   The current layout JSON string.
-   * @param string|null $entity_type
-   *   The entity type being edited, used to resolve the applicable page
-   *   variant. NULL falls back to the site default variant.
-   * @param string|int|null $entity_id
-   *   The entity id being edited. NULL falls back to the site default variant.
-   *
-   * @return array
-   *   An array with region names as keys and their nodePathPrefix values and descriptions.
-   */
-  public function getAvailableRegions(string $current_layout, ?string $entity_type = NULL, string|int|null $entity_id = NULL) : array {
-    $region_index_mapping = $this->getRegionIndex($current_layout);
-    $variant_description = $this->getVariantDescription($this->resolveVariantForContext($entity_type, $entity_id));
-    $available_regions = [];
-    foreach ($region_index_mapping as $region_name => $region_index) {
-      $available_regions[$region_name] = [
-        'nodePathPrefix' => $region_index,
-        'info' => $region_name === CanvasPageVariant::MAIN_CONTENT_REGION ? $variant_description : NULL,
-      ];
-    }
-    return $available_regions;
-  }
-
-  /**
-   * Resolves the page variant that applies to the entity being edited.
-   *
-   * @param string|null $entity_type
-   *   The entity type being edited, or NULL when there is no entity.
-   * @param string|int|null $entity_id
-   *   The entity id being edited, or NULL when there is no entity.
-   *
-   * @return \Drupal\canvas\Entity\PageVariant|null
-   *   The applicable page variant, or NULL when none applies.
-   */
-  private function resolveVariantForContext(?string $entity_type, string|int|null $entity_id): ?PageVariant {
-    // Editing a page variant directly: its own description applies.
-    if ($entity_type === PageVariant::ENTITY_TYPE_ID) {
-      return $entity_id !== NULL ? PageVariant::load((string) $entity_id) : NULL;
-    }
-    // Editing content: resolve the variant that renders it, falling back to the
-    // site default when the entity is new or unknown.
-    $entity = NULL;
-    if ($entity_type !== NULL && $entity_id !== NULL && $this->entityTypeManager->hasDefinition($entity_type)) {
-      $loaded = $this->entityTypeManager->getStorage($entity_type)->load($entity_id);
-      if ($loaded instanceof FieldableEntityInterface) {
-        $entity = $loaded;
-      }
-    }
-    return $this->pageVariantResolver->resolve($entity);
-  }
-
-  /**
-   * Gets the AI guidance description configured for a page variant.
-   *
-   * Falls back to the variant's own description when no AI-specific guidance is
-   * configured, matching the settings form's default value.
-   *
-   * @param \Drupal\canvas\Entity\PageVariant|null $variant
-   *   The page variant, or NULL.
-   *
-   * @return string|null
-   *   The description, or NULL when none is available.
-   */
-  private function getVariantDescription(?PageVariant $variant): ?string {
-    if ($variant === NULL) {
-      return NULL;
-    }
-    $descriptions = $this->configFactory->get('canvas_ai.page_variant.settings')->get('variant_descriptions') ?? [];
-    $description = $descriptions[$variant->id()]['description'] ?? NULL;
-    if ($description === NULL || $description === '') {
-      $description = (string) ($variant->get('description') ?? '');
-    }
-    return $description === '' ? NULL : $description;
   }
 
   /**
@@ -1772,7 +1704,7 @@ class CanvasAiPageBuilderHelper {
    *
    * @return array
    *   An array keyed by component UUID, each value being
-   *   ['component_id' => string, 'props' => array].
+   *   ['component_id' => string, 'props' => array, 'slots' => list<string>].
    */
   public function getComponentsByUuid(array $current_layout): array {
     $components_by_uuid = [];
@@ -1801,6 +1733,7 @@ class CanvasAiPageBuilderHelper {
       $components_by_uuid[$component['uuid']] = [
         'component_id' => $component['name'] ?? '',
         'props' => \is_array($component['props'] ?? NULL) ? $component['props'] : [],
+        'slots' => \is_array($component['slots'] ?? NULL) ? \array_keys($component['slots']) : [],
       ];
       foreach ($component['slots'] ?? [] as $slot_payload) {
         if (\is_array($slot_payload) && \is_array($slot_payload['components'])) {
@@ -1808,6 +1741,77 @@ class CanvasAiPageBuilderHelper {
         }
       }
     }
+  }
+
+  /**
+   * Gets the libraries supported by Canvas.
+   *
+   * @return array
+   *   The array of supported libraries.
+   */
+  public function getSupportedLibraries(): array {
+    return [
+      [
+        "name" => "formatted_text",
+        "type" => "Built-in custom package",
+        "description" => "A built-in component to render text with trusted HTML using [`dangerouslySetInnerHTML`](https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html). The content is safe when processed through Drupal's filter system that is [correctly configured](https://www.drupal.org/docs/administering-a-drupal-site/security-in-drupal/configuring-text-formats-aka-input-formats-for-security).",
+        "code" => "```jsx\nimport { FormattedText } from 'drupal-canvas';\n\nexport default function Example() {\n  return (\n    <FormattedText>\n      <em>Hello, world!</em>\n    </FormattedText>\n  );\n}\n```",
+      ],
+      [
+        "name" => "cn",
+        "type" => "Built-in custom package",
+        "description" => "Utility for combining Tailwind CSS classes.",
+        "code" => "```jsx\nimport { cn } from 'drupal-canvas';\n\nexport default function Example() {\n  return <ControlDots className=\"top-4 left-4 stroke-white absolute\" />;\n}\n\nconst ControlDots = ({ className }) => (\n  <svg\n    xmlns=\"http://www.w3.org/2000/svg\"\n    viewBox=\"0 0 31 9\"\n    fill=\"none\"\n    strokeWidth=\"2\"\n    className={cn('w-12', className)}\n  >\n    <ellipse cx=\"4.13\" cy=\"4.97\" rx=\"3.13\" ry=\"2.97\" />\n    <ellipse cx=\"15.16\" cy=\"4.97\" rx=\"3.13\" ry=\"2.97\" />\n    <ellipse cx=\"26.19\" cy=\"4.97\" rx=\"3.13\" ry=\"2.97\" />\n  </svg>\n);\n```",
+      ],
+      [
+        "name" => "tailwind",
+        "type" => "Bundled npm package",
+        "description" => "Tailwind 4 is available to all components by default. The global CSS is added to all pages with the `@import \"tailwindcss\"` directive included. You can use the [`@theme` directive to customize theme variables](https://tailwindcss.com/docs/theme). For example, you can add a new color to your project by defining a theme variable like `--color-drupal-blue`: Now you can use utility classes like `bg-drupal-blue`, `text-drupal-blue`, or `fill-drupal-blue` in your component markup:",
+        "code" => "```css\n@theme {\n  --color-drupal-blue: #009cde;\n}\n``` \n```jsx\nexport default function Example() {\nreturn <div className=\"bg-drupal-blue\">Drupal Blue</div>;\n}\n```",
+      ],
+      [
+        "name" => "clsx",
+        "type" => "Bundled npm package",
+        "description" => "A tiny utility for constructing `className` strings conditionally. Also serves as a faster & smaller drop-in replacement for the `classnames` module.",
+        "code" => "```jsx\nimport { clsx } from 'clsx'\n\nexport default function Example() {\n  return (\n    <div className={clsx('foo', true && 'bar', 'baz');} />\n    // => 'foo bar baz'\n  );\n};\n```",
+      ],
+      [
+        "name" => "class_variance_authority",
+        "type" => "Bundled npm package",
+        "description" => "CVA helps you define components with multiple visual variants (like size, color, state) in a clean, type-safe way. Instead of manually concatenating CSS classes or writing complex conditional logic, you define variants upfront and let CVA handle the class composition.",
+        "code" => "```js\nimport { cva } from 'class-variance-authority';\n\nconst button = cva(\n  'font-semibold border rounded', // base classes\n  {\n    variants: {\n      intent: {\n        primary: 'bg-blue-500 text-white border-blue-500',\n        secondary: 'bg-gray-200 text-gray-900 border-gray-200',\n      },\n      size: {\n        small: 'text-sm py-1 px-2',\n        medium: 'text-base py-2 px-4',\n      },\n    },\n    defaultVariants: {\n      intent: 'primary',\n      size: 'medium',\n    },\n  },\n);\n\n// Usage\nbutton({ intent: 'secondary', size: 'small' });\n// Returns: \"font-semibold border rounded bg-gray-200 text-gray-900 border-gray-200 text-sm py-1 px-2\"\n```",
+      ],
+      [
+        "name" => "json_api_client",
+        "type" => "Bundled npm package",
+        "description" => "A JSON:API client for fetching Drupal content from code components. Use it with drupal-jsonapi-params to build query strings and swr to load and cache remote data.",
+        "code" => "```js\nimport { JsonApiClient } from '@drupal-api-client/json-api-client';\nimport { DrupalJsonApiParams } from 'drupal-jsonapi-params';\nimport useSWR from 'swr';\n```",
+      ],
+      [
+        "name" => "drupal_jsonapi_params",
+        "type" => "Bundled npm package",
+        "description" => "A helper package for generating JSON:API query strings, including includes, filters, fields, sorts, and pagination.",
+        "code" => "```js\nimport { DrupalJsonApiParams } from 'drupal-jsonapi-params';\n\nconst params = new DrupalJsonApiParams()\n  .addInclude(['field_media_image'])\n  .addFields('node--article', ['title', 'path', 'field_media_image']);\n```",
+      ],
+      [
+        "name" => "swr",
+        "type" => "Bundled npm package",
+        "description" => "A React data fetching hook for loading, caching, and revalidating content in code components.",
+        "code" => "```js\nimport useSWR from 'swr';\n\nconst { data, error, isLoading } = useSWR('/jsonapi/node/article', fetcher);\n```",
+      ],
+      [
+        "name" => "tailwind_merge",
+        "type" => "Bundled npm package",
+        "description" => "A utility function to efficiently merge Tailwind CSS classes in JS without style conflicts.",
+        "code" => "```js\nimport { twMerge } from 'tailwind-merge';\n\ntwMerge('px-2 py-1 bg-red hover:bg-dark-red', 'p-3 bg-[#B91C1C]');\n// → 'hover:bg-dark-red p-3 bg-[#B91C1C]'\n```",
+      ],
+      [
+        "name" => 'tailwindcss_typography',
+        "type" => "Bundled npm package",
+        "description" => "A Tailwind CSS plugin that provides a set of pre-configured typography classes for consistent and readable text styles.",
+        "code" => "```js\n<FormattedText className=\"prose md:prose-lg lg:prose-xl\">\n  {body}\n</FormattedText>\n```",
+      ],
+    ];
   }
 
 }

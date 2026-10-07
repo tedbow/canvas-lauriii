@@ -7,14 +7,15 @@ namespace Drupal\canvas_headless\EventSubscriber;
 // cspell:ignore Repr
 
 use Drupal\canvas_headless\CanvasContentProblemResponse;
+use Drupal\canvas_headless\CanvasContentUrl;
 use Drupal\canvas_headless\Controller\CanvasEntityController;
+use Drupal\canvas_headless\PreviewLanguageRedirectResponse;
 use Drupal\canvas_headless\StackMiddleware\CanvasContentApiRequest;
 use Drupal\Component\Utility\UrlHelper;
 use Drupal\Core\Cache\CacheableJsonResponse;
 use Drupal\Core\Cache\CacheableMetadata;
 use Drupal\Core\Cache\CacheableResponseInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
-use GuzzleHttp\Psr7\Uri;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -125,11 +126,17 @@ final class CanvasContentResponseSubscriber implements EventSubscriberInterface 
   public static function convertRedirect(ResponseEvent $event): void {
     $request = $event->getRequest();
     $original_response = $event->getResponse();
+    if ($original_response instanceof PreviewLanguageRedirectResponse) {
+      // Core's finish-response subscriber replaces cache headers. Reassert
+      // private/no-store after it, and leave this transport Location intact.
+      $original_response->headers->set('Cache-Control', 'private, no-store');
+      return;
+    }
     if (
       \is_string($request->attributes->get(CanvasContentApiRequest::REQUESTED_URI_ATTRIBUTE)) &&
       $original_response instanceof RedirectResponse
     ) {
-      $url = self::normalizeRedirectTarget($original_response->getTargetUrl(), $request);
+      $url = CanvasContentUrl::normalize($original_response->getTargetUrl(), $request);
       $response = new CacheableJsonResponse([
         'redirect' => [
           'external' => UrlHelper::isExternal($url),
@@ -154,6 +161,16 @@ final class CanvasContentResponseSubscriber implements EventSubscriberInterface 
   }
 
   /**
+   * Adds Authorization variation after core finishes and redirect conversion.
+   */
+  public static function addAuthorizationVary(ResponseEvent $event): void {
+    if ($event->isMainRequest() && self::isContentApiRequest($event->getRequest())) {
+      // Do not let shared caches serve a published response to a draft preview.
+      $event->getResponse()->setVary('Authorization', replace: FALSE);
+    }
+  }
+
+  /**
    * {@inheritdoc}
    */
   public static function getSubscribedEvents(): array {
@@ -162,6 +179,7 @@ final class CanvasContentResponseSubscriber implements EventSubscriberInterface 
         ['convertError', 9],
         ['addCacheability', 8],
         ['convertRedirect', -11],
+        ['addAuthorizationVary', -12],
       ],
     ];
   }
@@ -200,50 +218,6 @@ final class CanvasContentResponseSubscriber implements EventSubscriberInterface 
       }
       $target->headers->set($header_name, $values);
     }
-  }
-
-  /**
-   * Rewrites same-site absolute redirect targets into relative paths.
-   */
-  private static function normalizeRedirectTarget(
-    string $url,
-    Request $request,
-  ): string {
-    if (!UrlHelper::isExternal($url)) {
-      return $url;
-    }
-
-    $base_url = $request->getSchemeAndHttpHost() . $request->getBasePath() . '/';
-    if (!UrlHelper::externalIsLocal($url, $base_url)) {
-      return $url;
-    }
-
-    $parts = parse_url($url);
-    if (!\is_array($parts)) {
-      return $url;
-    }
-
-    // Rebuild without scheme/host/port so the result is a relative reference.
-    return (string) Uri::fromParts([
-      'path' => self::stripBasePath((string) ($parts['path'] ?? '/'), $request->getBasePath()),
-      'query' => $parts['query'] ?? '',
-      'fragment' => $parts['fragment'] ?? '',
-    ]);
-  }
-
-  /**
-   * Removes the Drupal base path from a root-relative path.
-   */
-  private static function stripBasePath(string $path, string $base_path): string {
-    if ($base_path === '') {
-      return $path;
-    }
-
-    return match (TRUE) {
-      $path === $base_path => '/',
-      str_starts_with($path, $base_path . '/') => substr($path, strlen($base_path)),
-      default => $path,
-    };
   }
 
   /**

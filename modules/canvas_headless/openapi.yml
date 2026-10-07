@@ -30,6 +30,12 @@ paths:
             examples:
               - /page/1
               - /node/12?language=fr
+        - name: language
+          in: query
+          required: false
+          description: Configured language selected in Canvas's read-only preview. Honored only for preview-scoped tokens; an unknown language returns 404. Missing translations use Drupal's configured fallback.
+          schema:
+            type: string
         - name: componentId
           in: query
           required: false
@@ -42,6 +48,13 @@ paths:
           description: Optional page variant editor preview selector.
           schema:
             type: string
+        - name: excludeAutoSave
+          in: query
+          required: false
+          description: Exclude Canvas auto-saves from preview rendering.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Content result or redirect result.
@@ -53,6 +66,7 @@ paths:
                   - $ref: '#/components/schemas/CanvasRedirectResult'
               examples:
                 content:
+                  summary: French request rendering English because the French translation is unavailable.
                   value:
                     content:
                       element: js-example-card
@@ -62,22 +76,100 @@ paths:
                       title: Example page
                     route:
                       name: entity.canvas_page.canonical
-                      requestUri: /page/1
+                      requestUri: /fr/page/1
                       params:
                         canvas_page: '1'
                       managedByCanvas: true
+                      negotiatedLanguage: fr
+                      translations:
+                        - langcode: en
+                          name: English
+                          nativeName: English
+                          url: /contact
+                          translationAvailable: true
+                          current: false
+                          external: false
+                        - langcode: fr
+                          name: French
+                          nativeName: Français
+                          url: /fr/page/1
+                          translationAvailable: false
+                          current: true
+                          external: false
+                        - langcode: es
+                          name: Spanish
+                          nativeName: Español
+                          url: /es/contact
+                          translationAvailable: true
+                          current: false
+                          external: false
                       entity:
                         entityType: canvas_page
                         bundle: canvas_page
                         id: '1'
                         uuid: 773942c6-3660-4c50-9a8d-e25966a69bff
                         langcode: en
+                    context:
+                      page:
+                        pageTitle: Example page
+                        breadcrumbs:
+                          - key: <front>
+                            text: Home
+                            url: /
+                        mainEntity:
+                          bundle: canvas_page
+                          entityTypeId: canvas_page
+                          uuid: 773942c6-3660-4c50-9a8d-e25966a69bff
+                          requestedLanguage: fr
+                          renderedLanguage: en
+                          translations:
+                            - langcode: en
+                              name: English
+                              nativeName: English
+                              url: /contact
+                              translationAvailable: true
+                              current: false
+                            - langcode: fr
+                              name: French
+                              nativeName: Français
+                              url: /fr/page/1
+                              translationAvailable: false
+                              current: true
+                            - langcode: es
+                              name: Spanish
+                              nativeName: Español
+                              url: /es/contact
+                              translationAvailable: true
+                              current: false
+                      site:
+                        branding:
+                          homeUrl: /page/1
+                          siteName: Example site
+                          siteSlogan: ''
+                        baseUrl: https://example.com
+                        themeAssets:
+                          logo:
+                            url: https://example.com/core/themes/olivero/logo.svg
+                          favicon:
+                            url: https://example.com/core/themes/olivero/favicon.ico
+                            mimeType: image/vnd.microsoft.icon
                 redirect:
                   value:
                     redirect:
                       external: false
                       url: /new-path
                       statusCode: 301
+        '302':
+          description: >-
+            Non-cacheable, same-origin language negotiation transport redirect
+            for a preview-scoped request. Follow Location back to this endpoint
+            with the same authorization. At most one language redirect is issued;
+            unsuccessful negotiation on that hop returns 404.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Same-origin content API URL retaining preview context.
         '400':
           $ref: '#/components/responses/ProblemDetailsResponse'
         '401':
@@ -120,6 +212,13 @@ paths:
           schema:
             type: string
             pattern: '^[a-z0-9_]+$'
+        - name: excludeAutoSave
+          in: query
+          required: false
+          description: Exclude Canvas auto-saves from preview rendering.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Entity render result.
@@ -195,6 +294,12 @@ paths:
           description: Marks the assertion for in-place renewal flow.
           schema:
             type: boolean
+        - name: language
+          in: query
+          required: false
+          description: Configured language selected in Canvas's read-only preview. An unknown language returns 400.
+          schema:
+            type: string
         - name: view_mode
           in: query
           required: false
@@ -202,6 +307,16 @@ paths:
           schema:
             type: string
             pattern: '^[a-z0-9_]+$'
+        - name: exclude_auto_save
+          in: query
+          required: false
+          description: Exclude Canvas auto-saves from this preview request.
+          schema:
+            oneOf:
+              - type: boolean
+              - type: integer
+                enum: [0, 1]
+            default: false
         - $ref: '#/components/parameters/CsrfToken'
       responses:
         '200':
@@ -414,7 +529,7 @@ components:
     CanvasContentResult:
       type: object
       additionalProperties: false
-      required: [content, head, route]
+      required: [content, head, route, context]
       properties:
         content:
           oneOf:
@@ -425,6 +540,130 @@ components:
           $ref: '#/components/schemas/UnheadDocument'
         route:
           $ref: '#/components/schemas/CanvasRouteContext'
+        context:
+          $ref: '#/components/schemas/CanvasContext'
+
+    CanvasContext:
+      description: >-
+        The page and site context React Code Components read through the
+        `usePageContext()` and `useSiteContext()` hooks of the `drupal-canvas`
+        package, generated for the routed request.
+      type: object
+      additionalProperties: false
+      required: [page, site]
+      properties:
+        page:
+          type: object
+          additionalProperties: false
+          required: [pageTitle, breadcrumbs, mainEntity]
+          properties:
+            pageTitle:
+              type: string
+            breadcrumbs:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [key, text, url]
+                properties:
+                  key:
+                    type: string
+                  text:
+                    type: string
+                  url:
+                    type: string
+            mainEntity:
+              oneOf:
+                - type: 'null'
+                - type: object
+                  additionalProperties: false
+                  required:
+                    - bundle
+                    - entityTypeId
+                    - uuid
+                    - requestedLanguage
+                    - renderedLanguage
+                    - translations
+                  properties:
+                    bundle:
+                      type: string
+                    entityTypeId:
+                      type: string
+                    uuid:
+                      type: string
+                    requestedLanguage:
+                      type: string
+                    renderedLanguage:
+                      type: string
+                    translations:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - langcode
+                          - name
+                          - nativeName
+                          - url
+                          - translationAvailable
+                          - current
+                        properties:
+                          langcode:
+                            type: string
+                          name:
+                            type: string
+                          nativeName:
+                            type: string
+                          url:
+                            type: string
+                          translationAvailable:
+                            type: boolean
+                          current:
+                            type: boolean
+        site:
+          type: object
+          additionalProperties: false
+          required: [branding, baseUrl, themeAssets]
+          properties:
+            branding:
+              type: object
+              additionalProperties: false
+              required: [homeUrl, siteName, siteSlogan]
+              properties:
+                homeUrl:
+                  type: string
+                siteName:
+                  type: string
+                siteSlogan:
+                  type: string
+            baseUrl:
+              type: string
+            themeAssets:
+              description: >-
+                Assets from Drupal's configured default theme, without request
+                theme negotiation. Frontends may choose whether to use them.
+                URLs may be empty for unset or disabled assets; favicon MIME
+                settings are preserved even when the URL is empty.
+              type: object
+              additionalProperties: false
+              required: [logo, favicon]
+              properties:
+                logo:
+                  type: object
+                  additionalProperties: false
+                  required: [url]
+                  properties:
+                    url:
+                      type: string
+                favicon:
+                  type: object
+                  additionalProperties: false
+                  required: [url, mimeType]
+                  properties:
+                    url:
+                      type: string
+                    mimeType:
+                      type: string
 
     CanvasRedirectResult:
       type: object
@@ -484,7 +723,7 @@ components:
     CanvasRouteContext:
       type: object
       additionalProperties: false
-      required: [name, requestUri, params, managedByCanvas, entity]
+      required: [name, requestUri, params, managedByCanvas, entity, negotiatedLanguage, translations]
       properties:
         name:
           type: string
@@ -500,6 +739,40 @@ components:
           oneOf:
             - $ref: '#/components/schemas/RoutedEntityRef'
             - type: 'null'
+        negotiatedLanguage:
+          type: string
+          description: Negotiated content-language ID, which may differ from the rendered entity language on fallback.
+        translations:
+          type: array
+          description: All enabled languages, with Code Component translation metadata and fallback URL semantics. Empty on monolingual sites and routes without a canonical content entity.
+          items:
+            $ref: '#/components/schemas/RouteTranslation'
+
+    RouteTranslation:
+      type: object
+      additionalProperties: false
+      required: [langcode, name, nativeName, translationAvailable, current, url, external]
+      properties:
+        langcode:
+          type: string
+        name:
+          type: string
+          description: Localized language name.
+        nativeName:
+          type: string
+          description: The language's own name.
+        translationAvailable:
+          type: boolean
+          description: True only if the translation exists and the requester may view it. Missing and denied translations both report false.
+        current:
+          type: boolean
+          description: Matches negotiatedLanguage, even when the rendered entity falls back.
+        url:
+          type: string
+          description: Site-relative Drupal request URI with base path removed, or an absolute external URL. The frontend maps this to its public URL. Unavailable entries use Code Component fallback URL semantics; their URLs are not guaranteed to be viewable.
+        external:
+          type: boolean
+          description: External URLs are not valid content API or SDK fetchPage input. This does not imply domain negotiation support in the SDK.
 
     RoutedEntityRef:
       type: object

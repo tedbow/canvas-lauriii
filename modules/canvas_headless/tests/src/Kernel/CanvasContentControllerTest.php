@@ -4,41 +4,76 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\canvas_headless\Kernel;
 
+// cspell:ignore unroutable francaise Btag Anglais
+
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\CodeComponentDataProvider;
 use Drupal\canvas\Entity\Component;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\JavaScriptComponent;
 use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Entity\PageVariant;
+use Drupal\canvas\Entity\StagedLanguageConfigOverride;
 use Drupal\canvas\Plugin\Canvas\ComponentSource\Marker;
+use Drupal\canvas_headless\CanvasContentContextBuilder;
 use Drupal\canvas_headless\Grant\PreviewAssertionGrant;
 use Drupal\canvas_headless\PreviewAssertionFactory;
+use Drupal\canvas_headless\PreviewLanguageRedirectResponse;
 use Drupal\canvas_headless\StackMiddleware\CanvasContentApiRequest;
 use Drupal\consumers\Entity\Consumer;
+use Drupal\Core\Cache\Cache;
 use Drupal\Core\Cache\CacheableJsonResponse;
+use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Controller\TitleResolverInterface;
+use Drupal\Core\Entity\Entity\EntityViewDisplay;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Extension\ModuleInstallerInterface;
+use Drupal\Core\Extension\ThemeHandlerInterface;
+use Drupal\Core\Extension\ThemeInstallerInterface;
+use Drupal\Core\Extension\ThemeSettingsProvider;
+use Drupal\Core\File\FileUrlGeneratorInterface;
+use Drupal\Core\Form\FormState;
 use Drupal\Core\Http\Exception\CacheableAccessDeniedHttpException;
+use Drupal\Core\Language\LanguageManagerInterface;
+use Drupal\Core\ParamConverter\ParamNotConvertedException;
 use Drupal\Core\Routing\RouteBuilderInterface;
+use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\Core\Session\AnonymousUserSession;
 use Drupal\Core\Session\PermissionCheckerInterface;
+use Drupal\Core\TempStore\PrivateTempStoreFactory;
+use Drupal\Core\Theme\ThemeInitializationInterface;
+use Drupal\Core\Theme\ThemeManagerInterface;
+use Drupal\field\Entity\FieldConfig;
+use Drupal\field\Entity\FieldStorageConfig;
+use Drupal\language\ConfigurableLanguageManagerInterface;
 use Drupal\language\Entity\ConfigurableLanguage;
 use Drupal\node\Entity\Node;
 use Drupal\node\Entity\NodeType;
 use Drupal\path_alias\Entity\PathAlias;
 use Drupal\simple_oauth\Authentication\TokenAuthUser;
 use Drupal\simple_oauth\Entity\Oauth2Token;
+use Drupal\taxonomy\Entity\Term;
+use Drupal\taxonomy\Entity\Vocabulary;
 use Drupal\Tests\canvas\Kernel\CanvasKernelTestBase;
 use Drupal\Tests\canvas\Kernel\Traits\RequestTrait;
 use Drupal\Tests\canvas\Traits\GenerateComponentConfigTrait;
+use Drupal\Tests\content_moderation\Traits\ContentModerationTestTrait;
 use Drupal\Tests\user\Traits\UserCreationTrait;
+use Drupal\user\Entity\Role;
 use Drupal\user\UserInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use Symfony\Bridge\PsrHttpMessage\HttpMessageFactoryInterface;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpKernel\Event\ResponseEvent;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
  * Tests routed Canvas content and scoped auto-save previews.
@@ -48,6 +83,7 @@ use Symfony\Component\HttpFoundation\RequestStack;
 final class CanvasContentControllerTest extends CanvasKernelTestBase {
 
   use GenerateComponentConfigTrait;
+  use ContentModerationTestTrait;
   use RequestTrait;
   use UserCreationTrait;
 
@@ -140,11 +176,11 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
 
     // Burn uid 1, which bypasses access checks.
     $this->createUser();
+    /** @var \Drupal\user\UserInterface $editor */
     $editor = $this->createUser([
       'access content',
       PageVariant::ADMIN_PERMISSION,
     ]);
-    \assert($editor instanceof UserInterface);
     $this->editor = $editor;
   }
 
@@ -161,22 +197,35 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     ] as $account) {
       $this->setCurrentAccount($account);
       $result = $this->renderPage($page);
-      self::assertSame('Stored title', self::responseData($result)['head']['title']);
+      $data = self::responseData($result);
+      self::assertSame('Stored title', $data['head']['title']);
+      // The context describes the same entity as the head and the content.
+      self::assertSame('Stored title', $data['context']['page']['pageTitle']);
       self::assertNotContains(AutoSaveManager::CACHE_TAG, $result->getCacheableMetadata()->getCacheTags());
       self::assertContains('oauth2_scopes', $result->getCacheableMetadata()->getCacheContexts());
     }
 
     $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
     $result = $this->renderPage($page);
-    self::assertSame('Auto-saved title', self::responseData($result)['head']['title']);
+    $data = self::responseData($result);
+    self::assertSame('Auto-saved title', $data['head']['title']);
+    self::assertSame('Auto-saved title', $data['context']['page']['pageTitle']);
+    self::assertSame($page->uuid(), $data['context']['page']['mainEntity']['uuid']);
     self::assertContains(AutoSaveManager::CACHE_TAG, $result->getCacheableMetadata()->getCacheTags());
     self::assertContains('oauth2_scopes', $result->getCacheableMetadata()->getCacheContexts());
+
+    foreach (['true' => 'Stored title', 'false' => 'Auto-saved title'] as $exclude_auto_save => $expected_title) {
+      $result = $this->renderContentPath('/page/' . $page->id(), [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => $exclude_auto_save]);
+      self::assertSame($expected_title, self::responseData($result)['head']['title']);
+      self::assertContains('url.query_args:' . CanvasContentApiRequest::API_QUERY_PARAMETERS_KEY, $result->getCacheableMetadata()->getCacheContexts());
+    }
   }
 
   /**
    * Tests the Canvas-owned endpoint response without Lupus services.
    */
   public function testCanvasContentResponse(): void {
+    $this->container->get(ThemeInstallerInterface::class)->install(['stark']);
     $page = $this->createPage();
     $page->setComponentTree([
       ...$page->getComponentTree()->getValue(),
@@ -218,10 +267,37 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
         'uuid' => $page->uuid(),
         'langcode' => 'en',
       ],
+      'negotiatedLanguage' => 'en',
+      'translations' => [],
     ], $data['route']);
     self::assertContains('canvas_page:' . $page->id(), $response->getCacheableMetadata()->getCacheTags());
     self::assertContains('canvas_page_view', $response->getCacheableMetadata()->getCacheTags());
     self::assertContains('url', $response->getCacheableMetadata()->getCacheContexts());
+    // The page and site context for the `drupal-canvas` context hooks.
+    self::assertSame('Stored title', $data['context']['page']['pageTitle']);
+    self::assertSame([['key' => '<front>', 'text' => 'Home', 'url' => '/']], $data['context']['page']['breadcrumbs']);
+    self::assertSame([
+      'bundle' => 'canvas_page',
+      'entityTypeId' => 'canvas_page',
+      'uuid' => $page->uuid(),
+      'requestedLanguage' => 'en',
+      'renderedLanguage' => 'en',
+      'translations' => [],
+    ], $data['context']['page']['mainEntity']);
+    self::assertSame([
+      'branding' => [
+        'homeUrl' => '/user/login',
+        'siteName' => '',
+        'siteSlogan' => '',
+      ],
+      'baseUrl' => 'http://localhost',
+      'themeAssets' => [
+        'logo' => ['url' => 'http://localhost/core/themes/stark/logo.svg'],
+        'favicon' => ['url' => 'http://localhost/core/misc/favicon.ico', 'mimeType' => 'image/vnd.microsoft.icon'],
+      ],
+    ], $data['context']['site']);
+    self::assertContains('config:system.site', $response->getCacheableMetadata()->getCacheTags());
+    self::assertContains('url.site', $response->getCacheableMetadata()->getCacheContexts());
 
     $page->setComponentTree([])->save();
     $empty_response = $this->renderPage($page);
@@ -229,6 +305,111 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     self::assertSame(200, $empty_response->getStatusCode());
     self::assertNull($empty_data['content']);
     self::assertTrue($empty_data['route']['managedByCanvas']);
+  }
+
+  /**
+   * Tests default-theme assets and cache invalidation independently of the active theme.
+   */
+  public function testDefaultThemeAssets(): void {
+    $this->container->get(ThemeInstallerInterface::class)->install(['stark', 'olivero']);
+    $this->config('system.theme')->set('default', 'stark')->set('admin', 'olivero')->save();
+    $this->container->get(ThemeManagerInterface::class)->setActiveTheme($this->container->get(ThemeInitializationInterface::class)->getActiveThemeByName('olivero'));
+    $this->config('olivero.settings')->set('logo.use_default', FALSE)->set('logo.path', 'https://admin.example/logo.svg')->save();
+    // The existing Drupal/Workbench path continues to read the active theme.
+    self::assertSame('https://admin.example/logo.svg', $this->container->get(CodeComponentDataProvider::class)->getCanvasDataThemeAssetsV0()['v0']['themeAssets']['logo']['url']);
+
+    $response = $this->renderContentPath('/user/login');
+    $assets = self::responseData($response)['context']['site']['themeAssets'];
+    self::assertSame('http://localhost/core/themes/stark/logo.svg', $assets['logo']['url']);
+    self::assertSame(['url' => 'http://localhost/core/misc/favicon.ico', 'mimeType' => 'image/vnd.microsoft.icon'], $assets['favicon']);
+    $tags = $response->getCacheableMetadata()->getCacheTags();
+    foreach (['system.theme', 'system.theme.global', 'core.extension', 'stark.settings'] as $name) {
+      self::assertContains('config:' . $name, $tags);
+    }
+    self::assertNotContains('config:olivero.settings', $tags);
+
+    // Core's rendered tag covers first creation without disabling caching.
+    self::assertTrue($this->config('stark.settings')->isNew());
+    self::assertContains('rendered', $tags);
+    self::assertSame(Cache::PERMANENT, $response->getCacheableMetadata()->getCacheMaxAge());
+    $cache = $this->container->get('cache.data');
+    $cache->set('theme-context', $assets, Cache::PERMANENT, $tags);
+    $this->config('stark.settings')->set('logo.use_default', TRUE)->save();
+    self::assertFalse($cache->get('theme-context'));
+    $cache->set('theme-context', $assets, Cache::PERMANENT, $tags);
+    // Uploaded assets are configured as file URIs, not managed file IDs.
+    $this->config('stark.settings')
+      ->set('logo.use_default', FALSE)->set('logo.path', 'public://brand.svg')
+      ->set('favicon.use_default', FALSE)->set('favicon.path', 'https://cdn.example/icon.png')
+      ->set('favicon.mimetype', 'image/png')->save();
+    self::assertFalse($cache->get('theme-context'));
+    $assets = self::responseData($this->renderContentPath('/user/login'))['context']['site']['themeAssets'];
+    self::assertStringEndsWith('/files/brand.svg', $assets['logo']['url']);
+    self::assertSame(['url' => 'https://cdn.example/icon.png', 'mimeType' => 'image/png'], $assets['favicon']);
+
+    $cache->set('theme-context', $assets, Cache::PERMANENT, $tags);
+    $this->config('stark.settings')->set('logo.path', 'public://replacement.svg')->save();
+    self::assertFalse($cache->get('theme-context'));
+    $assets = self::responseData($this->renderContentPath('/user/login'))['context']['site']['themeAssets'];
+    self::assertStringEndsWith('/files/replacement.svg', $assets['logo']['url']);
+
+    $cache->set('theme-context', $assets, Cache::PERMANENT, $tags);
+    $this->config('system.theme.global')->set('features.favicon', FALSE)->save();
+    self::assertFalse($cache->get('theme-context'));
+    $this->config('stark.settings')->set('logo.path', '')->save();
+    $assets = self::responseData($this->renderContentPath('/user/login'))['context']['site']['themeAssets'];
+    // Retain the provider's configured MIME type even without a favicon URL.
+    self::assertSame(['logo' => ['url' => ''], 'favicon' => ['url' => '', 'mimeType' => 'image/png']], $assets);
+
+    $this->config('system.theme.global')->set('features.favicon', TRUE)->save();
+    $this->config('stark.settings')->set('favicon.path', '')->set('favicon.mimetype', NULL)->save();
+    $assets = self::responseData($this->renderContentPath('/user/login'))['context']['site']['themeAssets'];
+    self::assertSame(['logo' => ['url' => ''], 'favicon' => ['url' => '', 'mimeType' => '']], $assets);
+    $cache->set('theme-context', $assets, Cache::PERMANENT, $tags);
+    $this->config('system.theme')->set('default', 'olivero')->save();
+    self::assertFalse($cache->get('theme-context'));
+    $response = $this->renderContentPath('/user/login');
+    $assets = self::responseData($response)['context']['site']['themeAssets'];
+    self::assertSame('https://admin.example/logo.svg', $assets['logo']['url']);
+    self::assertSame('http://localhost/core/themes/olivero/favicon.ico', $assets['favicon']['url']);
+    self::assertContains('config:olivero.settings', $response->getCacheableMetadata()->getCacheTags());
+    self::assertNotContains('config:stark.settings', $response->getCacheableMetadata()->getCacheTags());
+
+    $this->config('system.theme')->clear('default')->save();
+    $response = $this->renderContentPath('/user/login');
+    self::assertSame(['logo' => ['url' => ''], 'favicon' => ['url' => '', 'mimeType' => '']], self::responseData($response)['context']['site']['themeAssets']);
+    self::assertContains('config:system.theme', $response->getCacheableMetadata()->getCacheTags());
+  }
+
+  /**
+   * Tests that resolving assets never requests an active theme.
+   */
+  public function testThemeAssetsWithoutNegotiation(): void {
+    $this->container->get(ThemeInstallerInterface::class)->install(['stark']);
+    self::assertFalse($this->container->initialized(CanvasContentContextBuilder::class));
+    $theme_manager = $this->createMock(ThemeManagerInterface::class);
+    $theme_manager->expects(self::never())->method('getActiveTheme');
+    $settings = new ThemeSettingsProvider(
+      $theme_manager,
+      $this->container->get(ThemeInitializationInterface::class),
+      $this->container->get(ThemeHandlerInterface::class),
+      $this->container->get(ConfigFactoryInterface::class),
+      $this->container->get(FileUrlGeneratorInterface::class),
+      $this->container->get('cache.memory'),
+    );
+    // Replace the provider already instantiated by Canvas's entity hooks.
+    $this->container->set(CodeComponentDataProvider::class, new CodeComponentDataProvider(
+      $this->container->get(ConfigFactoryInterface::class),
+      $this->container->get(RequestStack::class),
+      $this->container->get(RouteMatchInterface::class),
+      $this->container->get(TitleResolverInterface::class),
+      $this->container->get('breadcrumb'),
+      $this->container->get(LanguageManagerInterface::class),
+      $this->container,
+      $settings,
+    ));
+    $response = $this->renderContentPath('/user/login');
+    self::assertSame('http://localhost/core/themes/stark/logo.svg', self::responseData($response)['context']['site']['themeAssets']['logo']['url']);
   }
 
   /**
@@ -263,6 +444,12 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     self::assertTrue($before < $page_content);
     self::assertTrue($page_content < $after);
     self::assertStringNotContainsString('canvas-preview-content-region', $content);
+    // The #main-content anchor placeholder is a coupled-rendering concern,
+    // resolved by a #post_render callback that only the display variant adds.
+    // Headless rendering shares renderComponentTree() but not that callback, so
+    // it must never emit the unresolved placeholder.
+    // @see \Drupal\canvas\Plugin\DisplayVariant\CanvasPageVariant::resolveMainContentAnchor()
+    self::assertStringNotContainsString('canvas-main-content-anchor', $content);
     self::assertContains(
       'config:canvas.page_variant.headless',
       $response->getCacheableMetadata()->getCacheTags(),
@@ -340,6 +527,22 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     self::assertStringNotContainsString('Stored component heading', $variant_preview_content);
     self::assertStringNotContainsString('Published selected chrome', $variant_preview_content);
 
+    // An explicit variant can render its saved tree without draft components
+    // or the editor-only marker placeholder.
+    $stored_variant_preview = $this->renderContentPath(
+      '/page/' . $page->id(),
+      [
+        CanvasContentApiRequest::PAGE_VARIANT_PREVIEW_QUERY => $selected_id,
+        CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true',
+      ],
+    );
+    $stored_variant_content = \json_encode(self::responseData($stored_variant_preview)['content'], JSON_THROW_ON_ERROR);
+    self::assertStringContainsString('Published selected chrome', $stored_variant_content);
+    self::assertStringNotContainsString('Draft page chrome', $stored_variant_content);
+    self::assertStringNotContainsString('Stored component heading', $stored_variant_content);
+    self::assertStringNotContainsString('canvas--page-content-marker-placeholder', $stored_variant_content);
+    self::assertNotContains(AutoSaveManager::CACHE_TAG, $stored_variant_preview->getCacheableMetadata()->getCacheTags());
+
     // A page variant has no canonical URL, so its frontend entry URI is the
     // site root. Detached preview routing must not inherit the front page's
     // format requirement.
@@ -392,6 +595,13 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
       AutoSaveManager::CACHE_TAG,
       $preview->getCacheableMetadata()->getCacheTags(),
     );
+
+    $stored = $this->renderContentPath('/page/' . $page->id(), [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true']);
+    $stored_content = \json_encode(self::responseData($stored)['content'], JSON_THROW_ON_ERROR);
+    self::assertStringContainsString('Before page content', $stored_content);
+    self::assertStringNotContainsString('Draft page chrome', $stored_content);
+    self::assertStringNotContainsString('canvas-preview-content-region', $stored_content);
+    self::assertNotContains(AutoSaveManager::CACHE_TAG, $stored->getCacheableMetadata()->getCacheTags());
 
     // A content template's selection overrides the site default, including
     // an auto-saved template selection during a draft preview.
@@ -629,6 +839,11 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
       'url.query_args:' . CanvasContentApiRequest::API_QUERY_PARAMETERS_KEY,
       $response->getCacheableMetadata()->getCacheContexts(),
     );
+
+    // External component defaults come from saved metadata in either mode.
+    $stored_response = $this->renderContentPath($page_uri, $component_preview_context + [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true']);
+    self::assertSame($data['content'], self::responseData($stored_response)['content']);
+    self::assertNotContains(AutoSaveManager::CACHE_TAG, $stored_response->getCacheableMetadata()->getCacheTags());
   }
 
   /**
@@ -705,6 +920,50 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     self::assertStringContainsString('Rendered by a local JavaScript component', $content);
     self::assertSame(2, \substr_count($content, '"element":"drupal-markup"'));
     self::assertSame(1, \substr_count($content, '"element":"js-canvas-headless-local-test"'));
+
+    // Exclusion also reaches local JavaScript components nested in an explicit
+    // page variant, rather than only choosing the variant's saved tree.
+    $variant = $this->createPageVariant('local_components', 'Header', 'Footer');
+    $local_component_config = Component::load(self::LOCAL_COMPONENT_ID);
+    self::assertInstanceOf(Component::class, $local_component_config);
+    $marker = Component::load(Marker::PAGE_CONTENT_COMPONENT_ID);
+    self::assertInstanceOf(Component::class, $marker);
+    $variant->setComponentTree([
+      [
+        'uuid' => $this->container->get('uuid')->generate(),
+        'component_id' => $local_component_config->id(),
+        'component_version' => $local_component_config->getActiveVersion(),
+        'inputs' => ['heading' => 'Rendered by a local JavaScript component'],
+      ],
+      [
+        'uuid' => $this->container->get('uuid')->generate(),
+        'component_id' => $marker->id(),
+        'component_version' => $marker->getActiveVersion(),
+        'inputs' => [],
+      ],
+    ]);
+    self::assertEntityIsValid($variant);
+    $variant->save();
+    $local_draft = clone $local_component;
+    $local_draft->set('props', []);
+    $this->container->get(AutoSaveManager::class)->saveEntity($local_draft);
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    foreach (['false', 'true'] as $exclude_auto_save) {
+      $response = $this->renderContentPath('/', [
+        CanvasContentApiRequest::PAGE_VARIANT_PREVIEW_QUERY => 'local_components',
+        CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => $exclude_auto_save,
+      ]);
+      $content = \json_encode(self::responseData($response)['content'], JSON_THROW_ON_ERROR);
+      self::assertStringContainsString('"element":"js-canvas-headless-local-test"', $content);
+      if ($exclude_auto_save === 'true') {
+        self::assertStringContainsString('Rendered by a local JavaScript component', $content);
+        self::assertNotContains(AutoSaveManager::CACHE_TAG, $response->getCacheableMetadata()->getCacheTags());
+      }
+      else {
+        self::assertStringNotContainsString('Rendered by a local JavaScript component', $content);
+        self::assertContains(AutoSaveManager::CACHE_TAG, $response->getCacheableMetadata()->getCacheTags());
+      }
+    }
   }
 
   /**
@@ -839,6 +1098,16 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
       $preview->getCacheableMetadata()->getCacheTags(),
     );
 
+    $stored = $this->renderContentPath('/node/' . $node->id(), [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true']);
+    self::assertNull(self::responseData($stored)['content']);
+    $template->enable()->save();
+    $this->container->get(AutoSaveManager::class)->saveEntity($draft);
+    $stored = $this->renderContentPath('/node/' . $node->id(), [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true']);
+    $stored_content = \json_encode(self::responseData($stored)['content'], JSON_THROW_ON_ERROR);
+    self::assertStringContainsString('Published template heading', $stored_content);
+    self::assertStringNotContainsString('Draft template heading', $stored_content);
+    self::assertNotContains(AutoSaveManager::CACHE_TAG, $stored->getCacheableMetadata()->getCacheTags());
+
     $draft->setComponentTree([]);
     $this->container->get(AutoSaveManager::class)->saveEntity($draft);
     $empty_preview = $this->renderContentPath('/node/' . $node->id());
@@ -846,6 +1115,332 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     self::assertSame(200, $empty_preview->getStatusCode());
     self::assertNull($empty_preview_data['content']);
     self::assertTrue($empty_preview_data['route']['managedByCanvas']);
+  }
+
+  /**
+   * Tests exact revisions of different entity types through the content API.
+   */
+  public function testEntityRevisions(): void {
+    /** @var \Drupal\user\UserInterface $editor */
+    $editor = $this->createUser(['access content', 'view all revisions']);
+    $this->setCurrentAccount($editor);
+    $component = Component::load(self::COMPONENT_ID);
+    self::assertInstanceOf(Component::class, $component);
+    ContentTemplate::create([
+      'id' => 'node.article.full',
+      'content_entity_type_id' => 'node',
+      'content_entity_type_bundle' => 'article',
+      'content_entity_type_view_mode' => 'full',
+      'component_tree' => [[
+        'uuid' => $this->container->get('uuid')->generate(),
+        'component_id' => $component->id(),
+        'component_version' => $component->getActiveVersion(),
+        'inputs' => ['heading' => ['sourceType' => 'entity-field', 'expression' => 'ℹ︎␜entity:node:article␝title␞␟value']],
+      ],
+      ],
+      'status' => TRUE,
+    ])->save();
+    $node = Node::create(['type' => 'article', 'title' => 'First revision', 'uid' => $editor->id(), 'status' => TRUE]);
+    $node->save();
+    $first_revision = $node->getRevisionId();
+    $node->setNewRevision(TRUE);
+    $node->setTitle('Current revision');
+    $node->save();
+
+    $template_draft = ContentTemplate::load('node.article.full');
+    self::assertInstanceOf(ContentTemplate::class, $template_draft);
+    $template_draft->setComponentTree([]);
+    $this->container->get(AutoSaveManager::class)->saveEntity($template_draft);
+    $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID)->resetCache();
+
+    // An unrelated Canvas auto-save must not replace either selected source.
+    $auto_save = clone $node;
+    $auto_save->setTitle('Canvas auto-save');
+    $this->container->get(AutoSaveManager::class)->saveEntity($auto_save);
+    $this->setCurrentAccount($this->createTokenAccount(TRUE, $editor));
+    $response = $this->renderContentPath('/node/' . $node->id() . '/revisions/' . $first_revision . '/view', [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'false']);
+    $data = self::responseData($response);
+    self::assertStringContainsString('First revision', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+    self::assertSame('First revision', $data['head']['title']);
+    self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+
+    /** @var \Drupal\user\UserInterface $reader */
+    $reader = $this->createUser(['access content']);
+    $this->setCurrentAccount($this->createTokenAccount(TRUE, $reader));
+    try {
+      $this->renderContentPath('/node/' . $node->id() . '/revisions/' . $first_revision . '/view');
+      self::fail('Viewing a revision requires revision permissions.');
+    }
+    catch (CacheableAccessDeniedHttpException) {
+    }
+
+    // Latest moderated drafts add a form with an array of theme suggestions.
+    $this->enableModules(['workflows', 'content_moderation']);
+    $this->installEntitySchema('content_moderation_state');
+    $this->addEntityTypeAndBundleToWorkflow($this->createEditorialWorkflow(), 'node', 'article');
+    $this->container->get(RouteBuilderInterface::class)->rebuild();
+    /** @var \Drupal\user\UserInterface $moderator */
+    $moderator = $this->createUser([
+      'access content',
+      'view all revisions',
+      'view latest version',
+      'view any unpublished content',
+      'use editorial transition publish',
+    ]);
+    $this->setCurrentAccount($moderator);
+    $moderated_node = Node::create([
+      'type' => 'article',
+      'title' => 'Published moderated content',
+      'uid' => $moderator->id(),
+      'moderation_state' => 'published',
+    ]);
+    $moderated_node->save();
+    $moderated_node->setNewRevision(TRUE);
+    $moderated_node->setTitle('Latest moderated draft');
+    $moderated_node->set('moderation_state', 'draft');
+    $moderated_node->save();
+    $moderator_token = $this->createTokenAccount(TRUE, $moderator);
+    $this->setCurrentAccount($moderator_token);
+    self::assertFalse($moderator_token->hasPermission('use editorial transition publish'));
+    foreach ([
+      '/node/' . $moderated_node->id() . '/latest',
+      '/node/' . $moderated_node->id() . '/revisions/' . $moderated_node->getRevisionId() . '/view',
+    ] as $path) {
+      $response = $this->renderContentPath($path);
+      $data = self::responseData($response);
+      self::assertSame(200, $response->getStatusCode());
+      self::assertTrue($data['route']['managedByCanvas']);
+      self::assertSame('Latest moderated draft', $data['head']['title']);
+      self::assertStringContainsString('Latest moderated draft', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+      self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+    }
+    $response = $this->renderContentPath('/node/' . $moderated_node->id(), [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true']);
+    $data = self::responseData($response);
+    self::assertSame('Published moderated content', $data['head']['title']);
+    self::assertStringContainsString('Published moderated content', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+    self::assertStringNotContainsString('Latest moderated draft', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+
+    // A second entity type exercises core's generic revision route provider.
+    $this->enableModules(['taxonomy', 'canvas_headless_test']);
+    $this->installEntitySchema('taxonomy_term');
+    $this->installConfig(['taxonomy']);
+    Vocabulary::create(['vid' => 'topics', 'name' => 'Topics'])->save();
+    $this->container->get(RouteBuilderInterface::class)->rebuild();
+    /** @var \Drupal\user\UserInterface $term_editor */
+    $term_editor = $this->createUser(['access content', 'view term revisions in topics']);
+    $this->setCurrentAccount($term_editor);
+    ContentTemplate::create([
+      'id' => 'taxonomy_term.topics.full',
+      'content_entity_type_id' => 'taxonomy_term',
+      'content_entity_type_bundle' => 'topics',
+      'content_entity_type_view_mode' => 'full',
+      'component_tree' => [[
+        'uuid' => $this->container->get('uuid')->generate(),
+        'component_id' => $component->id(),
+        'component_version' => $component->getActiveVersion(),
+        'inputs' => ['heading' => ['sourceType' => 'entity-field', 'expression' => 'ℹ︎␜entity:taxonomy_term:topics␝name␞␟value']],
+      ],
+      ],
+      'status' => TRUE,
+    ])->save();
+    $term = Term::create(['vid' => 'topics', 'name' => 'Unpublished term revision', 'status' => FALSE]);
+    $term->save();
+    $term_revision = $term->getRevisionId();
+    $term->setNewRevision(TRUE);
+    $term->setName('Current term');
+    $term->setPublished()->save();
+    $term_auto_save = clone $term;
+    $term_auto_save->setName('Canvas term auto-save');
+    $this->container->get(AutoSaveManager::class)->saveEntity($term_auto_save);
+    $term_token = $this->createTokenAccount(TRUE, $term_editor);
+    $this->setCurrentAccount($term_token);
+    self::assertTrue($term_token->hasPermission('view term revisions in topics'));
+    self::assertFalse($term_token->hasPermission('administer taxonomy'));
+    $path = '/taxonomy/term/' . $term->id() . '/revision/' . $term_revision . '/view';
+    $response = $this->renderContentPath($path);
+    $data = self::responseData($response);
+    self::assertTrue($data['route']['managedByCanvas']);
+    self::assertSame('Unpublished term revision', $data['head']['title']);
+    self::assertStringContainsString('Unpublished term revision', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+    self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+    $this->setCurrentAccount($this->createTokenAccount(TRUE, $reader));
+    try {
+      $this->renderContentPath('/taxonomy/term/' . $term->id() . '/revision/' . $term_revision . '/view');
+      self::fail('Revision permissions are required for non-node entities too.');
+    }
+    catch (CacheableAccessDeniedHttpException) {
+    }
+  }
+
+  /**
+   * Tests private unsaved form previews with language and Metatag support.
+   */
+  #[DataProvider('entityPreviewLanguages')]
+  public function testEntityPreviews(bool $multilingual, bool $metatag): void {
+    if ($metatag) {
+      $this->enableModules(['token', 'metatag']);
+      $this->installConfig(['metatag']);
+      $this->config('system.site')->set('name', 'Preview site')->save();
+    }
+    if ($multilingual) {
+      ConfigurableLanguage::createFromLangcode('fr')->save();
+      $this->config('language.negotiation')
+        ->set('url.prefixes', ['en' => '', 'fr' => 'fr'])
+        ->save();
+      $this->container->get('kernel')->rebuildContainer();
+    }
+    /** @var \Drupal\user\UserInterface $editor */
+    $editor = $this->createUser(['access content', 'create article content', 'edit any article content', 'view all revisions']);
+    $this->setCurrentAccount($editor);
+    $component = Component::load(self::COMPONENT_ID);
+    self::assertInstanceOf(Component::class, $component);
+    foreach (['full', 'teaser'] as $view_mode) {
+      ContentTemplate::create([
+        'id' => 'node.article.' . $view_mode,
+        'content_entity_type_id' => 'node',
+        'content_entity_type_bundle' => 'article',
+        'content_entity_type_view_mode' => $view_mode,
+        'component_tree' => [[
+          'uuid' => $this->container->get('uuid')->generate(),
+          'component_id' => $component->id(),
+          'component_version' => $component->getActiveVersion(),
+          'inputs' => ['heading' => ['sourceType' => 'entity-field', 'expression' => 'ℹ︎␜entity:node:article␝title␞␟value']],
+        ],
+        ],
+        'status' => TRUE,
+      ])->save();
+    }
+    $node = Node::create(['type' => 'article', 'title' => 'First revision', 'uid' => $editor->id(), 'status' => TRUE]);
+    $node->save();
+
+    $template_draft = ContentTemplate::load('node.article.full');
+    self::assertInstanceOf(ContentTemplate::class, $template_draft);
+    $template_draft->setComponentTree([]);
+    $this->container->get(AutoSaveManager::class)->saveEntity($template_draft);
+    $this->container->get(EntityTypeManagerInterface::class)->getStorage(ContentTemplate::ENTITY_TYPE_ID)->resetCache();
+
+    // An unrelated Canvas auto-save must not replace either selected source.
+    $auto_save = clone $node;
+    $auto_save->setTitle('Canvas auto-save');
+    $this->container->get(AutoSaveManager::class)->saveEntity($auto_save);
+    $node->setTitle('Unsaved form title');
+    $node->setUnpublished();
+    $form = $this->container->get(EntityTypeManagerInterface::class)->getFormObject('node', 'default')->setEntity($node);
+    $this->container->get(PrivateTempStoreFactory::class)->get('node_preview')->set((string) $node->uuid(), (new FormState())->setFormObject($form));
+    $account = $this->createTokenAccount(TRUE, $editor);
+    $this->setCurrentAccount($account);
+    self::assertFalse($account->hasPermission('edit any article content'));
+    foreach (['full', 'teaser'] as $view_mode) {
+      $response = $this->renderContentPath('/node/preview/' . $node->uuid() . '/' . $view_mode, [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'false']);
+      $data = self::responseData($response);
+      self::assertTrue($data['route']['managedByCanvas']);
+      self::assertStringContainsString('Unsaved form title', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+      self::assertSame($metatag ? 'Unsaved form title | Preview site' : 'Unsaved form title', $data['head']['title']);
+      self::assertSame($multilingual ? ['en', 'fr'] : [], array_column($data['route']['translations'], 'langcode'));
+      self::assertSame($multilingual ? ['/node/' . $node->id(), '/fr/node/' . $node->id()] : [], array_column($data['route']['translations'], 'url'));
+      self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+      self::assertSame($account, $this->container->get(AccountProxyInterface::class)->getAccount());
+    }
+    $this->setCurrentAccount($editor);
+    $new_node = Node::create(['type' => 'article', 'title' => 'New unsaved node', 'uid' => $editor->id()]);
+    self::assertNull($new_node->id());
+    $form = $this->container->get(EntityTypeManagerInterface::class)->getFormObject('node', 'default')->setEntity($new_node);
+    $this->container->get(PrivateTempStoreFactory::class)->get('node_preview')->set((string) $new_node->uuid(), (new FormState())->setFormObject($form));
+    $this->setCurrentAccount($account);
+    foreach ($multilingual ? ['en' => '', 'fr' => '/fr'] : ['en' => ''] as $langcode => $prefix) {
+      $response = $this->renderContentPath($prefix . '/node/preview/' . $new_node->uuid() . '/full');
+      self::assertSame(200, $response->getStatusCode());
+      $data = self::responseData($response);
+      self::assertTrue($data['route']['managedByCanvas']);
+      self::assertStringContainsString('New unsaved node', \json_encode($data['content'], JSON_THROW_ON_ERROR));
+      self::assertSame(['title' => 'New unsaved node'], $data['head']);
+      self::assertSame('New unsaved node', $data['context']['page']['pageTitle']);
+      self::assertSame($new_node->uuid(), $data['context']['page']['mainEntity']['uuid']);
+      self::assertSame([], $data['context']['page']['mainEntity']['translations']);
+      self::assertSame($langcode, $data['route']['negotiatedLanguage']);
+      self::assertSame([], $data['route']['translations']);
+      self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+    }
+
+    // A page variant can wrap Drupal-rendered content without a Canvas content
+    // template. Its nested entity must not reuse a previous form preview.
+    $template = ContentTemplate::load('node.article.full');
+    self::assertInstanceOf(ContentTemplate::class, $template);
+    $template->delete();
+    $this->container->get(ThemeInstallerInterface::class)->install(['stark']);
+    $this->config('system.theme')->set('default', 'stark')->save();
+    $this->createPageVariant('headless', 'Before page content', 'After page content');
+    $this->config('canvas.settings')->set('default_page_variant', 'headless')->save();
+    FieldStorageConfig::create([
+      'entity_type' => 'node',
+      'field_name' => 'field_preview',
+      'type' => 'string',
+    ])->save();
+    FieldConfig::create([
+      'entity_type' => 'node',
+      'bundle' => 'article',
+      'field_name' => 'field_preview',
+    ])->save();
+    EntityViewDisplay::create([
+      'targetEntityType' => 'node',
+      'bundle' => 'article',
+      'mode' => 'default',
+      'status' => TRUE,
+    ])->setComponent('field_preview', ['type' => 'string', 'label' => 'hidden'])->save();
+    $node->in_preview = TRUE;
+    foreach (['First unsaved field value', 'Second unsaved field value'] as $field_value) {
+      $this->setCurrentAccount($editor);
+      $node->set('field_preview', $field_value);
+      $form = $this->container->get(EntityTypeManagerInterface::class)->getFormObject('node', 'default')->setEntity($node);
+      $this->container->get(PrivateTempStoreFactory::class)->get('node_preview')->set((string) $node->uuid(), (new FormState())->setFormObject($form));
+      $this->setCurrentAccount($account);
+      $response = $this->renderContentPath('/node/preview/' . $node->uuid() . '/full');
+      $content = \json_encode(self::responseData($response)['content'], JSON_THROW_ON_ERROR);
+      self::assertStringContainsString('Before page content', $content);
+      self::assertStringContainsString($field_value, $content);
+      self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+    }
+
+    // Owning a private preview does not grant create/update access.
+    /** @var \Drupal\user\UserInterface $reader */
+    $reader = $this->createUser(['access content']);
+    $this->setCurrentAccount($reader);
+    foreach ([$node, $new_node] as $denied_node) {
+      $form = $this->container->get(EntityTypeManagerInterface::class)->getFormObject('node', 'default')->setEntity($denied_node);
+      $this->container->get(PrivateTempStoreFactory::class)->get('node_preview')->set((string) $denied_node->uuid(), (new FormState())->setFormObject($form));
+    }
+    $reader_token = $this->createTokenAccount(TRUE, $reader);
+    $this->setCurrentAccount($reader_token);
+    self::assertFalse($reader_token->hasPermission('view all revisions'));
+    self::assertFalse($reader_token->hasPermission('view article revisions'));
+    self::assertFalse($reader_token->hasPermission('administer nodes'));
+    foreach ([
+      '/node/preview/' . $node->uuid() . '/full',
+      '/node/preview/' . $new_node->uuid() . '/full',
+    ] as $denied_path) {
+      try {
+        $denied_response = $this->renderContentPath($denied_path);
+        self::assertSame(403, $denied_response->getStatusCode(), $denied_path . ': ' . $denied_response->getContent());
+      }
+      catch (CacheableAccessDeniedHttpException) {
+        self::assertSame($reader_token, $this->container->get(AccountProxyInterface::class)->getAccount());
+      }
+    }
+
+    // A different editor cannot read another user's private form preview.
+    $this->setCurrentAccount($this->createTokenAccount(TRUE));
+    $this->expectException(ParamNotConvertedException::class);
+    $this->renderContentPath('/node/preview/' . $new_node->uuid() . '/full');
+  }
+
+  /**
+   * Provides preview configurations with optional languages and Metatag.
+   */
+  public static function entityPreviewLanguages(): iterable {
+    yield 'monolingual' => [FALSE, FALSE];
+    yield 'multilingual' => [TRUE, FALSE];
+    yield 'monolingual with Metatag' => [FALSE, TRUE];
+    yield 'multilingual with Metatag' => [TRUE, TRUE];
   }
 
   /**
@@ -872,6 +1467,7 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
    * Tests validation and rejection of non-content paths.
    */
   public function testCanvasContentPathValidation(): void {
+    $this->container->get(ThemeInstallerInterface::class)->install(['stark']);
     $missing_path = $this->request(
       Request::create('/canvas/content-api'),
     );
@@ -898,6 +1494,28 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
         'params' => [],
         'managedByCanvas' => FALSE,
         'entity' => NULL,
+        'negotiatedLanguage' => 'en',
+        'translations' => [],
+      ],
+      // Routes without a primary entity still carry page and site context.
+      'context' => [
+        'page' => [
+          'pageTitle' => 'Log in',
+          'breadcrumbs' => [],
+          'mainEntity' => NULL,
+        ],
+        'site' => [
+          'branding' => [
+            'homeUrl' => '/user/login',
+            'siteName' => '',
+            'siteSlogan' => '',
+          ],
+          'baseUrl' => 'http://localhost',
+          'themeAssets' => [
+            'logo' => ['url' => 'http://localhost/core/themes/stark/logo.svg'],
+            'favicon' => ['url' => 'http://localhost/core/misc/favicon.ico', 'mimeType' => 'image/vnd.microsoft.icon'],
+          ],
+        ],
       ],
     ], self::responseData($without_entity));
 
@@ -952,6 +1570,14 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     catch (CacheableAccessDeniedHttpException $exception) {
       self::assertContains('user.permissions', $exception->getCacheContexts());
     }
+
+    /** @var \Drupal\user\UserInterface $author */
+    $author = $this->createUser(['access content', 'view own unpublished content']);
+    $node = Node::create(['type' => 'article', 'title' => 'Private stored title', 'uid' => $author->id(), 'status' => FALSE]);
+    $node->save();
+    $this->setCurrentAccount($this->createTokenAccount(TRUE, $author));
+    $result = $this->renderContentPath('/node/' . $node->id(), [CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true']);
+    self::assertSame('Private stored title', self::responseData($result)['head']['title']);
   }
 
   /**
@@ -1019,7 +1645,8 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
   /**
    * Tests translated routes render the corresponding translation auto-save.
    */
-  public function testPreviewRendersTranslatedAutoSave(): void {
+  #[\PHPUnit\Framework\Attributes\DataProvider('previewLanguageNegotiationCases')]
+  public function testPreviewRendersTranslatedAutoSave(string $path_prefix, bool $session): void {
     ConfigurableLanguage::createFromLangcode('fr')->save();
     $page = $this->createPage();
     $page_fr = $page->addTranslation('fr', [
@@ -1036,10 +1663,17 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
     $this->config('language.negotiation')
       ->set('url.prefixes', ['en' => '', 'fr' => 'fr'])
       ->save();
+    if ($session) {
+      $this->config('language.negotiation')->set('session.parameter', 'content_language')->save();
+      $this->config('language.types')
+        ->set('negotiation.language_content.enabled', ['language-session' => -10, 'language-selected' => 12])
+        ->set('negotiation.language_interface.enabled', ['language-session' => -10, 'language-selected' => 12])
+        ->save();
+    }
     $this->container->get('kernel')->rebuildContainer();
     $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
 
-    $response = $this->renderContentPath('/fr/page/' . $page->id());
+    $response = $this->renderContentPath($path_prefix . '/page/' . $page->id(), ['language' => 'fr']);
     $data = self::responseData($response);
 
     self::assertSame('French draft title', $data['head']['title']);
@@ -1047,6 +1681,599 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
       'fr',
       $data['route']['entity']['langcode'],
     );
+    // The context follows the selected translation's auto-save too.
+    self::assertSame('French draft title', $data['context']['page']['pageTitle']);
+    self::assertSame('fr', $data['context']['page']['mainEntity']['requestedLanguage']);
+    self::assertSame('fr', $data['context']['page']['mainEntity']['renderedLanguage']);
+  }
+
+  /**
+   * Tests draft trees plus translation overrides for both template kinds.
+   */
+  #[\PHPUnit\Framework\Attributes\DataProvider('previewLanguageNegotiationCases')]
+  public function testTranslatedTemplateDrafts(string $path_prefix, bool $session): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => 'en', 'fr' => 'fr'])->save();
+    if ($session) {
+      $this->config('language.negotiation')->set('session.parameter', 'content_language')->save();
+      $this->config('language.types')
+        ->set('negotiation.language_content.enabled', ['language-session' => -10, 'language-selected' => 12])
+        ->set('negotiation.language_interface.enabled', ['language-session' => -10, 'language-selected' => 12])->save();
+    }
+    $language_manager = $this->container->get(LanguageManagerInterface::class);
+    self::assertInstanceOf(ConfigurableLanguageManagerInterface::class, $language_manager);
+    $variant = $this->createPageVariant('translated', 'Stored chrome', 'Stored footer');
+    $tree = $variant->getComponentTree()->getValue();
+    $tree[2]['inputs']['heading'] = 'Draft footer';
+    $variant->setComponentTree($tree);
+    $this->container->get(AutoSaveManager::class)->saveEntity($variant);
+    $language_manager->getLanguageConfigOverride('fr', $variant->getConfigDependencyName())
+      ->set('component_tree', [$tree[0]['uuid'] => ['inputs' => ['heading' => 'French chrome']]])->save();
+    $this->config('canvas.settings')->set(PageVariant::DEFAULT_SETTING, $variant->id())->save();
+
+    $template = ContentTemplate::create([
+      'id' => 'node.article.full',
+      'content_entity_type_id' => 'node',
+      'content_entity_type_bundle' => 'article',
+      'content_entity_type_view_mode' => 'full',
+      'component_tree' => [$tree[0]],
+      'status' => TRUE,
+    ]);
+    $template->save();
+    $dynamic = $tree[0];
+    $dynamic['uuid'] = $this->container->get('uuid')->generate();
+    $dynamic['inputs']['heading'] = [
+      'sourceType' => 'entity-field',
+      'expression' => 'ℹ︎␜entity:node:article␝title␞␟value',
+    ];
+    $template->setComponentTree([$tree[0], $tree[2], $dynamic]);
+    $this->container->get(AutoSaveManager::class)->saveEntity($template);
+    $language_manager->getLanguageConfigOverride('fr', $template->getConfigDependencyName())
+      ->set('component_tree', [$tree[0]['uuid'] => ['inputs' => ['heading' => 'French template']]])->save();
+    $node = Node::create(['type' => 'article', 'title' => 'English article', 'status' => TRUE]);
+    $node->addTranslation('fr', ['title' => 'French article', 'status' => TRUE]);
+    $node->save();
+    $page = $this->createPage();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+
+    foreach ([
+      ['/page/' . $page->id(), [], 'Stored component heading'],
+      ['/node/' . $node->id(), ['viewMode' => 'full'], 'French template'],
+      ['/', ['pageVariant' => 'translated'], 'French chrome'],
+      ['/unroutable', ['pageVariant' => 'translated'], 'French chrome'],
+      ['/en/unroutable', ['pageVariant' => 'translated'], 'French chrome'],
+    ] as [$path, $context, $expected]) {
+      $data = self::responseData($this->renderContentPath($path_prefix . $path, ['language' => 'fr'] + $context));
+      $content = json_encode($data['content'], JSON_THROW_ON_ERROR);
+      self::assertStringContainsString($expected, $content);
+      self::assertStringContainsString('French chrome', $content);
+      self::assertStringContainsString('Draft footer', $content);
+      self::assertStringNotContainsString('Stored footer', $content);
+      if ($path === '/node/' . $node->id()) {
+        self::assertSame('French article', $data['head']['title']);
+        self::assertStringContainsString('French article', $content);
+      }
+    }
+
+    $language_manager = $this->container->get(LanguageManagerInterface::class);
+    self::assertInstanceOf(ConfigurableLanguageManagerInterface::class, $language_manager);
+    $translation_draft = StagedLanguageConfigOverride::fromLanguageConfigOverride($language_manager->getLanguageConfigOverride('fr', $variant->getConfigDependencyName()));
+    $translation_draft->setData('component_tree', [$tree[0]['uuid'] => ['inputs' => ['heading' => 'Draft French chrome']]]);
+    $translation_draft->save();
+    foreach ([
+      ['/unroutable', [CanvasContentApiRequest::PAGE_VARIANT_PREVIEW_QUERY => 'translated']],
+      ['/page/' . $page->id(), []],
+    ] as [$path, $context]) {
+      $stored_variant = $this->renderContentPath($path_prefix . $path, $context + [
+        'language' => 'fr',
+        CanvasContentApiRequest::EXCLUDE_AUTO_SAVE_QUERY => 'true',
+      ]);
+      $stored_content = json_encode(self::responseData($stored_variant)['content'], JSON_THROW_ON_ERROR);
+      self::assertStringContainsString('French chrome', $stored_content);
+      self::assertStringContainsString('Stored footer', $stored_content);
+      self::assertStringNotContainsString('Draft footer', $stored_content);
+      self::assertStringNotContainsString('Draft French chrome', $stored_content);
+      self::assertNotContains(AutoSaveManager::CACHE_TAG, $stored_variant->getCacheableMetadata()->getCacheTags());
+
+      $draft_variant = $this->renderContentPath($path_prefix . $path, $context + ['language' => 'fr']);
+      $draft_content = json_encode(self::responseData($draft_variant)['content'], JSON_THROW_ON_ERROR);
+      self::assertStringContainsString('Draft French chrome', $draft_content);
+      self::assertStringContainsString('Draft footer', $draft_content);
+    }
+  }
+
+  /**
+   * Tests aliases, missing languages, access, and cacheable translation links.
+   */
+  public function testTranslationLinks(): void {
+    $this->installConfig(['user']);
+    $role = Role::load('anonymous');
+    self::assertInstanceOf(Role::class, $role);
+    $this->grantPermissions($role, ['access content']);
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    ConfigurableLanguage::createFromLangcode('de')->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => TRUE])->save();
+    $this->config('language.negotiation')
+      ->set('url.prefixes', ['en' => '', 'fr' => 'fr', 'de' => 'de'])
+      ->set('session.parameter', 'locale')->save();
+    foreach (['en' => '/hello', 'fr' => '/bonjour'] as $langcode => $alias) {
+      PathAlias::create(['path' => '/page/' . $page->id(), 'alias' => $alias, 'langcode' => $langcode])->save();
+    }
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount(new AnonymousUserSession());
+    // Session negotiation is disabled: its configured selector is unrelated
+    // query data here and must not be rewritten.
+    $response = $this->renderContentPath('/fr/bonjour?locale=fr');
+    $route = self::responseData($response)['route'];
+    self::assertSame('fr', $route['negotiatedLanguage']);
+    self::assertSame([
+      ['langcode' => 'en', 'name' => 'English', 'nativeName' => 'English', 'url' => '/hello?locale=fr', 'translationAvailable' => TRUE, 'current' => FALSE, 'external' => FALSE],
+      ['langcode' => 'fr', 'name' => 'French', 'nativeName' => 'Français', 'url' => '/fr/bonjour?locale=fr', 'translationAvailable' => TRUE, 'current' => TRUE, 'external' => FALSE],
+      ['langcode' => 'de', 'name' => 'German', 'nativeName' => 'Deutsch', 'url' => '/de/page/' . $page->id() . '?locale=fr', 'translationAvailable' => FALSE, 'current' => FALSE, 'external' => FALSE],
+    ], $route['translations']);
+    foreach ($route['translations'] as $translation) {
+      if ($translation['translationAvailable']) {
+        $target = self::responseData($this->renderContentPath($translation['url']))['route'];
+        self::assertSame($translation['langcode'], $target['entity']['langcode']);
+      }
+    }
+    self::assertContains('languages:language_interface', $response->getCacheableMetadata()->getCacheContexts());
+    self::assertContains('config:language.entity.fr', $response->getCacheableMetadata()->getCacheTags());
+    self::assertContains('languages:language_content', $response->getCacheableMetadata()->getCacheContexts());
+    foreach (['config:configurable_language_list', 'config:language.types', 'config:language.negotiation'] as $tag) {
+      self::assertContains($tag, $response->getCacheableMetadata()->getCacheTags());
+    }
+    $fallback = self::responseData($this->renderContentPath('/de/page/' . $page->id()))['route'];
+    self::assertSame('de', $fallback['negotiatedLanguage']);
+    self::assertSame('en', $fallback['entity']['langcode']);
+    self::assertFalse($fallback['translations'][0]['current']);
+    self::assertTrue($fallback['translations'][2]['current']);
+    self::assertFalse($fallback['translations'][2]['translationAvailable']);
+    self::assertCount(3, $fallback['translations']);
+    self::assertSame([], array_filter($fallback['translations'], static fn (array $entry): bool => $entry['translationAvailable'] && $entry['current']));
+
+    $page->getTranslation('fr')->set('status', FALSE)->save();
+    $this->container->get(EntityTypeManagerInterface::class)->getAccessControlHandler('canvas_page')->resetCache();
+    $response = $this->renderContentPath('/hello');
+    $entries = self::responseData($response)['route']['translations'];
+    self::assertSame(['en', 'fr', 'de'], array_column($entries, 'langcode'));
+    self::assertSame([TRUE, FALSE, FALSE], array_column($entries, 'translationAvailable'));
+    // Keep the established language-specific fallback URL, even when denied.
+    self::assertSame('/fr/bonjour', $entries[1]['url']);
+    // Availability is not a route-access bypass: this established fallback URL
+    // still resolves to the denied translation, rather than viewable English.
+    try {
+      $this->renderContentPath($entries[1]['url']);
+      self::fail('An unavailable link must not bypass translation access.');
+    }
+    catch (CacheableAccessDeniedHttpException $exception) {
+      self::assertContains('user.permissions', $exception->getCacheContexts());
+    }
+    self::assertContains('user.permissions', $response->getCacheableMetadata()->getCacheContexts());
+    self::assertContains('canvas_page:' . $page->id(), $response->getCacheableMetadata()->getCacheTags());
+    $editor = $this->createUser(['access content', Page::EDIT_PERMISSION]);
+    self::assertInstanceOf(UserInterface::class, $editor);
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE, user: $editor));
+    $preview = self::responseData($this->renderContentPath('/hello'))['route'];
+    self::assertSame(['en', 'fr', 'de'], array_column($preview['translations'], 'langcode'));
+    self::assertSame([TRUE, TRUE, FALSE], array_column($preview['translations'], 'translationAvailable'));
+  }
+
+  /**
+   * Compares real API outputs while their request context is still active.
+   */
+  #[DataProvider('translationContractCases')]
+  public function testTranslationContractParity(string $requested, bool $french_published, bool $preview): void {
+    $this->installConfig(['user']);
+    $role = Role::load('anonymous');
+    self::assertInstanceOf(Role::class, $role);
+    $this->grantPermissions($role, ['access content']);
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    ConfigurableLanguage::createFromLangcode('de')->save();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => '', 'fr' => 'fr', 'de' => 'de'])->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => $french_published])->save();
+    $editor = $this->createUser(['access content', Page::EDIT_PERMISSION]);
+    self::assertInstanceOf(UserInterface::class, $editor);
+    $this->container->get('kernel')->rebuildContainer();
+    $account = $preview ? $this->createTokenAccount(with_preview_scope: TRUE, user: $editor) : new AnonymousUserSession();
+    $this->setCurrentAccount($account);
+
+    $captured = [];
+    $listener = function (ResponseEvent $event) use (&$captured, $account): void {
+      if (!$event->isMainRequest() || !$event->getRequest()->attributes->has(CanvasContentApiRequest::REQUESTED_URI_ATTRIBUTE)) {
+        return;
+      }
+      // Calling the provider after renderContentPath() would instead see the
+      // restored test request. Capture it here, on the actual routed request.
+      self::assertSame($event->getRequest(), $this->container->get(RequestStack::class)->getCurrentRequest());
+      self::assertSame($account, $this->container->get(AccountProxyInterface::class)->getAccount());
+      $captured[] = $this->container->get(CodeComponentDataProvider::class)->getCanvasDataMainEntityV0();
+    };
+    $dispatcher = $this->container->get(EventDispatcherInterface::class);
+    $dispatcher->addListener(KernelEvents::RESPONSE, $listener);
+    try {
+      // No auto-saves: only access differs between public and preview cases.
+      $response = $this->renderContentPath(($requested === 'en' ? '' : '/' . $requested) . '/page/' . $page->id());
+    }
+    finally {
+      $dispatcher->removeListener(KernelEvents::RESPONSE, $listener);
+    }
+    self::assertSame(200, $response->getStatusCode());
+    self::assertCount(1, $captured);
+    $main_entity = $captured[0][CodeComponentDataProvider::V0]['mainEntity'];
+    $route = self::responseData($response)['route'];
+    self::assertSame($requested, $route['negotiatedLanguage']);
+    self::assertSame($requested === 'de' ? 'en' : $requested, $route['entity']['langcode']);
+    self::assertSame($main_entity['uuid'], $route['entity']['uuid']);
+    self::assertSame($main_entity['requestedLanguage'], $route['negotiatedLanguage']);
+    self::assertSame($main_entity['renderedLanguage'], $route['entity']['langcode']);
+    self::assertSame(['en', 'fr', 'de'], array_column($route['translations'], 'langcode'));
+    self::assertSame([TRUE, $french_published || $preview, FALSE], array_column($route['translations'], 'translationAvailable'));
+
+    // Strip only the deliberate URL differences, not an allowlist of shared
+    // fields: unexpected fields, types, and ordering must fail this comparison.
+    $headless_entries = \array_map(static function (array $entry): array {
+      unset($entry['url'], $entry['external']);
+      return $entry;
+    }, $route['translations']);
+    $component_entries = \array_map(static function (array $entry): array {
+      unset($entry['url']);
+      return $entry;
+    }, $main_entity['translations']);
+    self::assertSame($component_entries, $headless_entries);
+  }
+
+  /**
+   * Provides available, missing, denied and preview-accessible translations.
+   */
+  public static function translationContractCases(): iterable {
+    yield 'available requested' => ['fr', TRUE, FALSE];
+    yield 'missing requested with fallback' => ['de', TRUE, FALSE];
+    yield 'denied for public' => ['en', FALSE, FALSE];
+    yield 'viewable in authorized preview' => ['en', FALSE, TRUE];
+  }
+
+  /**
+   * Tests language names follow interface-language configuration overrides.
+   */
+  public function testTranslationLinkNames(): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $page = $this->createPage();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => '', 'fr' => 'fr'])->save();
+    $language_manager = $this->container->get(LanguageManagerInterface::class);
+    self::assertInstanceOf(ConfigurableLanguageManagerInterface::class, $language_manager);
+    $language_manager->getLanguageConfigOverride('fr', 'language.entity.en')->set('label', 'Anglais')->save();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    foreach (['' => 'English', '/fr' => 'Anglais'] as $prefix => $name) {
+      $response = $this->renderContentPath($prefix . '/page/' . $page->id());
+      $entries = self::responseData($response)['route']['translations'];
+      self::assertSame($name, $entries[0]['name']);
+      self::assertSame('English', $entries[0]['nativeName']);
+      self::assertContains('languages:language_interface', $response->getCacheableMetadata()->getCacheContexts());
+      self::assertContains('config:language.entity.en', $response->getCacheableMetadata()->getCacheTags());
+    }
+  }
+
+  /**
+   * Tests session negotiation URIs are explicit and do not expose preview data.
+   */
+  public function testQueryTranslationLinks(): void {
+    $this->installConfig(['user']);
+    $role = Role::load('anonymous');
+    self::assertInstanceOf(Role::class, $role);
+    $this->grantPermissions($role, ['access content']);
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => TRUE])->save();
+    $this->config('language.types')
+      ->set('negotiation.language_interface.enabled', ['language-session' => 0, 'language-selected' => 1])
+      ->save();
+    $this->config('language.negotiation')->set('session.parameter', 'locale')->save();
+    $this->container->get('kernel')->rebuildContainer();
+    foreach ([new AnonymousUserSession(), $this->createTokenAccount(with_preview_scope: TRUE)] as $account) {
+      $this->setCurrentAccount($account);
+      $path = '/page/' . $page->id();
+      $route = self::responseData($this->renderContentPath($path . '?locale=fr', ['viewMode' => 'full']))['route'];
+      self::assertSame('fr', $route['negotiatedLanguage']);
+      self::assertSame([
+        ['langcode' => 'en', 'name' => 'English', 'nativeName' => 'English', 'url' => $path . '?locale=en', 'translationAvailable' => TRUE, 'current' => FALSE, 'external' => FALSE],
+        ['langcode' => 'fr', 'name' => 'French', 'nativeName' => 'Français', 'url' => $path . '?locale=fr', 'translationAvailable' => TRUE, 'current' => TRUE, 'external' => FALSE],
+      ], $route['translations']);
+      foreach ($route['translations'] as $translation) {
+        $target = self::responseData($this->renderContentPath($translation['url']))['route'];
+        self::assertSame($translation['langcode'], $target['entity']['langcode']);
+      }
+    }
+  }
+
+  /**
+   * A configured but absent translation falls back; unknown languages do not.
+   */
+  public function testPreviewLanguageFallbackAndValidation(): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => '', 'fr' => 'fr'])->save();
+    $page = $this->createPage();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->editor);
+    $data = self::responseData($this->renderContentPath('/page/' . $page->id(), ['language' => 'unknown']));
+    self::assertSame('en', $data['route']['entity']['langcode']);
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $data = self::responseData($this->renderContentPath('/page/' . $page->id(), ['language' => 'fr']));
+    self::assertSame('en', $data['route']['entity']['langcode']);
+    self::assertSame('Stored title', $data['head']['title']);
+    $this->expectException(NotFoundHttpException::class);
+    $this->renderContentPath('/page/' . $page->id(), ['language' => 'unknown']);
+  }
+
+  /**
+   * Access is checked on the requested translation, including its auto-save.
+   */
+  #[\PHPUnit\Framework\Attributes\DataProvider('inaccessibleTranslationCases')]
+  public function testInaccessiblePreviewTranslation(bool $draft): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => '', 'fr' => 'fr'])->save();
+    $page = $this->createPage();
+    $translation = $page->addTranslation('fr', ['title' => 'Private French title', 'status' => $draft]);
+    $page->save();
+    if ($draft) {
+      $translation->set('status', FALSE);
+      $this->container->get(AutoSaveManager::class)->saveEntity($translation);
+    }
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $this->expectException(AccessDeniedHttpException::class);
+    $this->renderContentPath('/page/' . $page->id(), ['language' => 'fr']);
+  }
+
+  public static function inaccessibleTranslationCases(): iterable {
+    yield 'stored translation' => [FALSE];
+    yield 'auto-saved translation' => [TRUE];
+  }
+
+  /**
+   * Transport redirects retain context and queries without duplicating the base.
+   */
+  #[\PHPUnit\Framework\Attributes\DataProvider('previewInstallationBases')]
+  public function testLanguageRedirectAliasesAndBasePath(string $base, string $script): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => 'en', 'fr' => 'fr'])->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French alias page', 'status' => TRUE]);
+    $page->save();
+    foreach (['en' => '/english-page', 'fr' => '/page-francaise'] as $langcode => $alias) {
+      PathAlias::create(['path' => '/page/' . $page->id(), 'alias' => $alias, 'langcode' => $langcode])->save();
+    }
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $server = ['SCRIPT_NAME' => $script, 'SCRIPT_FILENAME' => '/var/www' . $script];
+    $context = ['language' => 'fr', 'viewMode' => 'full'];
+    $request = Request::create($base . '/canvas/content-api?' . http_build_query([
+      'requestUri' => '/en/english-page?language=route-owned&viewMode=route-owned&filter%5Btag%5D=one&destination=/user/login',
+      ...$context,
+    ]), server: $server);
+    $response = $this->request($request);
+    self::assertInstanceOf(PreviewLanguageRedirectResponse::class, $response);
+    self::assertSame(302, $response->getStatusCode());
+    self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+    self::assertTrue($response->headers->hasCacheControlDirective('no-store'));
+    self::assertStringStartsWith($base . '/canvas/content-api?', $response->getTargetUrl());
+    $redirect_request = Request::create($response->getTargetUrl(), server: $server);
+    $redirect_query = $redirect_request->query->all();
+    $redirected_uri = $redirect_request->query->getString('requestUri');
+    self::assertSame('fr', $redirect_query['language']);
+    self::assertSame('full', $redirect_query['viewMode']);
+    self::assertSame('1', $redirect_query[CanvasContentApiRequest::LANGUAGE_REDIRECT_QUERY]);
+    self::assertSame('/fr/page-francaise', parse_url($redirected_uri, PHP_URL_PATH));
+    parse_str((string) parse_url($redirected_uri, PHP_URL_QUERY), $route_query);
+    self::assertSame(['language' => 'route-owned', 'viewMode' => 'route-owned', 'filter' => ['tag' => 'one'], 'destination' => '/user/login'], $route_query);
+    $result = $this->request($redirect_request);
+    self::assertInstanceOf(CacheableJsonResponse::class, $result);
+    self::assertSame('French alias page', self::responseData($result)['head']['title']);
+  }
+
+  public static function previewInstallationBases(): iterable {
+    yield 'root' => ['', '/index.php'];
+    yield 'subdirectory' => ['/drupal', '/drupal/index.php'];
+    yield 'front controller' => ['/drupal/index.php', '/drupal/index.php'];
+  }
+
+  /**
+   * A site that cannot negotiate the hint must not redirect indefinitely.
+   */
+  public function testLanguageRedirectStopsAfterOneHop(): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $this->config('language.types')
+      ->set('negotiation.language_content.enabled', ['language-selected' => 12])
+      ->set('negotiation.language_interface.enabled', ['language-selected' => 12])->save();
+    $page = $this->createPage();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $this->expectException(NotFoundHttpException::class);
+    $this->expectExceptionMessage('The requested preview language could not be negotiated.');
+    $this->renderContentPath('/page/' . $page->id(), ['language' => 'fr']);
+  }
+
+  /**
+   * Domain negotiation must not send the preview credential to another host.
+   */
+  public function testLanguageRedirectRejectsForeignOrigin(): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $this->config('language.negotiation')->set('url.source', 'domain')
+      ->set('url.domains', ['en' => 'localhost', 'fr' => 'french.example'])->save();
+    $page = $this->createPage();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $this->expectException(NotFoundHttpException::class);
+    $this->expectExceptionMessage('Cross-domain preview language negotiation is not supported.');
+    $this->renderContentPath('/page/' . $page->id(), ['language' => 'fr']);
+  }
+
+  public static function previewLanguageNegotiationCases(): iterable {
+    yield 'prefix' => ['', FALSE];
+    yield 'already prefixed' => ['/fr', FALSE];
+    yield 'session' => ['', TRUE];
+  }
+
+  /**
+   * Tests switch links follow configured content negotiation precedence.
+   */
+  #[DataProvider('languageSwitchPrecedence')]
+  public function testContentLanguageSwitchPrecedence(bool $session_first): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => TRUE])->save();
+    $this->config('language.types')
+      ->set('configurable', ['language_interface', 'language_content'])
+      ->set('negotiation.language_content.enabled', $session_first
+        ? ['language-session' => 0, 'language-interface' => 1]
+        : ['language-interface' => 0, 'language-session' => 1])
+      ->set('negotiation.language_interface.enabled', ['language-url' => 0, 'language-selected' => 1])
+      ->save();
+    $this->config('language.negotiation')
+      ->set('url.prefixes', ['en' => '', 'fr' => 'fr'])
+      ->set('session.parameter', 'locale')->save();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    // Make the two methods disagree, so their order determines the language.
+    $path = '/page/' . $page->id();
+    $route = self::responseData($this->renderContentPath('/fr' . $path . '?locale=en'))['route'];
+    self::assertSame($session_first ? 'en' : 'fr', $route['negotiatedLanguage']);
+    self::assertSame($session_first ? 'en' : 'fr', $route['entity']['langcode']);
+    self::assertSame([
+      ['langcode' => 'en', 'name' => 'English', 'nativeName' => 'English', 'url' => $path . '?locale=en', 'translationAvailable' => TRUE, 'current' => $session_first, 'external' => FALSE],
+      ['langcode' => 'fr', 'name' => 'French', 'nativeName' => 'Français', 'url' => '/fr' . $path . '?locale=fr', 'translationAvailable' => TRUE, 'current' => !$session_first, 'external' => FALSE],
+    ], $route['translations']);
+    foreach ($route['translations'] as $translation) {
+      $target = self::responseData($this->renderContentPath($translation['url']))['route'];
+      self::assertSame($translation['langcode'], $target['entity']['langcode']);
+    }
+  }
+
+  /**
+   * Provides both orderings of content session negotiation and UI delegation.
+   */
+  public static function languageSwitchPrecedence(): iterable {
+    yield 'session before interface' => [TRUE];
+    yield 'interface before session' => [FALSE];
+  }
+
+  /**
+   * Tests mixed URL/session negotiation links round-trip without session state.
+   */
+  #[DataProvider('mixedLanguageNegotiation')]
+  public function testMixedLanguageTranslationLinks(bool $session_first, bool $delegate, bool $preview): void {
+    $this->installConfig(['user']);
+    $role = Role::load('anonymous');
+    self::assertInstanceOf(Role::class, $role);
+    $this->grantPermissions($role, ['access content']);
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    ConfigurableLanguage::createFromLangcode('de')->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => TRUE])->save();
+    $methods = $session_first
+      ? ['language-session' => 0, 'language-url' => 1, 'language-selected' => 2]
+      : ['language-url' => 0, 'language-session' => 1, 'language-selected' => 2];
+    $this->config('language.types')
+      ->set('configurable', ['language_interface', 'language_content'])
+      ->set('negotiation.language_content.enabled', $delegate ? ['language-interface' => 0] : $methods)
+      ->set('negotiation.language_interface.enabled', $delegate ? $methods : ['language-url' => 0, 'language-selected' => 1])
+      ->save();
+    $this->config('language.negotiation')
+      ->set('url.prefixes', ['en' => '', 'fr' => 'fr', 'de' => 'de'])
+      ->set('session.parameter', 'locale')->save();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($preview ? $this->createTokenAccount(with_preview_scope: TRUE) : new AnonymousUserSession());
+    $path = '/page/' . $page->id();
+    foreach ([
+      [$path, 'en', 'en'],
+      [$path . '?locale=fr', 'fr', 'fr'],
+      ['/fr' . $path . '?locale=en', $session_first ? 'en' : 'fr', $session_first ? 'en' : 'fr'],
+      [$path . '?locale=de', 'de', 'en'],
+    ] as [$uri, $negotiated, $rendered]) {
+      $uri .= str_contains($uri, '?') ? '&campaign=test' : '?campaign=test';
+      $route = self::responseData($this->renderContentPath($uri, ['viewMode' => 'full']))['route'];
+      self::assertSame($negotiated, $route['negotiatedLanguage']);
+      self::assertSame($rendered, $route['entity']['langcode']);
+      self::assertSame(['en', 'fr', 'de'], array_column($route['translations'], 'langcode'));
+      foreach ($route['translations'] as $translation) {
+        $langcode = $translation['langcode'];
+        self::assertSame($langcode === $negotiated, $translation['current']);
+        self::assertSame($langcode !== 'de', $translation['translationAvailable']);
+        self::assertFalse($translation['external']);
+        self::assertSame(($langcode === 'en' ? '' : '/' . $langcode) . $path, parse_url($translation['url'], PHP_URL_PATH));
+        $query_string = parse_url($translation['url'], PHP_URL_QUERY);
+        self::assertIsString($query_string);
+        parse_str($query_string, $query);
+        self::assertEquals(['locale' => $langcode, 'campaign' => 'test'], $query);
+        $target = self::responseData($this->renderContentPath($translation['url']))['route'];
+        self::assertSame($langcode, $target['negotiatedLanguage']);
+        self::assertSame($langcode === 'de' ? 'en' : $langcode, $target['entity']['langcode']);
+      }
+    }
+  }
+
+  /**
+   * Provides both priorities, content/UI negotiation, and public/preview access.
+   */
+  public static function mixedLanguageNegotiation(): iterable {
+    foreach ([FALSE, TRUE] as $session_first) {
+      foreach ([FALSE, TRUE] as $delegate) {
+        foreach ([FALSE, TRUE] as $preview) {
+          yield ($session_first ? 'session first' : 'URL first') . ', ' . ($delegate ? 'interface' : 'content') . ', ' . ($preview ? 'preview' : 'anonymous') => [$session_first, $delegate, $preview];
+        }
+      }
+    }
+  }
+
+  /**
+   * Tests domain URLs are retained and explicitly flagged as external.
+   */
+  public function testDomainTranslationLinks(): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => TRUE])->save();
+    $this->config('language.negotiation')
+      ->set('url.source', 'domain')
+      ->set('url.domains', ['en' => 'localhost', 'fr' => 'fr.example.com'])
+      ->save();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $route = self::responseData($this->renderPage($page))['route'];
+    self::assertSame([
+      ['langcode' => 'en', 'name' => 'English', 'nativeName' => 'English', 'url' => '/page/' . $page->id(), 'translationAvailable' => TRUE, 'current' => TRUE, 'external' => FALSE],
+      ['langcode' => 'fr', 'name' => 'French', 'nativeName' => 'Français', 'url' => 'http://fr.example.com/page/' . $page->id(), 'translationAvailable' => TRUE, 'current' => FALSE, 'external' => TRUE],
+    ], $route['translations']);
+  }
+
+  /**
+   * Tests generated translation URIs exclude the Drupal installation path.
+   */
+  public function testTranslationLinksInSubdirectory(): void {
+    ConfigurableLanguage::createFromLangcode('fr')->save();
+    $page = $this->createPage();
+    $page->addTranslation('fr', ['title' => 'French', 'status' => TRUE])->save();
+    $this->config('language.negotiation')->set('url.prefixes', ['en' => '', 'fr' => 'fr'])->save();
+    $this->container->get('kernel')->rebuildContainer();
+    $this->setCurrentAccount($this->createTokenAccount(with_preview_scope: TRUE));
+    $request = Request::create(
+      'http://localhost/drupal/canvas/content-api?' . http_build_query(['requestUri' => '/fr/page/' . $page->id()]),
+      server: [
+        'SCRIPT_NAME' => '/drupal/index.php',
+        'SCRIPT_FILENAME' => '/var/www/drupal/index.php',
+        'PHP_SELF' => '/drupal/index.php',
+      ],
+    );
+    $response = $this->request($request);
+    self::assertInstanceOf(CacheableJsonResponse::class, $response);
+    $route = self::responseData($response)['route'];
+    self::assertSame([
+      ['langcode' => 'en', 'name' => 'English', 'nativeName' => 'English', 'url' => '/page/' . $page->id(), 'translationAvailable' => TRUE, 'current' => FALSE, 'external' => FALSE],
+      ['langcode' => 'fr', 'name' => 'French', 'nativeName' => 'Français', 'url' => '/fr/page/' . $page->id(), 'translationAvailable' => TRUE, 'current' => TRUE, 'external' => FALSE],
+    ], $route['translations']);
   }
 
   /**
@@ -1161,7 +2388,7 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
   /**
    * Renders a routed entity through the public kernel boundary.
    *
-   * @param array{viewMode?: string, componentId?: string, pageVariant?: string} $preview_context
+   * @param array{viewMode?: string, componentId?: string, pageVariant?: string, excludeAutoSave?: string} $preview_context
    *   Optional editor preview context.
    */
   private function renderContentPath(string $request_uri, array $preview_context = []): CacheableJsonResponse {
@@ -1172,6 +2399,12 @@ final class CanvasContentControllerTest extends CanvasKernelTestBase {
       ]),
     );
     $response = $this->request($request);
+    if ($response instanceof PreviewLanguageRedirectResponse) {
+      self::assertSame(0, $response->getCacheableMetadata()->getCacheMaxAge());
+      self::assertTrue($response->headers->hasCacheControlDirective('no-store'));
+      self::assertStringStartsWith('/canvas/content-api?', $response->getTargetUrl());
+      $response = $this->request(Request::create($response->getTargetUrl()));
+    }
     self::assertInstanceOf(CacheableJsonResponse::class, $response);
     return $response;
   }

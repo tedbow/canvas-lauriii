@@ -3,11 +3,19 @@
 declare(strict_types=1);
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator;
+use Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist;
 use Drupal\canvas\CanvasConfigUpdater;
+use Drupal\canvas\CanvasServiceProvider;
 use Drupal\canvas\ContentTranslation\ComponentTreeFieldSymmetricalTranslationSynchronizer;
 use Drupal\canvas\Entity\BrandKit;
+use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
 use Drupal\canvas\Entity\Color;
 use Drupal\canvas\Entity\Component;
+use Drupal\canvas\Entity\ComponentTreeConfigEntityBase;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\canvas\Entity\Folder;
 use Drupal\canvas\Entity\PageRegion;
@@ -19,6 +27,7 @@ use Drupal\canvas\Plugin\Canvas\ComponentSource\BlockComponent;
 use Drupal\canvas\Plugin\Field\FieldType\ComponentTreeItem;
 use Drupal\Component\Serialization\Json;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
+use Drupal\Core\Config\Entity\ConfigEntityTypeInterface;
 use Drupal\Core\Config\Entity\ConfigEntityUpdater;
 use Drupal\Core\Entity\ContentEntityInterface;
 use Drupal\Core\Entity\EntityDefinitionUpdateManagerInterface;
@@ -27,10 +36,13 @@ use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Entity\EntityStorageInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Entity\RevisionableStorageInterface;
+use Drupal\Core\Entity\TranslatableInterface;
 use Drupal\Core\Site\Settings;
 use Drupal\Core\TempStore\SharedTempStoreFactory;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\image\Entity\ImageStyle;
+use Drupal\workspaces\WorkspaceInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
 
 /**
  * Track that props have the required flag in component config entities.
@@ -216,7 +228,10 @@ function canvas_post_update_0009_unset_category_property_on_components(array &$s
  * Migrate auto-save data from tempstore to key-value store.
  */
 function canvas_post_update_0010_migrate_auto_save(): void {
-  $keyvalue_factory = \Drupal::service('keyvalue');
+  // Staging bookkeeping must resolve identically in every workspace.
+  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
+  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
+  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
   $tempstore_factory = \Drupal::service(SharedTempStoreFactory::class);
 
   $collections = [
@@ -676,7 +691,11 @@ function _canvas_coerce_block_label_display_in_raw(array &$data): bool {
  * @see \Drupal\canvas\AutoSave\AutoSaveManager::toStorableArray()
  */
 function canvas_post_update_0026_rehash_auto_save_items(): void {
-  $auto_save_store = \Drupal::service('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
+  // Staging bookkeeping must resolve identically in every workspace.
+  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
+  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
+  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $auto_save_store = $keyvalue_factory->get(AutoSaveManager::AUTO_SAVE_STORE);
   $entity_type_manager = \Drupal::service(EntityTypeManagerInterface::class);
 
   // AutoSaveManager's normalization helpers are private static. Use reflection
@@ -794,4 +813,230 @@ function canvas_post_update_0030_page_variant_selection_options(): void {
   // varchar column); only the field type and its settings change.
   $storage_definitions = \Drupal::service(EntityFieldManagerInterface::class)->getFieldStorageDefinitions('canvas_page');
   $update_manager->updateFieldStorageDefinition($storage_definitions['page_variant']);
+}
+
+/**
+ * Seeds workspace auto-save staging from legacy key-value auto-save entries.
+ *
+ * Workspace switching during migration needs no access relaxation: core
+ * exempts CLI (drush updb), and for web update.php the Canvas workspace
+ * provider grants view access during maintenance-mode update runs.
+ *
+ * @see \Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider::checkAccess()
+ */
+function canvas_post_update_0031_migrate_auto_save_to_workspace(array &$sandbox): void {
+  // Staging bookkeeping must resolve identically in every workspace.
+  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
+  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
+  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $kv = $keyvalue_factory->get(AutoSaveManager::AUTO_SAVE_STORE);
+  if (!isset($sandbox['keys'])) {
+    $sandbox['keys'] = \array_keys($kv->getAll());
+    $sandbox['total'] = \count($sandbox['keys']);
+  }
+  if ($sandbox['total'] === 0) {
+    $sandbox['#finished'] = 1;
+    return;
+  }
+
+  /** @var \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator $migrator */
+  $migrator = \Drupal::service(LegacyAutoSaveMigrator::class);
+  foreach (\array_splice($sandbox['keys'], 0, 25) as $key) {
+    $entry = $kv->get($key);
+    if (!\is_array($entry) || !isset($entry['entity_type'], $entry['entity_id'])) {
+      continue;
+    }
+    $entity = \Drupal::entityTypeManager()->getStorage($entry['entity_type'])->load($entry['entity_id']);
+    if ($entity === NULL) {
+      continue;
+    }
+    // Legacy entries are per translation; the migrator derives the key from
+    // the entity object, so it must receive the matching translation.
+    if (isset($entry['langcode'])
+      && $entity instanceof TranslatableInterface
+      && $entity->hasTranslation($entry['langcode'])) {
+      $entity = $entity->getTranslation($entry['langcode']);
+    }
+    $migrator->migrateIfNeeded($entity);
+  }
+  $sandbox['#finished'] = \count($sandbox['keys']) === 0 ? 1 : 1 - (\count($sandbox['keys']) / $sandbox['total']);
+}
+
+/**
+ * Makes canvas_default the visible "Main workspace" with core access.
+ *
+ * Relabels the workspace, moves it to the default workspace provider so it
+ * appears in core listings and switchers, and maps the Phase 1
+ * provider-granted access onto core workspace permissions: roles that can
+ * edit in Canvas gain "view any workspace", and roles that can publish
+ * Canvas changes gain "edit any workspace" (core's publish operation) and
+ * "create workspace". Review the granted permissions after updating.
+ */
+function canvas_post_update_0032_main_workspace(): void {
+  $storage = \Drupal::entityTypeManager()->getStorage('workspace');
+  $workspace = $storage->load(AutoSaveWorkspace::ID);
+  if ($workspace instanceof WorkspaceInterface) {
+    $workspace->set('label', AutoSaveWorkspace::LABEL);
+    $workspace->set('provider', 'default');
+    $workspace->save();
+  }
+
+  $canvas_editor_permissions = [
+    'publish auto-saves',
+    'edit canvas_page',
+    'create canvas_page',
+    'administer components',
+    'administer code components',
+    'administer brand kit',
+    'administer content templates',
+  ];
+  /** @var \Drupal\user\RoleInterface $role */
+  foreach (\Drupal::entityTypeManager()->getStorage('user_role')->loadMultiple() as $role) {
+    if ($role->isAdmin()) {
+      continue;
+    }
+    $changed = FALSE;
+    foreach ($canvas_editor_permissions as $permission) {
+      if ($role->hasPermission($permission) && !$role->hasPermission('view any workspace')) {
+        $role->grantPermission('view any workspace');
+        $changed = TRUE;
+        break;
+      }
+    }
+    if ($role->hasPermission('publish auto-saves')) {
+      foreach (['edit any workspace', 'create workspace'] as $permission) {
+        if (!$role->hasPermission($permission)) {
+          $role->grantPermission($permission);
+          $changed = TRUE;
+        }
+      }
+    }
+    if ($changed) {
+      $role->save();
+    }
+  }
+}
+
+/**
+ * Promotes component tree config drafts from snapshot rows into workspaces.
+ *
+ * Content template, pattern and page variant drafts staged before they
+ * persisted as workspace-scoped configuration sit in snapshot rows. Each is
+ * saved into the workspace recorded on its row, which removes the row; the
+ * copy found in the workspace beforehand is recorded as the draft's base. A
+ * draft the storage layer still rejects stays a snapshot row.
+ *
+ * Workspace switching needs no access relaxation: core exempts CLI (drush
+ * updb), and for web update.php the Canvas workspace provider grants view
+ * access during maintenance-mode update runs.
+ *
+ * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist
+ */
+function canvas_post_update_0033_promote_config_snapshots(array &$sandbox): void {
+  $entity_type_manager = \Drupal::entityTypeManager();
+  $snapshot_storage = $entity_type_manager->getStorage(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
+  if (!isset($sandbox['ids'])) {
+    $sandbox['ids'] = \array_values($snapshot_storage->getQuery()->accessCheck(FALSE)->execute());
+    $sandbox['total'] = \count($sandbox['ids']);
+  }
+  if ($sandbox['total'] === 0) {
+    $sandbox['#finished'] = 1;
+    return;
+  }
+
+  /** @var \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave $workspace_auto_save */
+  $workspace_auto_save = \Drupal::service(WorkspaceAutoSave::class);
+  /** @var \Drupal\canvas\AutoSave\Workspace\WorkspaceConfigEntityPersist $persist */
+  $persist = \Drupal::service(WorkspaceConfigEntityPersist::class);
+  /** @var \Drupal\workspaces\WorkspaceManagerInterface $workspace_manager */
+  $workspace_manager = \Drupal::service(WorkspaceManagerInterface::class);
+  $workspace_storage = $entity_type_manager->getStorage('workspace');
+  foreach (\array_splice($sandbox['ids'], 0, 25) as $id) {
+    $snapshot = $snapshot_storage->load($id);
+    if (!$snapshot instanceof CanvasAutoSaveSnapshot) {
+      continue;
+    }
+    $workspace_id = (string) $snapshot->get('workspace')->value;
+    $target_type_id = $snapshot->getTargetEntityTypeId();
+    if (!$entity_type_manager->hasDefinition($target_type_id) || $workspace_storage->load($workspace_id) === NULL) {
+      continue;
+    }
+    $draft = $entity_type_manager->getStorage($target_type_id)->create(\json_decode($snapshot->getPayload(), TRUE, 512, JSON_THROW_ON_ERROR));
+    if (!$draft instanceof ComponentTreeConfigEntityBase) {
+      continue;
+    }
+    $workspace_manager->executeInWorkspace($workspace_id, static function () use ($workspace_auto_save, $persist, $draft, $snapshot): void {
+      if (!$workspace_auto_save->usesWorkspaceConfigStaging($draft)) {
+        return;
+      }
+      // Record the base before the draft replaces the workspace copy.
+      $workspace_auto_save->getBaseHash($draft);
+      $persist->persist($draft, $snapshot->getClientInstanceId(), [
+        'owner' => (int) $snapshot->getOwnerId(),
+        'updated' => (int) ($snapshot->getChangedTime() ?? 0),
+      ]);
+    });
+  }
+  $sandbox['#finished'] = \count($sandbox['ids']) === 0 ? 1 : 1 - (\count($sandbox['ids']) / $sandbox['total']);
+}
+
+/**
+ * Empties the `canvas.auto_save` key-value store into workspace staging.
+ *
+ * Config entities without a snapshot-backed store (staged configuration
+ * translations) kept their drafts there until every draft moved into
+ * workspace staging: each such row is persisted through the staged write
+ * path (a snapshot row for these entity types), which removes it. Rows
+ * without a draft held the staging metadata (stored-entity hash, conflict
+ * retention) of a workspace-staged draft; that metadata moves to the staging
+ * metadata store, where it has lived for every draft written since.
+ *
+ * @see \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator
+ * @see \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::getStagedEntryMetadata()
+ */
+function canvas_post_update_0034_migrate_key_value_config_drafts(array &$sandbox): void {
+  // Staging bookkeeping must resolve identically in every workspace.
+  // @see \Drupal\canvas\CanvasServiceProvider::registerWorkspaceInvariantKeyValueFactory()
+  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $keyvalue_factory */
+  $keyvalue_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $kv = $keyvalue_factory->get(AutoSaveManager::AUTO_SAVE_STORE);
+  if (!isset($sandbox['keys'])) {
+    $sandbox['keys'] = \array_keys($kv->getAll());
+    $sandbox['total'] = \count($sandbox['keys']);
+  }
+  if ($sandbox['total'] === 0) {
+    $sandbox['#finished'] = 1;
+    return;
+  }
+
+  $entity_type_manager = \Drupal::entityTypeManager();
+  /** @var \Drupal\canvas\AutoSave\Workspace\LegacyAutoSaveMigrator $migrator */
+  $migrator = \Drupal::service(LegacyAutoSaveMigrator::class);
+  /** @var \Drupal\canvas\AutoSave\Workspace\PendingContentAutoSaveBuffer $staging_metadata */
+  $staging_metadata = \Drupal::service(PendingContentAutoSaveBuffer::class);
+  foreach (\array_splice($sandbox['keys'], 0, 25) as $key) {
+    $entry = $kv->get($key);
+    if (!\is_array($entry)) {
+      $kv->delete($key);
+      continue;
+    }
+    if (!isset($entry['data'])) {
+      $staging_metadata->set($key, WorkspaceAutoSave::entryMetadata($entry) + ($staging_metadata->get($key) ?? []));
+      $kv->delete($key);
+      continue;
+    }
+    if (!isset($entry['entity_type'], $entry['entity_id']) || !\is_array($entry['data'])) {
+      continue;
+    }
+    if (!$entity_type_manager->hasDefinition($entry['entity_type'])
+      || !$entity_type_manager->getDefinition($entry['entity_type']) instanceof ConfigEntityTypeInterface) {
+      continue;
+    }
+    // The draft is the only copy of these entities: reconstruct it from the
+    // row rather than loading it, which would read the (empty) staging.
+    $entity = $entity_type_manager->getStorage($entry['entity_type'])->create($entry['data']);
+    $entity->enforceIsNew(FALSE);
+    $migrator->migrateIfNeeded($entity);
+  }
+  $sandbox['#finished'] = \count($sandbox['keys']) === 0 ? 1 : 1 - (\count($sandbox['keys']) / $sandbox['total']);
 }

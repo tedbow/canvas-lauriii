@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useErrorBoundary } from 'react-error-boundary';
-import { useLocation, useParams } from 'react-router';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useParams, useSearchParams } from 'react-router';
 import { AlertDialog, Button, Flex } from '@radix-ui/themes';
 import { skipToken } from '@reduxjs/toolkit/query';
 
@@ -43,7 +42,8 @@ const HeadlessPagePreview: React.FC<{
   settings: HeadlessSettings;
   width: string;
   viewMode?: string;
-}> = ({ settings, width, viewMode }) => {
+  language?: string;
+}> = ({ settings, width, viewMode, language }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { entityId, entityType } = useParams();
   const { statusText } = useHeadlessDraftSession(
@@ -53,7 +53,7 @@ const HeadlessPagePreview: React.FC<{
     entityId,
     undefined,
     undefined,
-    { viewMode },
+    { viewMode, language },
   );
 
   return (
@@ -99,12 +99,7 @@ const PagePreview = () => {
   // Determine template context from the URL path.
   const isContentTemplate = location.pathname.includes('/preview/template');
 
-  const canvasHeadlessSettings = useCanvasHeadlessSettings();
-  // Headless multilingual previews require broader API support. Until that
-  // lands, keep translated content-template previews on the existing snapshot
-  // renderer, which already receives the selected language.
-  const headlessSettings =
-    isContentTemplate && language ? undefined : canvasHeadlessSettings;
+  const headlessSettings = useCanvasHeadlessSettings();
 
   // Only fetch the language preview when we are on a preview route.
   const isPreview = isContentTemplate || location.pathname.includes('/preview');
@@ -239,6 +234,7 @@ const PagePreview = () => {
         settings={headlessSettings}
         width={widthVal}
         viewMode={isContentTemplate ? viewMode : undefined}
+        language={language || undefined}
       />
     );
   }

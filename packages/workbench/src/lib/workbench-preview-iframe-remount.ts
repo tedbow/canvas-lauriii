@@ -1,5 +1,6 @@
 import { isComponentMetadataPath } from './component-metadata-path';
 import { isTopLevelContentTemplateSpecPath } from './content-template-spec-path';
+import { isMockSpecPath } from './mock-spec-path';
 import {
   isTopLevelPageSpecPath,
   isTopLevelPageTemplateSpecPath,
@@ -12,15 +13,16 @@ import type {
 } from './preview-contract';
 
 /**
- * Stable structural fingerprint for discovery + manifest: global CSS URL, sorted
- * component names, sorted page slugs, sorted content-template slugs, and sorted
- * page-template ids. Content edits to an existing JSON file should not change
- * this string.
+ * Stable structural fingerprint for discovery + manifest: brand kit CSS URL,
+ * global CSS URL, sorted component names, sorted page slugs, sorted
+ * content-template slugs, and sorted page-template ids. Content edits to an
+ * existing JSON file should not change this string.
  */
 export function computeWorkbenchStructuralFingerprint(
   discovery: DiscoveryResult,
   manifest: PreviewManifest,
 ): string {
+  const brandKitCss = manifest.brandKitCssUrl ?? '';
   const globalCss = manifest.globalCssUrl ?? '';
   const componentNames = [...discovery.components]
     .map((component) => component.name)
@@ -38,7 +40,7 @@ export function computeWorkbenchStructuralFingerprint(
     .map((pageTemplate) => pageTemplate.id)
     .sort()
     .join('\0');
-  return `${globalCss}\n${componentNames}\n${pageSlugs}\n${contentTemplateSlugs}\n${pageTemplateIds}`;
+  return `${brandKitCss}\n${globalCss}\n${componentNames}\n${pageSlugs}\n${contentTemplateSlugs}\n${pageTemplateIds}`;
 }
 
 export function shouldHideComponentPreviewFrame(
@@ -65,7 +67,10 @@ export interface WorkbenchHotPayload {
 /**
  * When a full manifest refresh runs (`reloadFrameOnly: false`), the shell can
  * skip remounting the preview iframe if the change is an in-place edit to
- * component metadata or a page spec and discovery structure is unchanged.
+ * component metadata, a component mock, or a page spec and discovery
+ * structure is unchanged. The mounted iframe then receives the refreshed
+ * discovery data and a new render request with the fresh spec, so its
+ * component state survives while props and mock data update.
  */
 export function shouldSkipWorkbenchIframeRemount(params: {
   payload: WorkbenchHotPayload | undefined;
@@ -84,6 +89,7 @@ export function shouldSkipWorkbenchIframeRemount(params: {
 
   if (
     !isComponentMetadataPath(payload.filePath) &&
+    !isMockSpecPath(payload.filePath) &&
     !isTopLevelPageSpecPath(payload.filePath) &&
     !isTopLevelContentTemplateSpecPath(payload.filePath) &&
     !isTopLevelPageTemplateSpecPath(payload.filePath)

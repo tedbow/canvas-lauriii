@@ -91,6 +91,9 @@ export interface DrupalSettings {
     siteUrl: string;
     // ⚠️ This is highly experimental and *will* be refactored.
     personalizationExtensionAvailable: boolean;
+    // Whether the canvas_workflows module is installed: workspaces then carry
+    // a review state and may be scheduled for publishing.
+    workflowsExtensionAvailable: boolean;
     // ⚠️ This is highly experimental and *will* be refactored.
     canvasAiMaxFileSize: number;
     // Present when the user may generate Canvas Headless previews. Also gates

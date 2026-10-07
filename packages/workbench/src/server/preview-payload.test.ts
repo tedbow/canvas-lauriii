@@ -4,9 +4,12 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  buildIframeHtml,
   buildPreviewPayload,
   buildPreviewRuntimeEntrySource,
   bundleInteractivePreview,
+  resolvePreviewSiteData,
+  withBrandKitColorCss,
 } from './preview-payload';
 
 import type { Spec } from '@json-render/core';
@@ -133,6 +136,7 @@ describe('preview-payload', () => {
           return {
             js: 'console.log("interactive");',
             css: 'body{background:black;color:white;}',
+            siteData: null,
           };
         },
       },
@@ -202,6 +206,7 @@ describe('preview-payload', () => {
           return {
             js: 'console.log("interactive");',
             css: 'body{margin:0;}',
+            siteData: null,
           };
         },
       },
@@ -315,6 +320,7 @@ describe('preview-payload', () => {
           return {
             js: 'console.log("interactive-page");',
             css: '.page{display:block;}',
+            siteData: null,
           };
         },
       },
@@ -330,6 +336,112 @@ describe('preview-payload', () => {
     expect(
       (capturedPageTemplateSpec as Spec | null)?.elements.content.type,
     ).toBe('marker.page_content');
+  });
+
+  it('resolves canvas-color token refs in the page template spec for preview', async () => {
+    const root = await makeTemporaryDirectory();
+
+    await writeFile(
+      path.join(root, 'canvas.config.json'),
+      JSON.stringify(
+        {
+          componentDir: 'src/components',
+          pagesDir: 'pages',
+          aliasBaseDir: 'src',
+        },
+        null,
+        2,
+      ),
+    );
+
+    await writeFile(
+      path.join(root, 'canvas.brand-kit.json'),
+      JSON.stringify({ colors: { 'brand-red': '#cc1a1a' } }),
+    );
+
+    await writeFile(
+      path.join(root, 'src/components/nav/component.yml'),
+      `name: Nav
+machineName: nav
+props:
+  properties:
+    backgroundColor:
+      title: Background Color
+      type: string
+      $ref: json-schema-definitions://canvas.module/color
+`,
+    );
+    await writeFile(
+      path.join(root, 'src/components/nav/index.tsx'),
+      'export default function Nav() { return null; }',
+    );
+
+    await writeFile(
+      path.join(root, 'pages/home.json'),
+      JSON.stringify({
+        title: 'Home',
+        elements: {
+          hero: { type: 'js.nav', props: {} },
+        },
+      }),
+    );
+
+    await writeFile(
+      path.join(root, 'page-templates/default.json'),
+      JSON.stringify({
+        label: 'Default',
+        default: true,
+        elements: {
+          nav: {
+            type: 'js.nav',
+            props: { backgroundColor: 'canvas-color:brand-red' },
+          },
+          content: { type: 'marker.page_content', props: {} },
+        },
+      }),
+    );
+
+    let capturedPageTemplateSpec: unknown = null;
+    const siteData = {
+      baseUrl: 'https://canvas.example.test',
+      branding: { homeUrl: '/', siteName: 'Color and context', siteSlogan: '' },
+      jsonapiSettings: { apiPrefix: 'jsonapi' },
+    };
+
+    const payload = await buildPreviewPayload(
+      {
+        mode: 'page',
+        inputPath: 'pages/home.json',
+        projectRoot: root,
+      },
+      {
+        bundleInteractivePreview: async (options) => {
+          capturedPageTemplateSpec = options.pageTemplateSpec ?? null;
+          return { js: '', css: '.nav{display:block;}', siteData };
+        },
+      },
+    );
+
+    const navProps = (
+      capturedPageTemplateSpec as {
+        elements: { nav: { props: Record<string, unknown> } };
+      } | null
+    )?.elements.nav.props;
+    expect(navProps?.backgroundColor).toMatchObject({
+      cssVariable: '--brand-red',
+      cssColorValue: '#cc1a1a',
+    });
+    expect(payload.ok).toBe(true);
+    expect(payload.iframeHtml).toContain('--brand-red:');
+    expect(payload.iframeHtml?.indexOf('--brand-red:')).toBeLessThan(
+      payload.iframeHtml?.indexOf('.nav{') ?? -1,
+    );
+    expect(payload.iframeHtml).toContain(
+      JSON.stringify({ branding: siteData.branding }),
+    );
+    expect(payload.iframeHtml).toContain(
+      'window.drupalSettings.canvasData.v0.jsonapiSettings.apiPrefix = "jsonapi";',
+    );
   });
 
   it('keeps interactive render mode and fails when interactive bundle throws', async () => {
@@ -444,6 +556,143 @@ describe('preview-payload', () => {
     expect(payload.errors[0]?.message).toContain(
       'components discovered under componentDir ("src/components")',
     );
+  });
+
+  it('wraps generated previews in the drupal-canvas context providers', () => {
+    const source = buildPreviewRuntimeEntrySource({
+      spec: { root: 'root', elements: {} },
+      componentSources: [],
+      cssEntryPaths: [],
+      runtimeSettings: {
+        baseUrl: 'https://static.example.test',
+        jsonapiPrefix: 'static',
+      },
+    });
+    expect(source).toContain(
+      "import { createJsonApiClient } from 'drupal-canvas'; import { CanvasContextProvider, JsonApiClientProvider } from 'drupal-canvas/react';",
+    );
+    expect(source).toContain(
+      "import canvasSiteData from 'virtual:drupal-canvas/site-data';",
+    );
+    // The hooks resolve the backend from the same inputs as the bootstrap
+    // script (inlined static settings, site data module, preview origin),
+    // never from the legacy settings global.
+    expect(source).toContain(
+      'const canvasStaticSettings = {"baseUrl":"https://static.example.test","jsonapiPrefix":"static"};',
+    );
+    expect(source).toContain(
+      'const canvasResolvedSiteData = resolvePreviewSiteData(canvasStaticSettings, canvasSiteData);',
+    );
+    expect(source).toContain(
+      'const canvasContext = createWorkbenchContext(canvasResolvedSiteData, canvasPreviewOrigin);',
+    );
+    expect(source).toContain(
+      'const canvasJsonApiConfig = createWorkbenchJsonApiConfig(canvasResolvedSiteData, canvasPreviewOrigin);',
+    );
+    expect(source).not.toContain('canvasLegacySettings');
+    expect(source.indexOf('window.drupalSettings')).toBeLessThan(
+      source.indexOf('const canvasResolvedSiteData'),
+    );
+    expect(
+      source.slice(source.indexOf('const canvasStaticSettings')),
+    ).not.toContain('drupalSettings');
+    expect(source).toContain(
+      'React.createElement(CanvasContextProvider, { context: canvasContext }, withClient)',
+    );
+    expect(source).toContain(
+      'page: { pageTitle: "", breadcrumbs: [], mainEntity: null }',
+    );
+  });
+
+  it('declares the Workbench runtime and site data in the bootstrap script', () => {
+    const html = buildIframeHtml(
+      'console.log("runtime");',
+      '',
+      { baseUrl: 'https://canvas.example.test', jsonapiPrefix: null },
+      {
+        baseUrl: 'https://canvas.example.test',
+        branding: { homeUrl: '/', siteName: 'Site', siteSlogan: '' },
+        jsonapiSettings: { apiPrefix: 'jsonapi' },
+      },
+    );
+    expect(html).toContain(
+      'window.__drupalCanvasRuntime = { environment: "workbench" };',
+    );
+    expect(html).toContain(
+      'for (const [key, value] of Object.entries({"branding":{"homeUrl":"/","siteName":"Site","siteSlogan":""}}))',
+    );
+    expect(html).toContain(
+      'window.drupalSettings.canvasData.v0.jsonapiSettings.apiPrefix = "jsonapi";',
+    );
+    expect(html).toContain(
+      'window.drupalSettings.canvasData.v0.baseUrl = canvasPreviewBaseUrl;',
+    );
+  });
+
+  it('resolves one site-data snapshot for the legacy settings and the hooks', () => {
+    // Discovered site data wins over the static settings; the static
+    // settings fill what discovery did not provide.
+    expect(
+      resolvePreviewSiteData(
+        { baseUrl: 'https://static.example.test', jsonapiPrefix: 'static' },
+        {
+          baseUrl: 'https://discovered.example.test',
+          jsonapiSettings: { apiPrefix: 'discovered' },
+          branding: { homeUrl: '/', siteName: 'Site', siteSlogan: '' },
+        },
+      ),
+    ).toEqual({
+      baseUrl: 'https://discovered.example.test',
+      jsonapiSettings: { apiPrefix: 'discovered' },
+      branding: { homeUrl: '/', siteName: 'Site', siteSlogan: '' },
+    });
+    expect(
+      resolvePreviewSiteData(
+        { baseUrl: 'https://static.example.test', jsonapiPrefix: 'static' },
+        { branding: { homeUrl: '/', siteName: 'Site', siteSlogan: '' } },
+      ),
+    ).toEqual({
+      baseUrl: 'https://static.example.test',
+      jsonapiSettings: { apiPrefix: 'static' },
+      branding: { homeUrl: '/', siteName: 'Site', siteSlogan: '' },
+    });
+    // "JSON:API not installed" survives for legacy clients and hooks alike.
+    expect(
+      resolvePreviewSiteData(
+        { baseUrl: null, jsonapiPrefix: 'static' },
+        { baseUrl: 'https://site.example.test', jsonapiSettings: null },
+      ),
+    ).toEqual({ baseUrl: 'https://site.example.test', jsonapiSettings: null });
+    expect(
+      resolvePreviewSiteData({ baseUrl: null, jsonapiPrefix: null }, null),
+    ).toBeNull();
+
+    const html = buildIframeHtml(
+      'console.log("runtime");',
+      '',
+      { baseUrl: 'https://static.example.test', jsonapiPrefix: 'static' },
+      {
+        baseUrl: 'https://discovered.example.test',
+        jsonapiSettings: { apiPrefix: 'discovered' },
+      },
+    );
+    expect(html).toContain(
+      'const canvasPreviewBaseUrl = "https://discovered.example.test";',
+    );
+    expect(html).toContain(
+      'window.drupalSettings.canvasData.v0.jsonapiSettings.apiPrefix = "discovered";',
+    );
+    expect(html).not.toContain('static.example.test');
+    const notInstalled = buildIframeHtml(
+      '',
+      '',
+      { baseUrl: null, jsonapiPrefix: 'static' },
+      { baseUrl: 'https://site.example.test', jsonapiSettings: null },
+    );
+    expect(notInstalled).toContain(
+      'window.drupalSettings.canvasData.v0.jsonapiSettings = null;',
+    );
+    expect(notInstalled).not.toContain('apiPrefix = "static"');
   });
 
   it('builds runtime source that bootstraps React and drupalSettings defaults', () => {
@@ -606,5 +855,28 @@ describe('preview-payload', () => {
 
     expect(bundled.js).toContain('jsxDEV');
     expect(bundled.js).not.toContain('React.createElement("section"');
+  });
+
+  describe('withBrandKitColorCss', () => {
+    it('prepends the brand kit color block to bundled CSS', async () => {
+      const projectRoot = await makeTemporaryDirectory();
+      await writeFile(
+        path.join(projectRoot, 'canvas.brand-kit.json'),
+        JSON.stringify({
+          colors: { 'brand-red': '#cc0000' },
+        }),
+      );
+
+      expect(withBrandKitColorCss(projectRoot, 'body { margin: 0; }')).toBe(
+        ':root {\n  --brand-red: #cc0000;\n}\n\nbody { margin: 0; }',
+      );
+    });
+
+    it('returns the CSS unchanged when the project has no brand kit colors', async () => {
+      const projectRoot = await makeTemporaryDirectory();
+      expect(withBrandKitColorCss(projectRoot, 'body { margin: 0; }')).toBe(
+        'body { margin: 0; }',
+      );
+    });
   });
 });

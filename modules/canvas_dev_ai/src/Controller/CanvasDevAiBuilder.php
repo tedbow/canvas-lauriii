@@ -18,6 +18,8 @@ use Drupal\canvas_ai\CanvasAiChatHelper;
 use Drupal\canvas_ai\CanvasAiPageBuilderHelper;
 use Drupal\canvas_ai\CanvasAiTempStore;
 use Drupal\canvas_ai\Plugin\AiFunctionCall\BuilderResponseFunctionCallInterface;
+use Drupal\canvas_ai\Plugin\AiFunctionCall\EditComponents;
+use Drupal\canvas_ai\Plugin\AiFunctionCall\PlaceComponents;
 use Drupal\Component\Plugin\PluginManagerInterface;
 use Drupal\Component\Serialization\Json;
 use Drupal\Component\Utility\Environment;
@@ -37,7 +39,14 @@ use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 /**
  * Renders the Drupal Canvas Dev AI calls.
  *
- * @todo Replace the single request/response call with the real hop loop in https://git.drupalcode.org/project/canvas/-/work_items/3591777
+ * A turn is one user message, run as several requests under one request_id:
+ * the agent pauses after each tool decision and the client re-POSTs until
+ * it reports finished. A conversation is several turns under one
+ * conversation_id: when the site opts in on the Agents & Tools form, the
+ * agent's own history, tool calls and results included, is kept when a turn
+ * ends and resumed by the next, with each placement result cut to its success
+ * sentence. Otherwise every turn is seeded from the client transcript, which
+ * carries text only.
  *
  * @internal
  */
@@ -131,7 +140,7 @@ final class CanvasDevAiBuilder extends ControllerBase {
     }
     $agent = $this->agentManager->createInstance($agent_to_call);
     \assert($agent instanceof AiAgentEntityWrapper);
-    $this->prepareAgent($agent, $prompt, $image_files, $stored === NULL ? NULL : $stored['state']);
+    $this->prepareAgent($agent, $prompt, $image_files, $stored === NULL ? NULL : $stored['state'], $agent_to_call);
 
     // Store the current layout in the temp store. This will be later used by
     // the ai agents.
@@ -164,7 +173,7 @@ final class CanvasDevAiBuilder extends ControllerBase {
     $agent->setModelName($default['model_id']);
     $agent->setAiConfiguration([]);
     $agent->setCreateDirectly(TRUE);
-    $agent->setTokenContexts($this->buildTokenContexts($prompt, $current_layout));
+    $agent->setTokenContexts($this->buildTokenContexts($prompt));
     // Stop the agent after a single tool decision, so each request returns
     // quickly and the frontend drives the next hop.
     $agent->setLooped(FALSE);
@@ -174,7 +183,7 @@ final class CanvasDevAiBuilder extends ControllerBase {
     }
     catch (\Exception $e) {
       // Drop any half-serialized state so the next turn starts clean.
-      $this->canvasAiTempStore->deleteStoredAgentState($job_id);
+      $this->forgetTurn($prompt);
       return $this->buildErrorResponse($e->getMessage(), $job_id);
     }
 
@@ -184,8 +193,15 @@ final class CanvasDevAiBuilder extends ControllerBase {
     if ($should_continue) {
       $this->canvasAiTempStore->setStoredAgentState($job_id, $agent_to_call, $agent->toArray());
     }
+    elseif ($solvability === AiAgentInterface::JOB_NOT_SOLVABLE) {
+      // The agent gave up: it ran out of loops or the provider failed. What
+      // it did in this turn is not a state the conversation should resume
+      // from, so the next turn seeds from the client transcript again.
+      $this->forgetTurn($prompt);
+    }
     else {
       $this->canvasAiTempStore->deleteStoredAgentState($job_id);
+      $this->storeConversationState($prompt, $agent_to_call, $agent);
     }
 
     if ($solvability === AiAgentInterface::JOB_SOLVABLE) {
@@ -357,8 +373,6 @@ final class CanvasDevAiBuilder extends ControllerBase {
    * @throws \RuntimeException
    *   Carrying the message shown to the user.
    *
-   * @todo Reject a main agent the selection form could not have offered, once the page builder and Drupal Canvas agents exist, in https://git.drupalcode.org/project/canvas/-/work_items/3591777
-   *
    * @see \Drupal\canvas_dev_ai\Form\CanvasDevAiAgentSelectionForm
    */
   private function resolveAgentId(array $prompt): string {
@@ -388,7 +402,10 @@ final class CanvasDevAiBuilder extends ControllerBase {
   }
 
   /**
-   * Resumes a paused chat turn, or seeds the agent for a new one.
+   * Prepares the agent for a hop.
+   *
+   * Resumes the paused turn, resumes the conversation for a new turn, or seeds
+   * a new conversation.
    *
    * @param \Drupal\ai_agents\PluginBase\AiAgentEntityWrapper $agent
    *   The agent to prepare.
@@ -399,8 +416,10 @@ final class CanvasDevAiBuilder extends ControllerBase {
    * @param array|null $state
    *   The state a previous hop of this turn parked, as written by the agent's
    *   ::toArray(), or NULL for a new turn.
+   * @param string $agent_id
+   *   The ID of the agent running this hop.
    */
-  private function prepareAgent(AiAgentEntityWrapper $agent, array $prompt, array $image_files, ?array $state): void {
+  private function prepareAgent(AiAgentEntityWrapper $agent, array $prompt, array $image_files, ?array $state, string $agent_id): void {
     if ($state !== NULL) {
       // ::fromArray() restores the chat history, which already holds the user
       // message, so seeding the chat input again would duplicate it.
@@ -415,7 +434,145 @@ final class CanvasDevAiBuilder extends ControllerBase {
     $agent->setChatInput(new ChatInput([
       new ChatMessage($task_message['role'], $message_xml, $image_files),
     ]));
+
+    // The conversation's earlier turns left the agent's own history, every
+    // tool call and tool result included. Resume from it rather than from
+    // the client transcript, which carries text only. Only the agent that
+    // wrote that history resumes it: to any other agent it describes work it
+    // never did. Selecting a different Tool between turns is allowed, so that
+    // case seeds from the transcript instead of failing the turn.
+    // @see \Drupal\canvas_dev_ai\Controller\CanvasDevAiBuilder::render()
+    $conversation_id = self::getConversationId($prompt);
+    $conversation = $conversation_id !== '' && $this->keepsToolCallsInHistory()
+      ? $this->canvasAiTempStore->getStoredConversationState($conversation_id)
+      : NULL;
+    if ($conversation !== NULL && $conversation['agent_id'] === $agent_id) {
+      // The loop counter is serialized with the state and drives three things
+      // in the agent: the chat input is appended to the history on loop 1
+      // only, the progress thread is started at loop 0 only, and max_loops
+      // is compared against it. Start this turn from 0 so the new message is
+      // read, its narration is recorded, and the ceiling bounds this turn.
+      // @see \Drupal\ai_agents\PluginBase\AiAgentEntityWrapper::determineSolvability()
+      // @see \Drupal\ai_agents\EventSubscriber\AgentStatusSubscriber
+      $resumed = $conversation['state'];
+      $resumed['looped'] = 0;
+      $agent->fromArray($resumed);
+      return;
+    }
     $agent->setChatHistory($this->canvasAiChatHelper->getFilteredChatHistory($messages));
+  }
+
+  /**
+   * Keeps the agent's history for the conversation's next turn.
+   *
+   * Called when a turn ended with the agent finished. Nothing is kept unless
+   * the site opted in. A state still carrying a tool call the agent parked but
+   * never ran cannot reach here: parking one leaves the agent unfinished, and
+   * an unfinished turn stores its own state for the next hop instead. The
+   * placement results in the kept history are cut to their success sentence,
+   * as the rest of their text only serves the turn that already ended.
+   *
+   * @param array $prompt
+   *   The decoded prompt.
+   * @param string $agent_id
+   *   The ID of the agent that ran the turn. Stored with the state, so a later
+   *   turn running another agent does not resume this agent's history.
+   * @param \Drupal\ai_agents\PluginBase\AiAgentEntityWrapper $agent
+   *   The agent that ran the turn.
+   *
+   * @see \Drupal\ai_agents\PluginBase\AiAgentEntityWrapper::determineSolvability()
+   */
+  private function storeConversationState(array $prompt, string $agent_id, AiAgentEntityWrapper $agent): void {
+    $conversation_id = self::getConversationId($prompt);
+    if ($conversation_id === '') {
+      return;
+    }
+    if (!$this->keepsToolCallsInHistory()) {
+      // Drop what an earlier turn may have kept while the setting was on, so
+      // turning it off means nothing is resumed from then on.
+      $this->canvasAiTempStore->deleteStoredConversationState($conversation_id);
+      return;
+    }
+    $this->canvasAiTempStore->setStoredConversationState($conversation_id, $agent_id, self::trimKeptToolResults($agent->toArray()));
+  }
+
+  /**
+   * Cuts each kept placement result down to its success sentence.
+   *
+   * The place_components and edit_components tools succeed with a verbose
+   * message whose details — assigned UUIDs, predicted layout, applied
+   * updates — only serve the turn the tool ran in, so the state a later
+   * turn resumes keeps the success sentence alone. Failure results are
+   * kept whole.
+   *
+   * @param array $state
+   *   The agent state, as written by its ::toArray().
+   *
+   * @return array
+   *   The state, with each trimmed tool message carrying the sentence only.
+   */
+  private static function trimKeptToolResults(array $state): array {
+    foreach ($state['chat_history'] ?? [] as $index => $message) {
+      if ($message['role'] !== 'tool') {
+        continue;
+      }
+      foreach ([PlaceComponents::SUCCESS_MESSAGE, EditComponents::SUCCESS_MESSAGE] as $success_message) {
+        if (\str_starts_with($message['text'], $success_message)) {
+          $state['chat_history'][$index]['text'] = $success_message;
+          break;
+        }
+      }
+    }
+    return $state;
+  }
+
+  /**
+   * Drops the state of a turn that did not end cleanly.
+   *
+   * Both the turn's own state and the conversation's are removed: the next
+   * turn seeds the agent from the client transcript, as the first turn of a
+   * conversation does, rather than from a history that stops before the
+   * failed turn.
+   *
+   * @param array $prompt
+   *   The decoded prompt.
+   */
+  private function forgetTurn(array $prompt): void {
+    $this->canvasAiTempStore->deleteStoredAgentState($prompt['request_id']);
+    $conversation_id = self::getConversationId($prompt);
+    if ($conversation_id !== '') {
+      $this->canvasAiTempStore->deleteStoredConversationState($conversation_id);
+    }
+  }
+
+  /**
+   * Reads the conversation ID a request carries.
+   *
+   * The dev wizard sends the same value with every turn of one chat session
+   * and a new one when the chat is cleared. A request without one runs its
+   * turn on its own: nothing is resumed and nothing is kept.
+   *
+   * @param array $prompt
+   *   The decoded prompt.
+   *
+   * @return string
+   *   The conversation ID, or an empty string when the request sent none.
+   */
+  private static function getConversationId(array $prompt): string {
+    $conversation_id = $prompt['conversation_id'] ?? '';
+    return \is_string($conversation_id) ? $conversation_id : '';
+  }
+
+  /**
+   * Whether finished turns keep their agent state for the conversation.
+   *
+   * Off by default: the kept tool calls and results are sent to the model on
+   * every later turn, so the site opts in on the Agents & Tools form.
+   *
+   * @see \Drupal\canvas_dev_ai\Form\CanvasDevAiAgentSelectionForm
+   */
+  private function keepsToolCallsInHistory(): bool {
+    return (bool) $this->config('canvas_dev_ai.settings')->get('keep_tool_calls_in_history');
   }
 
   /**
@@ -499,15 +656,13 @@ final class CanvasDevAiBuilder extends ControllerBase {
    *
    * @param array $prompt
    *   The decoded prompt.
-   * @param string $current_layout
-   *   The JSON-encoded current layout.
    *
    * @return array
    *   The token contexts.
    *
    * @see \Drupal\canvas_ai\Hook\CanvasAiHooks::canvas_ai_tokens()
    */
-  private function buildTokenContexts(array $prompt, string $current_layout): array {
+  private function buildTokenContexts(array $prompt): array {
     $selected_component = $prompt['selected_component'] ?? NULL;
     $component_agent_dynamic_state = $this->canvasAiPageBuilderHelper->generateComponentAgentDynamicPromptSection([
       'selected_component' => $selected_component,
@@ -524,10 +679,9 @@ final class CanvasDevAiBuilder extends ControllerBase {
       'page_description' => $prompt['page_description'] ?? NULL,
       'active_component_uuid' => $prompt['active_component_uuid'] ?? 'None',
       'component_agent_dynamic_state' => $component_agent_dynamic_state,
-      'available_regions' => Json::encode($this->canvasAiPageBuilderHelper->getAvailableRegions($current_layout)),
       // JSON-encode so the libraries render as readable data in the system
       // prompt token rather than the string "Array".
-      'custom_libraries' => Json::encode(self::getSupportedLibraries()),
+      'custom_libraries' => Json::encode($this->canvasAiPageBuilderHelper->getSupportedLibraries()),
     ];
   }
 
@@ -554,13 +708,6 @@ final class CanvasDevAiBuilder extends ControllerBase {
           $structured_output['canvas_page_data'] += $response['canvas_page_data'];
         }
         $response = array_merge($response, $structured_output);
-      }
-      // @todo Remove this branch without replacing it: neither agent runs here, and a file-upload turn carries no layout of its own, so deleting the key at turn end would leave the layout-reading tools with nothing. See https://git.drupalcode.org/project/canvas/-/work_items/3591777
-      if (\in_array($tool->getPluginId(), [
-        'ai_agents::ai_agent::canvas_page_builder_agent',
-        'ai_agents::ai_agent::canvas_template_builder_agent',
-      ], TRUE)) {
-        $this->canvasAiTempStore->deleteData(CanvasAiTempStore::CURRENT_LAYOUT_KEY);
       }
     }
     // Only the final hop carries a message: the agent's answer to the user.
@@ -665,77 +812,6 @@ final class CanvasDevAiBuilder extends ControllerBase {
       }
     }
     return $text;
-  }
-
-  /**
-   * Gets the libraries supported by Canvas.
-   *
-   * @return array
-   *   The array of supported libraries.
-   */
-  protected static function getSupportedLibraries(): array {
-    return [
-      [
-        "name" => "formatted_text",
-        "type" => "Built-in custom package",
-        "description" => "A built-in component to render text with trusted HTML using [`dangerouslySetInnerHTML`](https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html). The content is safe when processed through Drupal's filter system that is [correctly configured](https://www.drupal.org/docs/administering-a-drupal-site/security-in-drupal/configuring-text-formats-aka-input-formats-for-security).",
-        "code" => "```jsx\nimport { FormattedText } from 'drupal-canvas';\n\nexport default function Example() {\n  return (\n    <FormattedText>\n      <em>Hello, world!</em>\n    </FormattedText>\n  );\n}\n```",
-      ],
-      [
-        "name" => "cn",
-        "type" => "Built-in custom package",
-        "description" => "Utility for combining Tailwind CSS classes.",
-        "code" => "```jsx\nimport { cn } from 'drupal-canvas';\n\nexport default function Example() {\n  return <ControlDots className=\"top-4 left-4 stroke-white absolute\" />;\n}\n\nconst ControlDots = ({ className }) => (\n  <svg\n    xmlns=\"http://www.w3.org/2000/svg\"\n    viewBox=\"0 0 31 9\"\n    fill=\"none\"\n    strokeWidth=\"2\"\n    className={cn('w-12', className)}\n  >\n    <ellipse cx=\"4.13\" cy=\"4.97\" rx=\"3.13\" ry=\"2.97\" />\n    <ellipse cx=\"15.16\" cy=\"4.97\" rx=\"3.13\" ry=\"2.97\" />\n    <ellipse cx=\"26.19\" cy=\"4.97\" rx=\"3.13\" ry=\"2.97\" />\n  </svg>\n);\n```",
-      ],
-      [
-        "name" => "tailwind",
-        "type" => "Bundled npm package",
-        "description" => "Tailwind 4 is available to all components by default. The global CSS is added to all pages with the `@import \"tailwindcss\"` directive included. You can use the [`@theme` directive to customize theme variables](https://tailwindcss.com/docs/theme). For example, you can add a new color to your project by defining a theme variable like `--color-drupal-blue`: Now you can use utility classes like `bg-drupal-blue`, `text-drupal-blue`, or `fill-drupal-blue` in your component markup:",
-        "code" => "```css\n@theme {\n  --color-drupal-blue: #009cde;\n}\n``` \n```jsx\nexport default function Example() {\nreturn <div className=\"bg-drupal-blue\">Drupal Blue</div>;\n}\n```",
-      ],
-      [
-        "name" => "clsx",
-        "type" => "Bundled npm package",
-        "description" => "A tiny utility for constructing `className` strings conditionally. Also serves as a faster & smaller drop-in replacement for the `classnames` module.",
-        "code" => "```jsx\nimport { clsx } from 'clsx'\n\nexport default function Example() {\n  return (\n    <div className={clsx('foo', true && 'bar', 'baz');} />\n    // => 'foo bar baz'\n  );\n};\n```",
-      ],
-      [
-        "name" => "class_variance_authority",
-        "type" => "Bundled npm package",
-        "description" => "CVA helps you define components with multiple visual variants (like size, color, state) in a clean, type-safe way. Instead of manually concatenating CSS classes or writing complex conditional logic, you define variants upfront and let CVA handle the class composition.",
-        "code" => "```js\nimport { cva } from 'class-variance-authority';\n\nconst button = cva(\n  'font-semibold border rounded', // base classes\n  {\n    variants: {\n      intent: {\n        primary: 'bg-blue-500 text-white border-blue-500',\n        secondary: 'bg-gray-200 text-gray-900 border-gray-200',\n      },\n      size: {\n        small: 'text-sm py-1 px-2',\n        medium: 'text-base py-2 px-4',\n      },\n    },\n    defaultVariants: {\n      intent: 'primary',\n      size: 'medium',\n    },\n  },\n);\n\n// Usage\nbutton({ intent: 'secondary', size: 'small' });\n// Returns: \"font-semibold border rounded bg-gray-200 text-gray-900 border-gray-200 text-sm py-1 px-2\"\n```",
-      ],
-      [
-        "name" => "json_api_client",
-        "type" => "Bundled npm package",
-        "description" => "A JSON:API client for fetching Drupal content from code components. Use it with drupal-jsonapi-params to build query strings and swr to load and cache remote data.",
-        "code" => "```js\nimport { JsonApiClient } from '@drupal-api-client/json-api-client';\nimport { DrupalJsonApiParams } from 'drupal-jsonapi-params';\nimport useSWR from 'swr';\n```",
-      ],
-      [
-        "name" => "drupal_jsonapi_params",
-        "type" => "Bundled npm package",
-        "description" => "A helper package for generating JSON:API query strings, including includes, filters, fields, sorts, and pagination.",
-        "code" => "```js\nimport { DrupalJsonApiParams } from 'drupal-jsonapi-params';\n\nconst params = new DrupalJsonApiParams()\n  .addInclude(['field_media_image'])\n  .addFields('node--article', ['title', 'path', 'field_media_image']);\n```",
-      ],
-      [
-        "name" => "swr",
-        "type" => "Bundled npm package",
-        "description" => "A React data fetching hook for loading, caching, and revalidating content in code components.",
-        "code" => "```js\nimport useSWR from 'swr';\n\nconst { data, error, isLoading } = useSWR('/jsonapi/node/article', fetcher);\n```",
-      ],
-      [
-        "name" => "tailwind_merge",
-        "type" => "Bundled npm package",
-        "description" => "A utility function to efficiently merge Tailwind CSS classes in JS without style conflicts.",
-        "code" => "```js\nimport { twMerge } from 'tailwind-merge';\n\ntwMerge('px-2 py-1 bg-red hover:bg-dark-red', 'p-3 bg-[#B91C1C]');\n// → 'hover:bg-dark-red p-3 bg-[#B91C1C]'\n```",
-      ],
-      [
-        "name" => 'tailwindcss_typography',
-        "type" => "Bundled npm package",
-        "description" => "A Tailwind CSS plugin that provides a set of pre-configured typography classes for consistent and readable text styles.",
-        "code" => "```js\n<FormattedText className=\"prose md:prose-lg lg:prose-xl\">\n  {body}\n</FormattedText>\n```",
-      ],
-    ];
   }
 
 }

@@ -1,14 +1,13 @@
 import { useCallback } from 'react';
 import clsx from 'clsx';
-import { useParams } from 'react-router';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import BrandKitIcon from '@assets/icons/brand-kit.svg?react';
 import ExtensionIcon from '@assets/icons/extension-sm.svg?react';
+import HeadlessIcon from '@assets/icons/headless.svg?react';
 import TemplateIcon from '@assets/icons/template.svg?react';
 import {
   CodeIcon,
   FileTextIcon,
-  GlobeIcon,
   LayersIcon,
   PlusIcon,
 } from '@radix-ui/react-icons';
@@ -159,7 +158,7 @@ export const SideMenu: React.FC<SideMenuProps> = () => {
       type: 'link',
       id: 'headless',
       href: '/headless/',
-      icon: <GlobeIcon />,
+      icon: <HeadlessIcon />,
       label: 'Headless frontends',
       // Injected when the user may administer the Canvas Headless frontend
       // list. Unlike the preview settings, this flag is present before the
@@ -178,33 +177,31 @@ export const SideMenu: React.FC<SideMenuProps> = () => {
       enabled: true,
       hidden: !hasExtensions,
     },
-    ...pageExtensions.map(
-      (ext): SideMenuLink => ({
-        type: 'link',
-        id: `page-ext-${ext.id}`,
-        href: `/app/${ext.id}`,
-        icon: ext.icon ? (
-          <span
-            className={styles.maskIcon}
-            style={{
-              maskImage: `url(${ext.icon})`,
-              WebkitMaskImage: `url(${ext.icon})`,
-            }}
-          />
-        ) : (
-          <ExtensionIcon />
-        ),
-        label: ext.name,
-        hidden: false,
-      }),
-    ),
+    ...pageExtensions.map((ext): SideMenuLink => ({
+      type: 'link',
+      id: `page-ext-${ext.id}`,
+      href: `/app/${ext.id}`,
+      icon: ext.icon ? (
+        <span
+          className={styles.maskIcon}
+          style={{
+            maskImage: `url(${ext.icon})`,
+            WebkitMaskImage: `url(${ext.icon})`,
+          }}
+        />
+      ) : (
+        <ExtensionIcon />
+      ),
+      label: ext.name,
+      hidden: false,
+    })),
     {
       type: 'button',
       id: 'brandKit',
       icon: <BrandKitIcon />,
       label: 'Brand kit',
       enabled: true,
-      hidden: !hasPermission('brandKit') || !getCanvasSettings()?.devMode,
+      hidden: !hasPermission('brandKit'),
     },
   ];
 

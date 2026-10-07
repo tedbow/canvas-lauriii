@@ -51,6 +51,7 @@ import { patternApi } from '@/services/patterns';
 import { pendingChangesApi } from '@/services/pendingChangesApi';
 import { personalizationApi } from '@/services/personalization';
 import { previewApi } from '@/services/preview';
+import { workspacesApi } from '@/services/workspacesApi';
 import { rtkQueryErrorHandler } from '@/utils/rtkQuery-error';
 
 import type { Action, Middleware, ThunkAction } from '@reduxjs/toolkit';
@@ -171,6 +172,7 @@ const rootReducer = combineSlices(
   notificationsApi,
   notificationsSlice,
   pendingChangesApi,
+  workspacesApi,
   publishReviewSlice,
   contentApi,
   contentEntityReferenceApi,
@@ -265,6 +267,7 @@ export const makeStore = (preloadedState?: Partial<RootState>) => {
         notificationsApi.middleware,
         undoRedoActionIdMiddleware,
         pendingChangesApi.middleware,
+        workspacesApi.middleware,
         contentApi.middleware,
         contentEntityReferenceApi.middleware,
         rtkQueryErrorHandler, // Add the error handling middleware

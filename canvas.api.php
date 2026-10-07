@@ -14,6 +14,7 @@ use Drupal\canvas\PropShape\CandidateStorablePropShape;
 use Drupal\canvas\Render\ImportMapResponseAttachmentsProcessor;
 use Drupal\canvas\TypedData\BetterEntityDataDefinition;
 use Drupal\Core\Extension\ExtensionPathResolver;
+use Drupal\link\LinkTitleVisibility;
 
 /**
  * @addtogroup hooks
@@ -42,7 +43,7 @@ function hook_canvas_storable_prop_shape_alter(CandidateStorablePropShape $stora
     // @see \Drupal\link\Plugin\Field\FieldType\LinkItem::defaultFieldSettings()
     $storable_prop_shape->fieldInstanceSettings = [
       // This shape only needs the URI, not a title.
-      'title' => DRUPAL_DISABLED,
+      'title' => LinkTitleVisibility::Disabled->value,
     ];
     // @see \Drupal\link\Plugin\Field\FieldWidget\LinkWidget
     $storable_prop_shape->fieldWidget = 'link_default';
@@ -139,6 +140,46 @@ function hook_canvas_importmap_alter(array &$import_maps): void {
 
   // Replace an existing global import with a custom build.
   $import_maps[ImportMapResponseAttachmentsProcessor::GLOBAL_IMPORTS]['clsx'] = \base_path() . $module_path . '/js/custom-clsx.js';
+}
+
+/**
+ * Reacts to a Canvas staged write into a workspace.
+ *
+ * Invoked after Canvas persists an auto-save (snapshot row, deferred buffer
+ * row, or key-value entry) into the active workspace. Entity saves that core
+ * tracks in the workspace (node forms, workspace_config rows) do not pass
+ * through here; implement hook_entity_presave() for those. Publish-time
+ * staging is not an editorial write: check
+ * \Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave::isPublishTimeStaging()
+ * to ignore it.
+ *
+ * @param \Drupal\workspaces\WorkspaceInterface $workspace
+ *   The workspace the write was staged into.
+ *
+ * @see \Drupal\canvas\AutoSave\AutoSaveManager::saveEntity()
+ */
+function hook_canvas_workspace_staged_write(\Drupal\workspaces\WorkspaceInterface $workspace): void {
+  if ($workspace->hasField('my_module_reviewed')) {
+    $workspace->set('my_module_reviewed', FALSE)->save();
+  }
+}
+
+/**
+ * Alters the client-side representation of a workspace.
+ *
+ * Every workspace API response returns this representation; see the
+ * `Workspace` schema in openapi.yml for the keys Canvas itself provides and
+ * the optional keys sub-modules add.
+ *
+ * @param array<string, mixed> $normalized
+ *   The normalized workspace.
+ * @param \Drupal\workspaces\WorkspaceInterface $workspace
+ *   The workspace being normalized.
+ *
+ * @see \Drupal\canvas\Workspace\WorkspaceNormalizer::normalize()
+ */
+function hook_canvas_workspace_normalize_alter(array &$normalized, \Drupal\workspaces\WorkspaceInterface $workspace): void {
+  $normalized['myModuleReviewed'] = (bool) $workspace->get('my_module_reviewed')->value;
 }
 
 /**

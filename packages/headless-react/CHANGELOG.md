@@ -1,5 +1,63 @@
 # @drupal-canvas/headless-react
 
+## 0.5.1
+
+### Patch Changes
+
+- aaaa869: Delegate eligible embedded link clicks in draft mode to the host when
+  it advertises navigation support.
+- Updated dependencies [aaaa869]
+- Updated dependencies [73d9fb8]
+- Updated dependencies [aaaa869]
+  - @drupal-canvas/headless@0.11.0
+  - drupal-canvas@0.7.1
+
+## 0.5.0
+
+### Minor Changes
+
+- ed541e3: `CanvasComponentTree` accepts `context` (from `fetchPage()`'s
+  `page.context`) and `jsonApi` (from the SDK's `getJsonApiRuntimeConfig()`)
+  props and mounts the `drupal-canvas` context and JSON:API client providers for
+  registered components. An explicit `context` prop takes precedence over an
+  outer `CanvasContextProvider`; without either, the hooks report missing
+  context. Server rendering gets the same draft-aware client as the browser (SWR
+  fallback data renders, hydration matches) without network access in a draft
+  session: draft requests made while rendering fail with
+  `ServerRenderingDraftFetchError`, which points to `getClient()` prefetching
+  and SWR fallback data.
+
+### Patch Changes
+
+- Updated dependencies [ed541e3]
+- Updated dependencies [ed541e3]
+  - drupal-canvas@0.7.0
+  - @drupal-canvas/headless@0.10.0
+
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [e1fae30]
+  - @drupal-canvas/headless@0.9.0
+
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [252aa34]
+  - @drupal-canvas/headless@0.8.0
+
+## 0.4.1
+
+### Patch Changes
+
+- bde9b02: Ship a compiled `dist` build instead of raw TypeScript source,
+  matching `@drupal-canvas/headless`.
+- Updated dependencies [98b764a]
+- Updated dependencies [fc2cbd1]
+  - @drupal-canvas/headless@0.7.0
+
 ## 0.4.0
 
 ### Minor Changes

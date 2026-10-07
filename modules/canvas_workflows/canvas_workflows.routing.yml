@@ -1,0 +1,41 @@
+canvas_workflows.api.workspaces.schedule:
+  path: '/canvas/api/v0/workspaces/{workspace}/schedule'
+  defaults:
+    _controller: 'Drupal\canvas_workflows\Controller\ApiWorkspaceReviewController::schedule'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [POST]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
+canvas_workflows.api.workspaces.status:
+  path: '/canvas/api/v0/workspaces/{workspace}/status'
+  defaults:
+    _controller: 'Drupal\canvas_workflows\Controller\ApiWorkspaceReviewController::status'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [POST]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'
+
+canvas_workflows.api.workspaces.unschedule:
+  path: '/canvas/api/v0/workspaces/{workspace}/schedule'
+  defaults:
+    _controller: 'Drupal\canvas_workflows\Controller\ApiWorkspaceReviewController::unschedule'
+  requirements:
+    _canvas_authentication_required: TRUE
+    _canvas_ui_access: 'TRUE'
+  methods: [DELETE]
+  options:
+    parameters:
+      workspace:
+        type: entity:workspace
+    _format: 'json'

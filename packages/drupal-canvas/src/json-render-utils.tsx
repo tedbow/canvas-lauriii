@@ -5,7 +5,7 @@ import { schema } from '@json-render/react/schema';
 
 import canvasSchema from '../../../schema.json';
 
-import type { ComponentType, ReactNode } from 'react';
+import type { ComponentType, ReactElement, ReactNode } from 'react';
 import type { ComponentMetadata } from '@drupal-canvas/discovery';
 import type { PropResolutionContext, Spec, UIElement } from '@json-render/core';
 
@@ -301,7 +301,7 @@ function renderSpecElement(
   elements: Spec['elements'],
   registry: ComponentRegistry,
   ctx: PropResolutionContext,
-): React.ReactNode {
+): ReactNode {
   const element = elements[key];
   if (!element) {
     throw new Error(`Element key "${key}" not found in elements map.`);
@@ -341,7 +341,7 @@ function renderSpecElement(
     ...normalizedProps,
     ...slots,
     ...(children.length > 0 ? { children } : {}),
-  });
+  }) as ReactElement;
 }
 
 function renderSpecChild(
@@ -366,10 +366,7 @@ function renderSpecChild(
  * @param registry - Component registry to use for rendering.
  * @see {@link defineComponentRegistry}
  */
-export function renderSpec(
-  spec: Spec,
-  registry: ComponentRegistry,
-): React.ReactNode {
+export function renderSpec(spec: Spec, registry: ComponentRegistry): ReactNode {
   const ctx: PropResolutionContext = {
     stateModel: spec.state ?? {},
   };
@@ -386,7 +383,7 @@ export function renderSpec(
 export function renderCanvasTree(
   components: CanvasComponentTree,
   registry: ComponentRegistry,
-): React.ReactNode {
+): ReactNode {
   const spec = canvasTreeToSpec(components);
   return renderSpec(spec, registry);
 }
@@ -395,6 +392,8 @@ export function renderCanvasTree(
  * Canvas JSON Schema `$ref` prefix used in component metadata.
  */
 const CANVAS_REF_PREFIX = 'json-schema-definitions://canvas.module/';
+const COLOR_DEF_KEY = 'color';
+const COLOR_DEF_LOCAL_REF = '#/$defs/color';
 
 /**
  * Rewrites Canvas-specific `$ref` URIs to local JSON Pointer refs (`#/$defs/...`)
@@ -420,13 +419,31 @@ function rewriteCanvasRefs(node: unknown): unknown {
   return result;
 }
 
+function normalizeCanvasDefsForValidation(
+  defs: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...defs };
+  const colorDef = result[COLOR_DEF_KEY];
+  if (!colorDef || typeof colorDef !== 'object' || Array.isArray(colorDef)) {
+    return result;
+  }
+
+  const colorDefRecord = colorDef as Record<string, unknown>;
+  // The schema's color definition carries a self-ref sentinel used by Drupal.
+  // For Zod conversion we keep the string type and drop the self-reference.
+  if (colorDefRecord.$ref === COLOR_DEF_LOCAL_REF) {
+    delete colorDefRecord.$ref;
+  }
+
+  return result;
+}
+
 /**
  * Pre-rewritten Canvas $defs with local refs.
  */
-const canvasDefs = rewriteCanvasRefs(canvasSchema.$defs) as Record<
-  string,
-  unknown
->;
+const canvasDefs = normalizeCanvasDefsForValidation(
+  rewriteCanvasRefs(canvasSchema.$defs) as Record<string, unknown>,
+);
 
 /**
  * Recursively walks a JSON schema object, stripping `uri-reference` and

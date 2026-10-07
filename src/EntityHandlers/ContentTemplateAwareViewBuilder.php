@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\canvas\EntityHandlers;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\Entity\ContentTemplate;
 use Drupal\Component\Utility\NestedArray;
 use Drupal\Core\Cache\CacheableMetadata;
@@ -44,6 +45,15 @@ final class ContentTemplateAwareViewBuilder extends EntityViewBuilder {
 
   private AutoSaveManager $autoSaveManager;
 
+  private WorkspaceAutoSave $workspaceAutoSave;
+
+  /**
+   * Whether a Live copy exists, keyed by template ID.
+   *
+   * @var array<string, bool>
+   */
+  private array $liveCopyExists = [];
+
   /**
    * {@inheritdoc}
    */
@@ -53,6 +63,7 @@ final class ContentTemplateAwareViewBuilder extends EntityViewBuilder {
     $instance->entityTypeManager = $container->get(EntityTypeManagerInterface::class);
     $instance->routeMatch = $container->get(RouteMatchInterface::class);
     $instance->autoSaveManager = $container->get(AutoSaveManager::class);
+    $instance->workspaceAutoSave = $container->get(WorkspaceAutoSave::class);
     $original_view_builder = $instance->entityTypeManager
       ->getHandler($entity_type->id(), self::DECORATED_HANDLER_KEY);
     \assert($original_view_builder instanceof EntityViewBuilderInterface);
@@ -90,7 +101,10 @@ final class ContentTemplateAwareViewBuilder extends EntityViewBuilder {
     }
 
     if ($this->isPreview()) {
-      // Use the auto-saved version of the template if available.
+      // Use the auto-saved version of the template if available. Drafts
+      // staged as workspace-scoped configuration already load as the
+      // template itself inside the workspace; this still covers drafts the
+      // storage layer rejected, which only a snapshot row holds.
       $autoSaveData = $this->autoSaveManager->getAutoSaveEntity($template);
       if (!$autoSaveData->isEmpty()) {
         \assert($autoSaveData->entity instanceof ContentTemplate);
@@ -99,15 +113,34 @@ final class ContentTemplateAwareViewBuilder extends EntityViewBuilder {
         $autoSaveData->entity->setStatus(TRUE);
         return $autoSaveData->entity;
       }
-      // A newly created template is stored disabled before it has its first
-      // auto-save, but it still needs to render while it is being edited.
-      if (!$template->status()) {
-        $template = clone $template;
-        $template->setStatus(TRUE);
-      }
+    }
+
+    // A template is stored disabled until its first publish. While it is
+    // being edited it must render anyway: in the editor preview, and on any
+    // route inside the workspace that created it, where it exists only as
+    // that workspace's unpublished creation.
+    if (!$template->status() && ($this->isPreview() || $this->isUnpublishedWorkspaceCreation($template))) {
+      $template = clone $template;
+      $template->setStatus(TRUE);
     }
 
     return $template;
+  }
+
+  /**
+   * Whether a template exists only in the active workspace, unpublished.
+   *
+   * A disabled template that loads inside a workspace but has no Live copy
+   * was created in that workspace and has not been published yet. Outside the
+   * workspace it does not load at all, so Live is unaffected.
+   */
+  private function isUnpublishedWorkspaceCreation(ContentTemplate $template): bool {
+    if (!$this->workspaceAutoSave->hasActiveWorkspace()) {
+      return FALSE;
+    }
+    $id = $template->id();
+    $this->liveCopyExists[$id] ??= $this->workspaceAutoSave->loadUnchangedBase(ContentTemplate::ENTITY_TYPE_ID, $id) !== NULL;
+    return !$this->liveCopyExists[$id];
   }
 
   /**
@@ -132,9 +165,12 @@ final class ContentTemplateAwareViewBuilder extends EntityViewBuilder {
     }
 
     // If a template exists, no matter if disabled, this render array depends
-    // on it changing.
+    // on it changing. Which template loads, and whether a disabled one is
+    // effective, depends on the active workspace.
     if ($template) {
-      CacheableMetadata::createFromObject($template)->applyTo($defaults);
+      CacheableMetadata::createFromObject($template)
+        ->addCacheContexts(['workspace'])
+        ->applyTo($defaults);
     }
     // We need to ensure that as soon as a content template is added, we are
     // using it.
@@ -145,16 +181,18 @@ final class ContentTemplateAwareViewBuilder extends EntityViewBuilder {
         )->applyTo($defaults);
     }
 
+    // Content templates own the complete output, including new entities and
+    // non-default revisions, which do not have render cache keys.
+    if ($template && $template->status()) {
+      unset($defaults['#theme']);
+    }
+
     $keys = NestedArray::getValue($defaults, ['#cache', 'keys']);
     if ($keys !== NULL) {
       if ($template && $template->status()) {
         // This entity has render caching, so add a cache key indicating whether
         // or not it's opted into Canvas.
         $keys[] = 'with-canvas';
-        // We don't want to use the default theme template (such as
-        // `node.html.twig`) because any content entity type that uses Canvas'
-        // ContentTemplates is opting in to full control via Canvas.
-        unset($defaults['#theme']);
       }
       else {
         $keys[] = 'without-canvas';

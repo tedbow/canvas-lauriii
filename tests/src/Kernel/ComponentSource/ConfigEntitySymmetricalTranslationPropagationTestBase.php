@@ -121,6 +121,9 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
     return [
       $admin_permission,
       AutoSaveManager::PUBLISH_PERMISSION,
+      // Publishing publishes the workspace, which follows core access.
+      'view any workspace',
+      'edit any workspace',
       ...$this->additionalPreviewPermissions(),
     ];
   }
@@ -272,9 +275,12 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
 
     $admin_permission = $this->entity->getEntityType()->getAdminPermission();
     \assert(\is_string($admin_permission));
+    // Publishing publishes the workspace, which follows core workspace access.
     $this->setUpCurrentUser([], [
       $admin_permission,
       AutoSaveManager::PUBLISH_PERMISSION,
+      'view any workspace',
+      'edit any workspace',
     ]);
 
     $tree = $this->entity->getComponentTree();
@@ -462,7 +468,7 @@ abstract class ConfigEntitySymmetricalTranslationPropagationTestBase extends Tra
     // below is owned by the user that later publishes them.
     $admin_permission = $this->entity->getEntityType()->getAdminPermission();
     \assert(\is_string($admin_permission));
-    $this->setUpCurrentUser([], [$admin_permission, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], [$admin_permission, AutoSaveManager::PUBLISH_PERMISSION, 'view any workspace', 'edit any workspace']);
 
     // Live ES override at the original component version.
     $this->createComponentTreeTranslation('es', self::ES_TRANSLATION_INPUTS);

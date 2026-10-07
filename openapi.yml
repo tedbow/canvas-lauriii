@@ -319,9 +319,9 @@ paths:
                   data:
                     $ref: '#/components/schemas/AutoSaveCollection'
   /canvas/api/v0/auto-saves/publish:
-    description: TODO
+    description: Publishes the active workspace as a whole.
     post:
-      summary: Publish the specified auto-save entries
+      summary: Publish every pending change in the active workspace
       requestBody:
         content:
           application/json:
@@ -2901,6 +2901,8 @@ paths:
                     type: [string, "null"]
                     # @see \Drupal\canvas\PageVariantResolver
                     description: For content entities, the page variant that renders this entity (null when core block layout renders the page). Absent when editing config entities.
+                  lockedInWorkspace:
+                    $ref: '#/components/schemas/WorkspaceLockInfo'
                   updated:
                     type: integer
                     title: Updated timestamp
@@ -3362,6 +3364,7 @@ paths:
                   - branding
                   - jsonapiSettings
                   - themeAssets
+                  - capabilities
                 properties:
                   baseUrl:
                     type: string
@@ -3413,6 +3416,20 @@ paths:
                             format: uri-reference
                           mimeType:
                             type: string
+                  capabilities:
+                    type: object
+                    description: Runtime capabilities advertised to tooling.
+                    required:
+                      - contextHooks
+                    properties:
+                      contextHooks:
+                        type: boolean
+                        description: >-
+                          Whether Code Component islands render inside the
+                          shared context providers and the import map exposes
+                          `drupal-canvas/react`, so components may use its
+                          `usePageContext()`, `useSiteContext()`, and
+                          `useJsonApiClient()` hooks.
         '401':
           $ref: '#/components/responses/UnauthorizedErrorResponse'
         '403':
@@ -4180,6 +4197,98 @@ paths:
                     pattern:
                       title: Test pattern
                       id: test_pattern
+  /canvas/api/v0/workspaces:
+    description: Workspaces the current user may view, and the active one.
+    get:
+      summary: List the top-level workspaces the current user may view
+      responses:
+        '200':
+          description: The visible workspaces and the ID of the active one.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - activeWorkspaceId
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workspace'
+                  activeWorkspaceId:
+                    type: [ string, "null" ]
+                    description: ID of the active workspace, or null when none is active (live).
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+    post:
+      summary: Create a workspace
+      description: The workspace ID is derived from the label.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - label
+              additionalProperties: false
+              properties:
+                label:
+                  type: string
+                  description: Human-readable label; must be non-empty.
+            examples:
+              example:
+                value:
+                  label: Spring campaign
+      responses:
+        '201':
+          description: The created workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '400':
+          description: The label is missing or the workspace fails validation.
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+  /canvas/api/v0/workspaces/{workspace}:
+    parameters:
+      - $ref: '#/components/parameters/workspace'
+    delete:
+      summary: Delete a workspace, discarding its staged work
+      description: Deleting the active workspace switches the current user to live first.
+      responses:
+        '204':
+          description: The workspace was deleted.
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
+        '409':
+          description: The Main workspace cannot be deleted.
+  /canvas/api/v0/workspaces/{workspace}/activate:
+    parameters:
+      - $ref: '#/components/parameters/workspace'
+    post:
+      summary: Activate a workspace for the current user
+      description: Persists through core's workspace negotiators, so non-Canvas surfaces observe the same active workspace.
+      responses:
+        '200':
+          description: The now-active workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '401':
+          $ref: '#/components/responses/UnauthorizedErrorResponse'
+        '403':
+          $ref: '#/components/responses/AuthenticationErrorResponse'
 # @see https://spec.openapis.org/oas/v3.1.0.html#components-object
 components:
   # @see https://spec.openapis.org/oas/v3.1.0.html#schema-object
@@ -4669,6 +4778,45 @@ components:
         # round-trip into POST bodies, like isNew/isPublished/translations.
         resolvedPageVariant:
           type: [string, "null"]
+        lockedInWorkspace:
+          $ref: '#/components/schemas/WorkspaceLockInfo'
+    WorkspaceLockInfo:
+      title: Workspace lock info
+      description: >
+        The workspace that owns the entity's pending work when it is not the
+        active one, so the editor can show the lock before the first write.
+        Null when the entity is not locked elsewhere.
+      # @see \Drupal\canvas\Controller\ApiLayoutController::buildWorkspaceLockInfo()
+      type: [object, "null"]
+      additionalProperties: false
+      required:
+        - id
+        - label
+        - canSwitch
+      properties:
+        id:
+          type: string
+          description: The owning workspace ID.
+        label:
+          type: string
+          description: The owning workspace label.
+        canSwitch:
+          type: boolean
+          description: Whether the current user may switch to the owning workspace.
+        updated:
+          type: integer
+          description: When the pending work was last updated.
+        owner:
+          type: [object, "null"]
+          additionalProperties: false
+          required:
+            - name
+            - avatar
+          properties:
+            name:
+              type: string
+            avatar:
+              type: [string, "null"]
     AutoSaveConcurrencyControl:
       title: Auto Save Concurrency Control
       type: object
@@ -4771,13 +4919,14 @@ components:
         $ref: '#/components/schemas/AutoSaveEntry'
     PublishAllRequest:
       type: object
-      # @todo Add key validation for the format in {entity_type}:{entity_id}:{langcode} https://drupal.org/i/3506543.
+      description: >
+        The workspace is the unit of publish: the request publishes every
+        pending change in the active workspace, so the body carries no item
+        selection and should be an empty object. Legacy per-item entries are
+        accepted and ignored.
       additionalProperties:
         type: object
-        title: Entries to publish
-        description: >
-          The body should be an object with keys that match unpublished
-          entries and a data-hash property for each item.
+        title: Legacy entries (ignored)
         properties:
           data_hash:
             type: string
@@ -4989,6 +5138,12 @@ components:
                               type: number
                               format: float
                               description: Default axis value
+        colors:
+          type: array
+          readOnly: true
+          items:
+            $ref: '#/components/schemas/Color'
+          description: Colors available to the Brand Kit, derived server-side from the site's Color entities and ignored on writes. Only present when at least one color exists.
     NewBrandKit:
       type: object
       allOf:
@@ -6035,6 +6190,82 @@ components:
           label:
             type: [ 'null', string ]
             description: Optional label for the component instance.
+    Workspace:
+      type: object
+      description: |
+        The client-side representation of one workspace. Sub-modules add keys through
+        hook_canvas_workspace_normalize_alter(); the review and schedule keys are present only when the
+        canvas_workflows module is installed (see modules/canvas_workflows/openapi.yml).
+      required:
+        - id
+        - label
+        - isDefault
+        - isActive
+        - pendingChangesCount
+        - access
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: The workspace ID.
+        label:
+          type: string
+          description: The workspace label.
+        isDefault:
+          type: boolean
+          description: Whether this is the Main workspace.
+        isActive:
+          type: boolean
+          description: Whether this workspace is active for the current user.
+        status:
+          type: string
+          description: The review workflow state ID. Present only when the canvas_workflows module is installed.
+        statusLabel:
+          type: string
+          description: The review workflow state label. Present only when the canvas_workflows module is installed.
+        statusIsApproved:
+          type: boolean
+          description: Whether the review state allows publishing. Present only when the canvas_workflows module is installed.
+        statusIsInitial:
+          type: boolean
+          description: Whether the review state is the workflow's initial state. Present only when the canvas_workflows module is installed.
+        requireReview:
+          type: boolean
+          description: Whether publishing requires review approval. Present only when the canvas_workflows module is installed.
+        availableTransitions:
+          type: array
+          description: Review workflow transitions the current user may execute. Present only when the canvas_workflows module is installed.
+          items:
+            type: object
+            required:
+              - id
+              - label
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              label:
+                type: string
+        scheduledPublishAt:
+          type: [ integer, "null" ]
+          description: Unix timestamp of the scheduled publish, or null. Present only when the canvas_workflows module is installed.
+        scheduledPublishError:
+          type: [ string, "null" ]
+          description: The error from the last failed scheduled publish, or null. Present only when the canvas_workflows module is installed.
+        pendingChangesCount:
+          type: integer
+          description: Approximate number of entities with pending changes in this workspace.
+        access:
+          type: object
+          required:
+            - delete
+            - publish
+          additionalProperties: false
+          properties:
+            delete:
+              type: boolean
+            publish:
+              type: boolean
   # @see https://spec.openapis.org/oas/v3.1.0.html#response-object
   responses:
     ContentEntityResponse:
@@ -6246,6 +6477,16 @@ components:
         "A config entity id":
           value:
             sdc.canvas_test_sdc.my-cta
+    workspace:
+      name: workspace
+      in: path
+      required: true
+      description: Workspace ID
+      schema:
+        type: string
+      examples:
+        example:
+          value: spring_campaign
     queryAjaxForm:
       # @see \Drupal\Core\Form\FormBuilderInterface::AJAX_FORM_REQUEST
       # @see \Drupal\Core\Form\EventSubscriber\FormAjaxSubscriber

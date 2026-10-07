@@ -80,6 +80,8 @@ final class ContentTemplateValidationTest extends BetterConfigEntityValidationTe
     'ckeditor5',
     'editor',
     'datetime',
+    // Canvas's dependency (see canvas.info.yml).
+    'workspaces',
   ];
 
   /**

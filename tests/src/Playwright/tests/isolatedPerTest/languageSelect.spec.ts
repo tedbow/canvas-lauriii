@@ -252,8 +252,10 @@ test.describe('Language Select', () => {
     await expect(languageButton).toBeVisible();
     await languageButton.click();
 
-    // French has a translation: checkmark and options trigger must still be
-    // present after reload.
+    // French has a translation: its checkmark must still be present after
+    // reload. The editor still lacks 'delete content translations', so — as
+    // asserted before the reload — the backend emits no links for French and
+    // the dots (⋮) options trigger is still not rendered.
     await expect(
       page.locator(
         '[data-testid="language-option-fr"] [data-canvas-has-translation="true"]',
@@ -261,7 +263,7 @@ test.describe('Language Select', () => {
     ).toHaveAttribute('data-canvas-has-translation', 'true');
     await expect(
       page.locator('[data-testid="language-options-popover-trigger"]'),
-    ).toHaveCount(1);
+    ).toHaveCount(0);
 
     // Switch to Spanish language (which has no translation).
     const spanishOption = page.locator('[data-testid="language-option-es"]');
@@ -599,11 +601,11 @@ test.describe('Language Select', () => {
 
     // Unpublish the page from the page listing dropdown.
     await page.getByTestId('canvas-navigation-button').click();
-    const pageItem = page
+    await page
       .getByTestId('canvas-navigation-content')
       .getByRole('listitem')
-      .filter({ hasText: 'Canvas Translation Test Page' });
-    pageItem.hover();
+      .filter({ hasText: 'Canvas Translation Test Page' })
+      .hover();
 
     const optionsButton = page.getByLabel(
       'Page options for Canvas Translation Test Page',

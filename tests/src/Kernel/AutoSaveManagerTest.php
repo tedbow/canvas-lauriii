@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\Tests\canvas\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\ClientDataToEntityConverter;
 use Drupal\canvas\Controller\ApiLayoutController;
 use Drupal\canvas\Controller\ConflictResolutionOutcomeEnum;
@@ -31,6 +32,7 @@ use Drupal\Tests\canvas\Traits\GenerateComponentConfigTrait;
 use Drupal\Tests\media\Traits\MediaTypeCreationTrait;
 use Drupal\Tests\node\Traits\ContentTypeCreationTrait;
 use Drupal\user\Entity\User;
+use Drupal\workspaces\WorkspaceManagerInterface;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
@@ -155,25 +157,16 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     self::assertSame($hashInitial, $hashReversedData);
 
     if ($entity instanceof CanvasHttpApiEligibleConfigEntityInterface) {
-      $autoSaveStore = NULL;
+      // Conflict detection, and with it the stored-entity hash bookkeeping,
+      // only exists for content entities so far.
+      // @see https://www.drupal.org/project/canvas/issues/3591544
       // Modifying the (config) entity `status` key does NOT result in the
       // auto-save being wiped, but in it being updated.
       $status_key = $entity->getEntityType()->getKey('status');
       if ($status_key) {
         self::assertTrue($autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$autoSaveKey]['data'][$status_key]);
-        // Capture original_hash before the status-only save.
-        $autoSaveStore = $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-        $hash_before_status_save = $autoSaveStore->get($autoSaveKey)[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
         $entity->disable()->save();
         self::assertFalse($autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$autoSaveKey]['data'][$status_key]);
-        // original_hash must advance to the current stored entity hash so a
-        // subsequent conflict check does not produce a false positive.
-        $hash_after_status_save = $autoSaveStore->get($autoSaveKey)[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
-        self::assertNotSame(
-          $hash_before_status_save,
-          $hash_after_status_save,
-          'original_hash must advance after a status-only config entity save.',
-        );
         // We also have to update the original client data so that a new auto
         // save entry deletes the existing (matching) data.
         $matching_client_data[$status_key] = FALSE;
@@ -184,19 +177,8 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
       $label_key = $entity->getEntityType()->getKey('label');
       if ($label_key) {
         self::assertSame($updated_client_data[$label_key], $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$autoSaveKey]['data'][$label_key]);
-        // Capture original_hash before the label-only save.
-        $autoSaveStore ??= $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-        $hash_before_label_save = $autoSaveStore->get($autoSaveKey)[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
         $entity->set($label_key, 'magic 🪄')->save();
         self::assertSame('magic 🪄', $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$autoSaveKey]['data'][$label_key]);
-        // original_hash must advance to the current stored entity hash so a
-        // subsequent conflict check does not produce a false positive.
-        $hash_after_label_save = $autoSaveStore->get($autoSaveKey)[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
-        self::assertNotSame(
-          $hash_before_label_save,
-          $hash_after_label_save,
-          'original_hash must advance after a label-only config entity save.',
-        );
         // We also have to update the original client data so that a new auto
         // save entry deletes the existing (matching) data.
         $matching_client_data[$label_key] = 'magic 🪄';
@@ -312,14 +294,14 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     $data = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$autoSaveKey]['data'];
 
     // The stored item carries `target_id`, retaining `NULL` value.
-    self::assertSame((int) $user->id(), $data['owner'][0]['target_id']);
+    self::assertEquals($user->id(), $data['owner'][0]['target_id']);
     self::assertArrayHasKey('target_uuid', $data['owner'][0]);
     self::assertNull($data['owner'][0]['target_uuid']);
 
     // The reconstructed entity still resolves the reference.
     $reconstructed = $autoSave->getAutoSaveEntity($page)->entity;
     \assert($reconstructed instanceof Page);
-    self::assertSame((int) $user->id(), $reconstructed->get('owner')->target_id);
+    self::assertEquals($user->id(), $reconstructed->get('owner')->target_id);
     self::assertNotNull($reconstructed->get('owner')->entity);
   }
 
@@ -561,6 +543,7 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
   public function testStagedConfigUpdate(): void {
     $sut = $this->container->get(AutoSaveManager::class);
     self::assertInstanceOf(AutoSaveManager::class, $sut);
+    $key = AutoSaveWorkspace::ID . ':staged_config_update:canvas_change_site_name';
     StagedConfigUpdate::createFromClientSide([
       'id' => 'canvas_change_site_name',
       'label' => 'Change the site name',
@@ -575,13 +558,13 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
 
     $list = $sut->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
     self::assertCount(1, $list);
-    self::assertArrayHasKey('staged_config_update:canvas_change_site_name', $list);
+    self::assertArrayHasKey($key, $list);
     self::assertEquals([
       [
         'name' => 'simpleConfigUpdate',
         'input' => ['name' => 'My awesome site'],
       ],
-    ], $list['staged_config_update:canvas_change_site_name']['data']['actions']);
+    ], $list[$key]['data']['actions']);
 
     // Prove duplicated saves overwrite the previous one.
     StagedConfigUpdate::createFromClientSide([
@@ -597,13 +580,13 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     ])->save();
     $list = $sut->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
     self::assertCount(1, $list);
-    self::assertArrayHasKey('staged_config_update:canvas_change_site_name', $list);
+    self::assertArrayHasKey($key, $list);
     self::assertEquals([
       [
         'name' => 'simpleConfigUpdate',
         'input' => ['name' => 'My SUPER AWESOME site'],
       ],
-    ], $list['staged_config_update:canvas_change_site_name']['data']['actions']);
+    ], $list[$key]['data']['actions']);
 
     StagedConfigUpdate::createFromClientSide([
       'id' => 'canvas_set_homepage',
@@ -618,19 +601,19 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     ])->save();
     $list = $sut->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
     self::assertCount(2, $list);
-    self::assertArrayHasKey('staged_config_update:canvas_set_homepage', $list);
+    self::assertArrayHasKey(AutoSaveWorkspace::ID . ':staged_config_update:canvas_set_homepage', $list);
     self::assertEquals([
       [
         'name' => 'simpleConfigUpdate',
         'input' => ['name' => 'My SUPER AWESOME site'],
       ],
-    ], $list['staged_config_update:canvas_change_site_name']['data']['actions']);
+    ], $list[$key]['data']['actions']);
     self::assertEquals([
       [
         'name' => 'simpleConfigUpdate',
         'input' => ['page.front' => '/home'],
       ],
-    ], $list['staged_config_update:canvas_set_homepage']['data']['actions']);
+    ], $list[AutoSaveWorkspace::ID . ':staged_config_update:canvas_set_homepage']['data']['actions']);
 
     // On config delete, auto-saved staged config updates targeting that config
     // should be deleted. In the current state, that's everything.
@@ -761,10 +744,9 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     // Capture H1: original_hash at initial auto-save write time, before any
     // external change.
     $key = AutoSaveManager::getAutoSaveKey($page);
-    $auto_save_store = $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-    $entry = $auto_save_store->get($key);
-    \assert(\is_array($entry));
-    $h1 = $entry[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
+    // The stored-entity hash is staging metadata, exposed on the list entry.
+    $stored_hash = static fn (): string => $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$key][AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
+    $h1 = $stored_hash();
 
     // Trigger a conflict via external save.
     $page->set('title', 'External update #1');
@@ -788,9 +770,7 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
 
     // resolveConflict() advances original_hash from H1 to H2 (the current
     // stored entity hash after the external change).
-    $entry = $auto_save_store->get($key);
-    \assert(\is_array($entry));
-    $h2 = $entry[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY];
+    $h2 = $stored_hash();
     self::assertNotSame($h1, $h2);
 
     // A subsequent ::saveEntity() call must not re-surface the resolved
@@ -800,9 +780,7 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     $page->set('title', 'Draft after resolution');
     $auto_save_manager->saveEntity($page);
     self::assertNull($auto_save_manager->getUnresolvedConflictForEntity($page));
-    $entry = $auto_save_store->get($key);
-    \assert(\is_array($entry));
-    self::assertSame($h2, $entry[AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY]);
+    self::assertSame($h2, $stored_hash());
 
     // A later external save creates a new unresolved conflict.
     $page->set('title', 'External update #2');
@@ -843,10 +821,9 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     $page->set('title', 'Draft title');
     $auto_save_manager->saveEntity($page);
     $key = AutoSaveManager::getAutoSaveKey($page);
-    $auto_save_store = $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-    // Fetch auto-save item.
-    $auto_save_item = $auto_save_store->get($key);
-    self::assertIsArray($auto_save_item);
+    // The stored-entity hash is staging metadata, exposed on the list entry.
+    $fetch_item = static fn (): array => $auto_save_manager->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$key];
+    $auto_save_item = $fetch_item();
 
     // Store initial `original_hash` value to validate it's not changing.
     self::assertArrayHasKey(AutoSaveManager::AUTO_SAVE_STORED_ENTITY_HASH_KEY, $auto_save_item);
@@ -859,8 +836,7 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     $auto_save_manager->saveEntity($page);
 
     // Re-fetch updated auto-save item.
-    $auto_save_item = $auto_save_store->get($key);
-    self::assertIsArray($auto_save_item);
+    $auto_save_item = $fetch_item();
 
     // Check that the auto-save item was updated.
     self::assertArrayHasKey('label', $auto_save_item);
@@ -895,8 +871,7 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     );
 
     // Re-fetch updated auto-save item.
-    $auto_save_item = $auto_save_store->get($key);
-    self::assertIsArray($auto_save_item);
+    $auto_save_item = $fetch_item();
     // Check that the auto-save item was updated.
     self::assertArrayHasKey('label', $auto_save_item);
     self::assertEquals($page->label(), $auto_save_item['label']);
@@ -1090,13 +1065,15 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     $autoSave->saveEntity($page);
 
     $old_key = AutoSaveManager::getAutoSaveKey($page);
-    self::assertSame('canvas_page:1:en', $old_key);
+    self::assertSame(AutoSaveWorkspace::ID . ':canvas_page:1:en', $old_key);
     // Reading the entry memoizes it under the old key.
     self::assertFalse($autoSave->getAutoSaveEntity($page)->isEmpty(), 'Auto-save exists under old key before migration.');
 
-    // Change the entity langcode and migrate the auto-save.
+    // Change the entity langcode and migrate the auto-save. Like the langcode
+    // PATCH, the save happens inside the staging workspace: an entity with a
+    // pending revision in a workspace cannot be saved outside it.
     $page->set('langcode', 'de');
-    $page->save();
+    $this->container->get(WorkspaceManagerInterface::class)->executeInWorkspace(AutoSaveWorkspace::ID, static fn () => $page->save());
     $checksum_provider = $this->container->get(CacheTagsChecksumInterface::class);
     \assert($checksum_provider instanceof CacheTagsChecksumInterface);
     $checksum = (int) $checksum_provider->getCurrentChecksum([AutoSaveManager::CACHE_TAG]);
@@ -1104,7 +1081,7 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     self::assertFalse($checksum_provider->isValid($checksum, [AutoSaveManager::CACHE_TAG]), 'Migrating an entry invalidates the auto-save cache tag.');
 
     $new_key = AutoSaveManager::getAutoSaveKey($page);
-    self::assertSame('canvas_page:1:de', $new_key);
+    self::assertSame(AutoSaveWorkspace::ID . ':canvas_page:1:de', $new_key);
 
     // The memoized entry under the old key must be gone too, not just the
     // stored one.
@@ -1113,16 +1090,13 @@ class AutoSaveManagerTest extends CanvasKernelTestBase {
     self::assertSame($old_key, AutoSaveManager::getAutoSaveKey($old_language_page));
     self::assertTrue($autoSave->getAutoSaveEntity($old_language_page)->isEmpty(), 'No auto-save is memoized under the old key after migration.');
 
-    // Old key must be gone.
-    $store = $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-    self::assertNull($store->get($old_key), 'Old auto-save key was deleted after migration.');
-
-    // New key must carry the entry with an updated langcode.
-    $migrated = $store->get($new_key);
-    self::assertIsArray($migrated, 'Auto-save entry exists under new key.');
-    self::assertSame('de', $migrated['langcode'], 'Migrated entry langcode is updated to de.');
-    // The serialized langcode field data must also be updated.
-    self::assertSame('de', $migrated['data']['langcode'][0]['value'] ?? NULL, 'Serialized langcode field value is updated to de.');
+    // Old key must be gone; the new key must carry the entry with an updated
+    // langcode, in its metadata and in the serialized field data.
+    $list = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE);
+    self::assertArrayNotHasKey($old_key, $list, 'Old auto-save key was deleted after migration.');
+    self::assertArrayHasKey($new_key, $list, 'Auto-save entry exists under new key.');
+    self::assertSame('de', $list[$new_key]['langcode'], 'Migrated entry langcode is updated to de.');
+    self::assertSame('de', $list[$new_key]['data']['langcode'][0]['value'] ?? NULL, 'Serialized langcode field value is updated to de.');
 
     // Retrieving through AutoSaveManager must work via the new key.
     self::assertFalse($autoSave->getAutoSaveEntity($page)->isEmpty(), 'AutoSaveManager finds the entry under the new key.');

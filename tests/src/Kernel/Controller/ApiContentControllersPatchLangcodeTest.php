@@ -230,8 +230,7 @@ class ApiContentControllersPatchLangcodeTest extends CanvasKernelTestBase {
     $this->patchLangcode(['langcode' => 'de'], Response::HTTP_OK);
 
     // Old key must be gone.
-    $store = $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-    self::assertNull($store->get($old_auto_save_key), 'Old auto-save key deleted.');
+    self::assertArrayNotHasKey($old_auto_save_key, $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE), 'Old auto-save key deleted.');
 
     // New key must exist.
     $reloaded = Page::load($this->page->id());
@@ -242,8 +241,9 @@ class ApiContentControllersPatchLangcodeTest extends CanvasKernelTestBase {
     self::assertStringEndsWith(':de', $new_auto_save_key, 'Auto-save key using de language id.');
 
     // Serialized langcode field inside the item must reflect the new language.
-    $migrated = $store->get($new_auto_save_key);
+    $migrated = $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE)[$new_auto_save_key] ?? NULL;
     self::assertSame('de', $migrated['langcode'] ?? NULL);
+    self::assertSame('de', $migrated['data']['langcode'][0]['value'] ?? NULL);
     self::assertSame('de', $migrated['data']['langcode'][0]['value'] ?? NULL);
 
     // The stored entity changed (its langcode), so the migrated auto-save item's
@@ -338,8 +338,7 @@ class ApiContentControllersPatchLangcodeTest extends CanvasKernelTestBase {
     self::assertInstanceOf(Page::class, $reloaded);
     self::assertSame('de', $reloaded->language()->getId(), 'Entity langcode persisted to storage.');
 
-    $store = $this->container->get('keyvalue')->get(AutoSaveManager::AUTO_SAVE_STORE);
-    self::assertNull($store->get(AutoSaveManager::getAutoSaveKey($reloaded)), 'No auto-save item created for the new langcode key.');
+    self::assertTrue($autoSave->getAutoSaveEntity($reloaded)->isEmpty(), 'No auto-save item created for the new langcode key.');
   }
 
   /**

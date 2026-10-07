@@ -161,9 +161,12 @@ final class JavascriptComponentAccessTest extends CanvasKernelTestBase {
     $auto_save_manager->saveEntity($page);
     $data_hash = $auto_save_manager->getAutoSaveEntity($page)->hash;
     // The suffix is the auto-save `data_hash`: an xxh64 hash of the normalized
-    // entity. It changed because empty path aliases are no longer part of that
-    // normalization.
+    // entity. Derive it from the auto-save entry instead of hardcoding it: the
+    // normalization rules evolve (e.g. empty path aliases and revision
+    // bookkeeping fields are no longer part of it).
     // @see \Drupal\canvas\AutoSave\AutoSaveManager::normalizeEntity()
+    $data_hash = $auto_save_manager->getAutoSaveEntity($page)->hash;
+    self::assertNotNull($data_hash);
     self::assertSame([Page::ENTITY_TYPE_ID => ['auto-save-' . $data_hash => '1']], $audit->getAutoSavesUsingAuditTarget($component));
     // And reset the access cache.
     $entity_type_manager->getAccessControlHandler(JavaScriptComponent::ENTITY_TYPE_ID)->resetCache();

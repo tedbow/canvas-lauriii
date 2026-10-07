@@ -3,14 +3,59 @@
 declare(strict_types=1);
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveRevisionPruner;
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider;
 use Drupal\canvas\CanvasNotificationHandler;
+use Drupal\canvas\CanvasServiceProvider;
+use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
+use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Health\HealthCheck;
 use Drupal\canvas\Health\HealthRecords;
 use Drupal\Core\Datetime\DateFormatterInterface;
+use Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface;
+use Drupal\Core\Extension\ModuleInstallerInterface;
 use Drupal\Core\Extension\Requirement\RequirementSeverity;
 use Drupal\Core\Extension\ThemeHandlerInterface;
 use Drupal\Core\Extension\ThemeInstallerInterface;
+use Drupal\Core\Field\BaseFieldDefinition;
 use Drupal\Core\StreamWrapper\StreamWrapperManagerInterface;
+
+/**
+ * Implements hook_install().
+ */
+function canvas_install(): void {
+  _canvas_ensure_workspaces_module_enabled();
+  // Fresh installs create the Main workspace as an ordinary workspace; the
+  // legacy `canvas` provider exists only for the update path.
+  _canvas_ensure_auto_save_workspace('default');
+}
+
+/**
+ * Creates the Main (canvas_default) workspace when missing.
+ *
+ * @param string $provider
+ *   The workspace provider ID: 'default' for ordinary (Phase 2) behavior;
+ *   the update path passes the legacy 'canvas' provider so the maintenance
+ *   -mode view relaxation stays in effect until the key-value migration in
+ *   canvas_post_update_0023 has run.
+ *
+ * @see \Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider
+ * @see canvas_post_update_0032_main_workspace()
+ */
+function _canvas_ensure_auto_save_workspace(string $provider = 'default'): void {
+  $storage = \Drupal::entityTypeManager()->getStorage('workspace');
+  if ($storage->load(AutoSaveWorkspace::ID) !== NULL) {
+    return;
+  }
+  $workspace = $storage->create([
+    'id' => AutoSaveWorkspace::ID,
+    'label' => AutoSaveWorkspace::LABEL,
+    'uid' => 1,
+    'provider' => $provider,
+  ]);
+  $workspace->save();
+}
 
 /**
  * Implements hook_module_preinstall().
@@ -158,4 +203,124 @@ function canvas_update_11200(): void {
     // No need to manually flush caches during the update.
     // @see \Drupal\system\Controller\DbUpdateController::triggerBatch()
   }
+}
+
+/**
+ * Workspaces auto-save: entity schema, Workspaces module, shared workspace.
+ *
+ * Idempotent: installs canvas_auto_save_snapshot when missing, enables the
+ * Workspaces module if needed, creates the canvas_default workspace entity.
+ */
+function canvas_update_11201(): void {
+  /** @var \Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface $repository */
+  $repository = \Drupal::service(EntityLastInstalledSchemaRepositoryInterface::class);
+  if ($repository->getLastInstalledDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) === NULL) {
+    $definition = \Drupal::entityTypeManager()->getDefinition(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
+    \Drupal::entityDefinitionUpdateManager()->installEntityType($definition);
+  }
+
+  _canvas_ensure_workspaces_module_enabled();
+  // The legacy provider keeps update.php able to switch into the workspace
+  // for the key-value migration; canvas_post_update_0024 makes it ordinary.
+  _canvas_ensure_auto_save_workspace(CanvasWorkspaceProvider::getId());
+}
+
+/**
+ * Full Workspaces integration: workspace_config, workspace-scoped staging.
+ *
+ * Enables the workspace_config module, adds the `workspace` field to
+ * canvas_auto_save_snapshot (backfilled with canvas_default), and re-keys
+ * Canvas's key-value staging rows with the workspace prefix.
+ */
+function canvas_update_11202(): void {
+  // Config edits made while a workspace is active stage into it.
+  if (!\Drupal::moduleHandler()->moduleExists('workspace_config')) {
+    /** @var \Drupal\Core\Extension\ModuleInstallerInterface $installer */
+    $installer = \Drupal::service(ModuleInstallerInterface::class);
+    $installer->install(['workspace_config']);
+  }
+
+  $update_manager = \Drupal::entityDefinitionUpdateManager();
+
+  // The snapshot rows' workspace column; existing rows belong to the Main
+  // workspace.
+  if ($update_manager->getFieldStorageDefinition('workspace', CanvasAutoSaveSnapshot::ENTITY_TYPE_ID) === NULL) {
+    $workspace_field = BaseFieldDefinition::create('string')
+      ->setLabel(t('Workspace'))
+      ->setSetting('max_length', 128)
+      ->setRequired(TRUE)
+      ->setDefaultValue(AutoSaveWorkspace::ID)
+      ->setInitialValue(AutoSaveWorkspace::ID);
+    $update_manager->installFieldStorageDefinition('workspace', CanvasAutoSaveSnapshot::ENTITY_TYPE_ID, 'canvas', $workspace_field);
+  }
+  // Refresh the entity schema so the unique key becomes
+  // (workspace, target type, target ID, langcode).
+  $snapshot_type = $update_manager->getEntityType(CanvasAutoSaveSnapshot::ENTITY_TYPE_ID);
+  if ($snapshot_type !== NULL) {
+    $update_manager->updateEntityType($snapshot_type);
+  }
+
+  // Auto-save keys became workspace-prefixed; existing rows were all staged
+  // in the Main workspace.
+  /** @var \Drupal\Core\KeyValueStore\KeyValueFactoryInterface $key_value_factory */
+  $key_value_factory = \Drupal::service(CanvasServiceProvider::STAGING_KEY_VALUE_SERVICE);
+  $collections = [
+    AutoSaveManager::AUTO_SAVE_STORE,
+    AutoSaveManager::FORM_VIOLATIONS_STORE,
+    AutoSaveManager::COMPONENT_INSTANCE_FORM_VIOLATIONS_STORE,
+    'canvas_auto_save_pending',
+    AutoSaveRevisionPruner::STORE,
+  ];
+  $prefix = AutoSaveWorkspace::ID . ':';
+  foreach ($collections as $collection) {
+    $store = $key_value_factory->get($collection);
+    foreach ($store->getAll() as $key => $value) {
+      $key = (string) $key;
+      if (\str_starts_with($key, $prefix)) {
+        continue;
+      }
+      $store->set($prefix . $key, $value);
+      $store->delete($key);
+    }
+  }
+}
+
+/**
+ * Makes the canvas_page owner field revisionable so drafts can stage it.
+ *
+ * A draft is staged as a pending workspace revision, which only carries
+ * revisionable fields.
+ */
+function canvas_update_11203(array &$sandbox): void {
+  $update_manager = \Drupal::entityDefinitionUpdateManager();
+  $entity_type = $update_manager->getEntityType(Page::ENTITY_TYPE_ID);
+  if ($entity_type === NULL) {
+    return;
+  }
+  /** @var \Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface $repository */
+  $repository = \Drupal::service(EntityLastInstalledSchemaRepositoryInterface::class);
+  $field_storage_definitions = $repository->getLastInstalledFieldStorageDefinitions(Page::ENTITY_TYPE_ID);
+  $owner = $field_storage_definitions['owner'] ?? NULL;
+  if (!$owner instanceof BaseFieldDefinition || $owner->isRevisionable()) {
+    return;
+  }
+  $owner->setRevisionable(TRUE);
+  $progress = $sandbox;
+  $update_manager->updateFieldableEntityType($entity_type, $field_storage_definitions, $progress);
+  $sandbox = $progress ?? [];
+}
+
+/**
+ * Enables the Workspaces module when missing.
+ *
+ * Canvas declares Workspaces as a dependency; extensions listed in
+ * core.extension may omit it on older sites until this runs.
+ */
+function _canvas_ensure_workspaces_module_enabled(): void {
+  if (\Drupal::moduleHandler()->moduleExists('workspaces')) {
+    return;
+  }
+  /** @var \Drupal\Core\Extension\ModuleInstallerInterface $installer */
+  $installer = \Drupal::service(ModuleInstallerInterface::class);
+  $installer->install(['workspaces']);
 }

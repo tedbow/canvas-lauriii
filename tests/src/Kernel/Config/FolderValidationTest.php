@@ -40,6 +40,8 @@ class FolderValidationTest extends BetterConfigEntityValidationTestBase {
     'ckeditor5',
     'editor',
     'user',
+    // Canvas's dependency (see canvas.info.yml).
+    'workspaces',
   ];
 
   protected function setUp(): void {

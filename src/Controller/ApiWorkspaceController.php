@@ -1,0 +1,154 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Drupal\canvas\Controller;
+
+use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\Workspace\WorkspaceNormalizer;
+use Drupal\Component\Transliteration\TransliterationInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Session\AccountInterface;
+use Drupal\workspaces\WorkspaceInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
+
+/**
+ * Workspace management endpoints for the Canvas UI (and external switchers).
+ *
+ * Thin wrappers over core Workspaces: every access decision delegates to the
+ * workspace entity's access handler and core permissions; switching persists
+ * through core's negotiators so non-Canvas surfaces observe the same active
+ * workspace.
+ *
+ * @internal This HTTP API is intended only for the Canvas UI. These
+ *   controllers and associated routes may change at any time.
+ */
+final class ApiWorkspaceController extends ApiControllerBase {
+
+  public function __construct(
+    private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly WorkspaceNormalizer $normalizer,
+    private readonly AccountInterface $currentUser,
+    #[Autowire(service: 'transliteration')]
+    private readonly TransliterationInterface $transliteration,
+    // Nullable, resolved to NULL until the Workspaces module is installed
+    // (before database updates run), so the container can compile. The
+    // routes are unreachable until then.
+    #[Autowire(service: 'workspaces.manager')]
+    private readonly WorkspaceManagerInterface $workspaceManager,
+  ) {}
+
+  private function workspaceManager(): WorkspaceManagerInterface {
+    return $this->workspaceManager;
+  }
+
+  /**
+   * Lists the workspaces the current user may view.
+   */
+  public function list(): JsonResponse {
+    $storage = $this->entityTypeManager->getStorage('workspace');
+    $active_id = $this->normalizer->activeWorkspaceId();
+    $data = [];
+    foreach ($storage->loadMultiple() as $workspace) {
+      \assert($workspace instanceof WorkspaceInterface);
+      if (!$workspace->access('view', $this->currentUser)) {
+        continue;
+      }
+      // Sub-workspaces cannot be published and are not part of the Canvas
+      // flow; list only top-level workspaces.
+      if ($workspace->hasParent()) {
+        continue;
+      }
+      $data[] = $this->normalizer->normalize($workspace, $active_id);
+    }
+    return new JsonResponse(data: ['data' => $data, 'activeWorkspaceId' => $active_id], status: Response::HTTP_OK);
+  }
+
+  /**
+   * Creates a workspace.
+   */
+  public function create(Request $request): JsonResponse {
+    $body = \json_decode($request->getContent(), TRUE);
+    $label = \is_array($body) ? \trim((string) ($body['label'] ?? '')) : '';
+    if ($label === '') {
+      throw new BadRequestHttpException('A non-empty "label" is required.');
+    }
+    $storage = $this->entityTypeManager->getStorage('workspace');
+    $access = $this->entityTypeManager->getAccessControlHandler('workspace')->createAccess(NULL, $this->currentUser, [], TRUE);
+    if (!$access->isAllowed()) {
+      throw new AccessDeniedHttpException('You do not have permission to create workspaces.');
+    }
+    $id = $this->deriveMachineName($label);
+    /** @var \Drupal\workspaces\WorkspaceInterface $workspace */
+    $workspace = $storage->create([
+      'id' => $id,
+      'label' => $label,
+      'uid' => $this->currentUser->id(),
+    ]);
+    $violations = $workspace->validate();
+    if ($violations->count() > 0) {
+      throw new BadRequestHttpException((string) $violations->get(0)->getMessage());
+    }
+    $workspace->save();
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, $this->normalizer->activeWorkspaceId()), status: Response::HTTP_CREATED);
+  }
+
+  /**
+   * Deletes a workspace, discarding its staged work.
+   */
+  public function delete(WorkspaceInterface $workspace): JsonResponse {
+    if (!$workspace->access('delete', $this->currentUser)) {
+      throw new AccessDeniedHttpException('You do not have permission to delete this workspace.');
+    }
+    if ($workspace->id() === AutoSaveWorkspace::ID) {
+      throw new ConflictHttpException('The Main workspace cannot be deleted.');
+    }
+    $wm = $this->workspaceManager();
+    if ($wm->getActiveWorkspace()?->id() === $workspace->id()) {
+      $wm->switchToLive();
+    }
+    $workspace->delete();
+    return new JsonResponse(status: Response::HTTP_NO_CONTENT, data: NULL);
+  }
+
+  /**
+   * Activates a workspace for the current user, persisting via negotiation.
+   */
+  public function activate(WorkspaceInterface $workspace): JsonResponse {
+    if (!$workspace->access('view', $this->currentUser)) {
+      throw new AccessDeniedHttpException('You do not have permission to switch to this workspace.');
+    }
+    $wm = $this->workspaceManager();
+    $wm->setActiveWorkspace($workspace);
+    return new JsonResponse(data: $this->normalizer->normalize($workspace, (string) $workspace->id()), status: Response::HTTP_OK);
+  }
+
+  /**
+   * Derives a unique workspace machine name from a label.
+   */
+  private function deriveMachineName(string $label): string {
+    $base = \mb_strtolower($this->transliteration->transliterate($label, 'en'));
+    $base = \preg_replace('/[^a-z0-9_]+/', '_', $base) ?? '';
+    $base = \trim($base, '_');
+    if ($base === '' || \preg_match('/^[0-9]/', $base)) {
+      $base = 'workspace_' . $base;
+    }
+    $base = \substr($base, 0, 120);
+    $storage = $this->entityTypeManager->getStorage('workspace');
+    $id = $base;
+    $suffix = 0;
+    while ($storage->load($id) !== NULL) {
+      $suffix++;
+      $id = $base . '_' . $suffix;
+    }
+    return $id;
+  }
+
+}

@@ -28,6 +28,7 @@ use Drupal\canvas\TypedData\BetterEntityDataDefinition;
 use Drupal\canvas_test_code_components\Hook\IslandCastaway;
 use Drupal\Component\Serialization\Json;
 use Drupal\Component\Utility\Crypt;
+use Drupal\Component\Utility\DeprecationHelper;
 use Drupal\Component\Utility\NestedArray;
 use Drupal\content_translation\BundleTranslationSettingsInterface;
 use Drupal\Core\Access\AccessResultForbidden;
@@ -546,6 +547,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'languages:language_interface',
       'theme',
       'user.permissions',
+      'workspace',
     ];
 
     $default_cacheability = (new CacheableMetadata())
@@ -593,6 +595,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
         '@/lib/drupal-utils' => \sprintf('%s/packages/astro-hydration/dist/drupal-utils.js?2.1.0-alpha3', $module_path),
         'swr' => \sprintf('%s/packages/astro-hydration/dist/swr.js?2.1.0-alpha3', $module_path),
         'drupal-canvas' => \sprintf('%s/packages/astro-hydration/dist/drupal-canvas.js?2.1.0-alpha3', $module_path),
+        'drupal-canvas/react' => \sprintf('%s/packages/astro-hydration/dist/drupal-canvas-react.js?2.1.0-alpha3', $module_path),
         '@tailwindcss/typography' => \sprintf('%s/packages/astro-hydration/dist/tailwindcss-typography.js?2.1.0-alpha3', $module_path),
       ],
       ImportMapResponseAttachmentsProcessor::SCOPED_IMPORTS => [],
@@ -1816,9 +1819,14 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
    * @see https://git.drupalcode.org/project/canvas/-/merge_requests/1332#note_1424036
    */
   private static function expectImagePropsInExampleOrderOn113(int $width, int $height, string $alt): array {
-    return version_compare(\Drupal::VERSION, '11.4', '>=')
-      ? ['alt' => $alt, 'width' => $width, 'height' => $height]
-      : ['width' => $width, 'height' => $height, 'alt' => $alt];
+    // DeprecationHelper treats `11.4-dev` and `11.4.x-dev` as `11.4.0`, while
+    // plain version_compare() sorts them below `11.4`.
+    return DeprecationHelper::backwardsCompatibleCall(
+      \Drupal::VERSION,
+      '11.4',
+      fn () => ['alt' => $alt, 'width' => $width, 'height' => $height],
+      fn () => ['width' => $width, 'height' => $height, 'alt' => $alt],
+    );
   }
 
   /**
@@ -1829,7 +1837,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_captioned_video' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="Captioned video"][props*="bird_vertical"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -1921,7 +1929,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_interactive' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="Interactive"][props*="name"][props*="Count"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => [
@@ -1953,7 +1961,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_using_drupalsettings_get_site_data' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="Using drupalSettings getSiteData"][props="{}"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -1963,7 +1971,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_using_drupalsettings_get_theme_assets' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="Using drupalSettings getThemeAssets"][props="{}"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -1973,7 +1981,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_using_get_page_data' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="Using drupalSettings getPageData"][props="{}"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -1983,7 +1991,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_using_imports' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="using imports"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -1993,7 +2001,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_vanilla_image' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="Vanilla Image"][props*="placehold.co"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -2044,7 +2052,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_array_enums' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="With array enums"][props*="sizes"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => [
@@ -2086,7 +2094,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_array_props' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="With array props"][props*="tags"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -2223,7 +2231,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_enums' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="With enums"][props*="red"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => [
@@ -2288,7 +2296,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_link_prop' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="My Code Component Link"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -2337,7 +2345,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_no_props' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="With no props"][props="{}"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -2347,7 +2355,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_props' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="With props"][props*="name"][props*="Canvas"][props*="age"][props*="40"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => ['slots' => []],
@@ -2386,7 +2394,7 @@ final class JsComponentTest extends JsonSchemaPropsComponentSourceBaseTestBase {
       'js.canvas_test_code_components_with_slots' => [
         'expected_output_selectors' => [
           'canvas-island[opts*="With slot"][props*="name"][props*="Name"]',
-          'script[blocking="render"][src*="/packages/astro-hydration/dist/client.js"]',
+          'script[blocking="render"][src*="/packages/astro-hydration/dist/canvas-client.js"]',
         ],
         'source' => 'Code component',
         'metadata' => [

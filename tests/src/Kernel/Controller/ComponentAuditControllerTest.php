@@ -274,6 +274,10 @@ final class ComponentAuditControllerTest extends CanvasKernelTestBase {
       'url.query_args:_wrapper_format',
       // @see \Drupal\canvas\Hook\ComponentSourceHooks::pageAttachments()
       'route.name',
+      // The Workspaces module adds a required render cache context to every
+      // HTML response.
+      // @see \Drupal\workspaces\WorkspacesServiceProvider
+      'workspace',
     ];
     self::assertEqualsCanonicalizing($expected_cache_contexts, $response->getCacheableMetadata()->getCacheContexts());
     self::assertEqualsCanonicalizing([
@@ -286,6 +290,9 @@ final class ComponentAuditControllerTest extends CanvasKernelTestBase {
       'test_create_access_cache_tag',
       // @see \Drupal\block\Plugin\DisplayVariant\BlockPageVariant
       'config:block_list',
+      // @see \Drupal\canvas\Hook\ComponentSourceHooks::pageAttachments()
+      'config:canvas.asset_library.global',
+      'config:canvas.brand_kit.global',
     ], $response->getCacheableMetadata()->getCacheTags());
 
     $this->assertTitle('Audit of Canvas test SDC with props and slots usages | ');
@@ -328,6 +335,9 @@ final class ComponentAuditControllerTest extends CanvasKernelTestBase {
       'test_create_access_cache_tag',
       // @see \Drupal\block\Plugin\DisplayVariant\BlockPageVariant
       'config:block_list',
+      // @see \Drupal\canvas\Hook\ComponentSourceHooks::pageAttachments()
+      'config:canvas.asset_library.global',
+      'config:canvas.brand_kit.global',
     ], $response->getCacheableMetadata()->getCacheTags());
 
     $this->assertTitle('Audit of Druplicon usages | ');

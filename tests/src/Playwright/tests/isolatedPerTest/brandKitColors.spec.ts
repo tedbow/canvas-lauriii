@@ -172,7 +172,6 @@ const SEL = {
     delete: '[data-testid="canvas-delete-folder-button"]',
   },
   menu: {
-    edit: '[data-state="open"] [data-testid="canvas-color-row-edit"]',
     rename: '[data-testid="canvas-color-row-rename"]',
     instances:
       '[data-state="open"] [data-testid="canvas-color-row-find-instances"]',
@@ -227,7 +226,6 @@ const PROP = {
 };
 
 test.use({
-  modules: ['canvas_dev_mode'],
   enableTestExtensions: true,
 });
 
@@ -292,9 +290,8 @@ test.describe('brand kit colors', () => {
     // another way of representing RGB.
 
     // Edit Brand Red - should open in RGBA mode (srgb colorSpace)
-    await page.locator(SEL.row('Brand Red')).hover();
-    await page.locator(SEL.rowMenu('Brand Red')).click();
-    await page.locator(SEL.menu.edit).click();
+    // A single click on the row opens the edit modal.
+    await page.locator(SEL.row('Brand Red')).click();
     await expect(page.locator(SEL.form.rgba.r)).toBeVisible();
     await expect(page.locator(SEL.form.rgba.r)).toHaveValue('204');
     await expect(page.locator(SEL.form.rgba.g)).toHaveValue('0');
@@ -302,9 +299,7 @@ test.describe('brand kit colors', () => {
     await page.locator(SEL.form.cancel).click();
 
     // Edit Brand Green - should open in HSLA mode (HSL colorSpace)
-    await page.locator(SEL.row('Brand Green')).hover();
-    await page.locator(SEL.rowMenu('Brand Green')).click();
-    await page.locator(SEL.menu.edit).click();
+    await page.locator(SEL.row('Brand Green')).click();
     await expect(page.locator(SEL.form.hsla.h)).toBeVisible();
     await expect(page.locator(SEL.form.hsla.h)).toHaveValue('142');
     await expect(page.locator(SEL.form.hsla.s)).toHaveValue('100');
@@ -312,9 +307,7 @@ test.describe('brand kit colors', () => {
     await page.locator(SEL.form.cancel).click();
 
     // Edit Brand Blue - should open in RGBA mode (srgb without hex)
-    await page.locator(SEL.row('Brand Blue')).hover();
-    await page.locator(SEL.rowMenu('Brand Blue')).click();
-    await page.locator(SEL.menu.edit).click();
+    await page.locator(SEL.row('Brand Blue')).click();
     // Brand Blue is in sRGB mode without hex, so should default to RGBA
     await expect(page.locator(SEL.form.rgba.r)).toBeVisible();
     await expect(page.locator(SEL.form.rgba.r)).toHaveValue('0');
@@ -335,12 +328,12 @@ test.describe('brand kit colors', () => {
     // Set a unique variable name and continue editing.
     await page.locator(SEL.form.variable).fill('brand-yellow');
     await page.locator(SEL.form.save).click();
+    // A successful save closes the popover — wait for it to close before
+    // clicking the row again to reopen it.
+    await expect(page.locator(SEL.form.save)).toBeHidden();
     // - Edit "Brand Blue" so the color is now yellow (255, 255, 0)
-    // Color picker is already open from format verification above
 
-    await page.locator(SEL.row('Brand Blue')).hover();
-    await page.locator(SEL.rowMenu('Brand Blue')).click();
-    await page.locator(SEL.menu.edit).click();
+    await page.locator(SEL.row('Brand Blue')).click();
     // The CSS variable error should be hidden.
     await expect(page.locator('[data-testid="color-error-card"]')).toBeHidden();
     // Test validation: enter out-of-range RGB value should disable save
@@ -767,9 +760,7 @@ test.describe('brand kit colors', () => {
     // `brandTwoFolders` is currently bound to this color, so both the form trigger
     // swatch and the preview should update in real time without a page refresh.
     await canvas.openBrandKitPanel();
-    await page.locator(SEL.row('Father Christmas')).hover();
-    await page.locator(SEL.rowMenu('Father Christmas')).click();
-    await page.locator(SEL.menu.edit).click();
+    await page.locator(SEL.row('Father Christmas')).click();
     await page.locator(SEL.form.rgba.r).fill('0');
     await page.locator(SEL.form.rgba.g).fill('0');
     await page.locator(SEL.form.rgba.b).fill('128');
@@ -918,5 +909,133 @@ test.describe('brand kit colors', () => {
     await expect(page.locator(SEL.deletePopConfirm)).toBeEnabled();
     await page.locator(SEL.deletePopConfirm).click();
     await expect(page.locator(SEL.row('Brand Red'))).toBeHidden();
+  });
+
+  test('optimistic color edits', async ({ page, drupal, canvas }) => {
+    await drupal.login({ username: 'colormaster', password: 'colormaster' });
+    await canvas.openCanvasRoot();
+    await canvas.openBrandKitPanel();
+
+    const redSwatch = page.locator(SEL.rowSwatch('Brand Red'));
+    await expect(redSwatch).toHaveCSS('background-color', 'rgb(204, 0, 0)');
+
+    // Hold the write open so the assertions below land while it is in flight.
+    let releaseWrite: () => void = () => {};
+    const writeHeld = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await page.route(/\/canvas\/api\/v0\/config\/color\/.+/, async (route) => {
+      if (route.request().method() !== 'PATCH') {
+        await route.continue();
+        return;
+      }
+      await writeHeld;
+      await route.continue();
+    });
+
+    // Edit "Brand Red" to pure blue (0, 0, 255).
+    await page.locator(SEL.row('Brand Red')).click();
+    await expect(page.locator(SEL.form.rgba.r)).toBeVisible();
+    await page.locator(SEL.form.rgba.r).fill('0');
+    await page.locator(SEL.form.rgba.g).fill('0');
+    await page.locator(SEL.form.rgba.b).fill('255');
+    await page.locator(SEL.form.save).click();
+
+    // This verifies the optimistic UI update by checking that the new color
+    // is applied and the form is closed before the server responds.
+    await expect(redSwatch).toHaveCSS('background-color', 'rgb(0, 0, 255)');
+    await expect(page.locator(POP_SEL)).toBeHidden();
+
+    releaseWrite();
+    await expect(redSwatch).toHaveCSS('background-color', 'rgb(0, 0, 255)');
+  });
+
+  // This scenario verifies an in-flight color creation followed by a
+  // rejected edit.
+  test('shows a new color before the create completes and rolls back a rejected edit', async ({
+    page,
+    drupal,
+    canvas,
+  }) => {
+    await drupal.login({ username: 'colormaster', password: 'colormaster' });
+    await canvas.openCanvasRoot();
+    await canvas.openBrandKitPanel();
+
+    // Delay the network response to run assertions while the save is pending.
+    let releaseWrite: () => void = () => {};
+    const writeHeld = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await page.route(/\/canvas\/api\/v0\/config\/color$/, async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      await writeHeld;
+      await route.continue();
+    });
+
+    await page.locator(SEL.newBtn).click();
+    await page.locator(SEL.newColorBtn).click();
+    await page.locator(SEL.form.name).fill('Impatient Amber');
+    await page.locator(SEL.form.rgba.r).fill('255');
+    await page.locator(SEL.form.rgba.g).fill('191');
+    await page.locator(SEL.form.rgba.b).fill('0');
+    await page.locator(SEL.form.save).click();
+
+    // The row is in the list while the request is still open, and the form has
+    // already closed.
+    await expect(page.locator(SEL.row('Impatient Amber'))).toBeVisible();
+    await expect(page.locator(SEL.rowSwatch('Impatient Amber'))).toHaveCSS(
+      'background-color',
+      'rgb(255, 191, 0)',
+    );
+    await expect(page.locator(POP_SEL)).toBeHidden();
+
+    // Wait for the list data to refresh before proceeding.
+    const reconciled = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().includes('/canvas/api/v0/config/brand_kit/'),
+    );
+    releaseWrite();
+    await reconciled;
+    await expect(page.locator(SEL.row('Impatient Amber'))).toBeVisible();
+
+    // Use case: Assert that a rejected edit rolls back.
+    // We capture the initial computed color to verify the exact restoration
+    // without failing on browser-specific HSL rounding quirks.
+    const greenSwatch = page.locator(SEL.rowSwatch('Brand Green'));
+    const storedGreen = await greenSwatch.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    );
+
+    await page.route(/\/canvas\/api\/v0\/config\/color\/.+/, async (route) => {
+      if (route.request().method() !== 'PATCH') {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        body: JSON.stringify({ errors: [{ detail: 'Rejected by test.' }] }),
+      });
+    });
+
+    await page.locator(SEL.row('Brand Green')).click();
+    // Brand Green is stored in the HSL color space, so its form opens in HSLA.
+    await expect(page.locator(SEL.form.hsla.h)).toBeVisible();
+    await page.locator(SEL.form.hsla.h).fill('300');
+    await page.locator(SEL.form.hsla.s).fill('100');
+    await page.locator(SEL.form.hsla.l).fill('50');
+    await page.locator(SEL.form.save).click();
+
+    // The rejected value must not survive anywhere in the UI.
+    await expect(greenSwatch).toHaveCSS('background-color', storedGreen);
+    // The form closed on submit and came back on the rejection, still holding
+    // what was entered, so the edit can be corrected and retried.
+    await expect(page.locator(POP_SEL)).toBeVisible();
+    await expect(page.locator(SEL.form.hsla.h)).toHaveValue('300');
+    await expect(page.getByText(/Failed to update color/)).toBeVisible();
   });
 });

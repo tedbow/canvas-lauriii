@@ -38,6 +38,7 @@ const baseDiscovery: DiscoveryResult = {
   pageTemplates: [],
   warnings: [],
   stats: { scannedFiles: 0, ignoredFiles: 0 },
+  componentSchemas: new Map(),
 };
 
 const baseManifest: PreviewManifest = {
@@ -45,6 +46,7 @@ const baseManifest: PreviewManifest = {
   components: [],
   warnings: [],
   globalCssUrl: null,
+  brandKitCssUrl: null,
 };
 
 describe('computeWorkbenchStructuralFingerprint', () => {
@@ -58,6 +60,18 @@ describe('computeWorkbenchStructuralFingerprint', () => {
       structuredClone(baseManifest),
     );
     expect(a).toBe(b);
+  });
+
+  it('changes when the brand kit CSS URL changes', () => {
+    const a = computeWorkbenchStructuralFingerprint(
+      baseDiscovery,
+      baseManifest,
+    );
+    const b = computeWorkbenchStructuralFingerprint(baseDiscovery, {
+      ...baseManifest,
+      brandKitCssUrl: '/@id/virtual:canvas-brand-kit.css',
+    });
+    expect(a).not.toBe(b);
   });
 });
 
@@ -208,6 +222,44 @@ describe('shouldSkipWorkbenchIframeRemount', () => {
       ).toBe(true);
     },
   );
+
+  it('returns true for a mock edit with same fingerprint, false when the structure changed', () => {
+    for (const filePath of [
+      'src/components/card/mocks.json',
+      'src/components/card/card.mocks.json',
+    ]) {
+      expect(
+        shouldSkipWorkbenchIframeRemount({
+          payload: { reloadFrameOnly: false, filePath, event: 'change' },
+          previousFingerprint: fp,
+          nextFingerprint: fp,
+        }),
+      ).toBe(true);
+    }
+    // Adding or removing a mock file is not an in-place edit.
+    expect(
+      shouldSkipWorkbenchIframeRemount({
+        payload: {
+          reloadFrameOnly: false,
+          filePath: 'src/components/card/mocks.json',
+          event: 'add',
+        },
+        previousFingerprint: fp,
+        nextFingerprint: fp,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipWorkbenchIframeRemount({
+        payload: {
+          reloadFrameOnly: false,
+          filePath: 'src/components/card/mocks.json',
+          event: 'change',
+        },
+        previousFingerprint: fp,
+        nextFingerprint: `${fp}\nchanged`,
+      }),
+    ).toBe(false);
+  });
 
   it('returns true for page json change with same fingerprint', () => {
     expect(

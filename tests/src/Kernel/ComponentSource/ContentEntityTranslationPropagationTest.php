@@ -545,7 +545,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    */
   public function testPublishAfterPropagationSucceeds(): void {
     $this->config('system.theme')->set('default', 'stark')->save();
-    $this->setUpCurrentUser([], [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], $this->previewAndPublishPermissions());
 
     $page = $this->createPageWithTranslation();
     $page_id = $page->id();
@@ -649,7 +649,8 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    * {@inheritdoc}
    */
   protected function previewAndPublishPermissions(): array {
-    return [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION];
+    // Publishing publishes the workspace, which follows core access.
+    return [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION, 'view any workspace', 'edit any workspace'];
   }
 
   /**
@@ -705,7 +706,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    */
   public function testDiscardAfterPropagationClearsAllTranslations(): void {
     $this->config('system.theme')->set('default', 'stark')->save();
-    $this->setUpCurrentUser([], [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], $this->previewAndPublishPermissions());
 
     $page = $this->createPageWithTranslation();
     $page_id = $page->id();
@@ -740,7 +741,7 @@ final class ContentEntityTranslationPropagationTest extends TranslationPropagati
    */
   public function testDeletingTranslationDiscardsItsSnapshot(): void {
     $this->config('system.theme')->set('default', 'stark')->save();
-    $this->setUpCurrentUser([], [Page::EDIT_PERMISSION, AutoSaveManager::PUBLISH_PERMISSION]);
+    $this->setUpCurrentUser([], $this->previewAndPublishPermissions());
 
     $page = $this->createPageWithTranslation();
     $page_id = $page->id();

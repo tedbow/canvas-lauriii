@@ -14,7 +14,8 @@ hooks, and configuration may change without a deprecation path.
 - A frontend app built on the Drupal Canvas Headless SDK. The SDK ships as the workspace package
   `@drupal-canvas/headless` (framework-agnostic core) plus one adapter per framework —
   `@drupal-canvas/headless-next` (Next.js), `@drupal-canvas/headless-astro` (Astro),
-  `@drupal-canvas/headless-nuxt` (Nuxt), and `@drupal-canvas/headless-tanstack-start` (TanStack Start) — with
+  `@drupal-canvas/headless-nuxt` (Nuxt), `@drupal-canvas/headless-tanstack-start` (TanStack Start),
+  and `@drupal-canvas/headless-angular` (Angular) — with
   `@drupal-canvas/headless-react` as the shared React binding.
 
 ## Setup
@@ -29,6 +30,52 @@ Opening an entity in the Canvas editor then loads the first frontend in the list
 
 In cloned environments, regenerate the Simple OAuth keypair per environment; with shared keys, preview credentials
 minted on one clone would redeem on another.
+
+## Published route previews
+
+The module embeds the first configured frontend on published canonical entity
+pages rendered by a Canvas component tree or an enabled `full` content template.
+Any selected page variant must also be headless-compatible.
+
+Embedding requires a logged-in user with `access canvas headless preview` and
+access to the Drupal route. Other visitors and unsupported routes keep Drupal's
+normal rendering.
+
+Previews render saved content, templates, and page variants with the current
+user's permissions. Drupal's toolbar, administration navigation, and status
+messages remain visible around the iframe.
+
+Custom frontend Content Security Policies must allow the Drupal origin in
+`frame-ancestors`.
+
+### Navigation
+
+Eligible links open outside the iframe: Drupal-resolved paths use their Drupal
+URL, while unresolved paths and external links use their original URL.
+`target="_blank"` opens a new tab.
+
+### Entity previews and revisions
+
+Entities with enabled Canvas content templates can embed the frontend on their
+`entity.{entity_type}.preview`, `entity.{entity_type}.revision`, and
+`entity.{entity_type}.latest_version` routes. This includes node form previews,
+core revision routes, and Content Moderation's latest-version routes. Embedding
+requires the authenticated access described above and an enabled Canvas template
+for the selected view mode. Other requests keep Drupal's normal rendering.
+
+Canvas currently enables content templates only for nodes. Other entity types
+require a module that adds content template support.
+
+Previews render the selected entity revision or unsaved form values with saved
+Canvas templates and page variants. Canvas auto-saves do not replace them. Preview
+responses and their rendered content cannot be cached.
+
+The frontend must serve preview and revision paths through its Drupal content
+route handler. The SDK catch-all route can handle these paths.
+
+### Building the browser code
+
+Build browser assets with `npm run packages:build` from the repository root.
 
 ## Browser support
 
@@ -58,6 +105,28 @@ hook documentation, including the site-policy `_alter` hook.
 are supported; fragments are rejected. File URLs in content responses are absolute so they resolve from the
 headless frontend rather than from the Drupal origin implicitly.
 
+### Read-only preview language
+
+Canvas's language selector passes the selected language through the embedded
+read-only draft session for pages, content templates, and page templates. The
+SDK's `fetchPage()` forwards it only while the draft session is live. It does
+not change the editable editor iframe or add a public frontend language option.
+
+The content endpoint honors this `language` hint only for preview-scoped tokens.
+When negotiation must change, it sends one private, non-cacheable HTTP 302 back
+to the same-origin content endpoint with the language-specific `requestUri` and
+preview context. `fetchPage()` follows this transport redirect with the same
+credential; it is not a frontend navigation result. A fresh request uses the
+site's language-switch URL/query negotiation before routing and rendering,
+including translation access checks, per-language page auto-saves, and template
+translation overrides merged onto draft trees. If negotiation still does not
+match after that hop, the endpoint returns 404 rather than redirecting again. A configured language
+without a translation retains Drupal's fallback; an unknown language returns 400
+when minting an assertion and 404 from the content endpoint.
+
+As with coupled previews, interface and content negotiation are expected to agree.
+Cross-domain language negotiation is not supported for this internal preview hint.
+
 ## Canvas entity endpoint
 
 `GET /canvas/content-api/entity?type={entityType}&id={id}` renders one
@@ -85,6 +154,8 @@ content-template view mode, for example
 Canvas does not manage the requested entity and view mode.
 
 ### Content response
+
+This example requests French, but renders English because the French translation is unavailable.
 
 ```text
 {
@@ -114,11 +185,17 @@ Canvas does not manage the requested entity and view mode.
   },
   "route": {
     "name": "entity.canvas_page.canonical",
-    "requestUri": "/page/1",
+    "requestUri": "/fr/page/1",
     "params": {
       "canvas_page": "1"
     },
     "managedByCanvas": true,
+    "negotiatedLanguage": "fr",
+    "translations": [
+      { "langcode": "en", "name": "English", "nativeName": "English", "url": "/contact", "translationAvailable": true, "current": false, "external": false },
+      { "langcode": "fr", "name": "French", "nativeName": "Français", "url": "/fr/page/1", "translationAvailable": false, "current": true, "external": false },
+      { "langcode": "es", "name": "Spanish", "nativeName": "Español", "url": "/es/contact", "translationAvailable": true, "current": false, "external": false }
+    ],
     "entity": {
       "entityType": "canvas_page",
       "bundle": "canvas_page",
@@ -136,6 +213,20 @@ roots in its `default` slot. Routes Canvas does not manage and managed routes wi
 
 `head` is compatible with the [Unhead](https://unhead.unjs.io/) package. It always contains `title` and may also
 contain `meta`, `link`, and `script`. Canonical links are omitted because the frontend owns its public URLs.
+
+`route.negotiatedLanguage` is the negotiated content-language ID. `route.translations` lists every enabled
+language, matching Code Components' `getPageData().mainEntity.translations`: `langcode`, localized `name`,
+`nativeName`, `url`, `translationAvailable`, and `current`. Missing and denied translations both report
+`translationAvailable: false`, with the established Code Component fallback URL semantics, not a guarantee
+of access. `current` follows `route.negotiatedLanguage`; `route.entity.langcode` identifies the rendered
+language. Monolingual sites and routes without a canonical content entity return an empty list.
+
+A non-external `url` is a site-relative Drupal request URI, with the installation base path removed and the
+language prefix or query preserved. External URLs remain absolute and are **not valid `fetchPage` input**;
+this does not add SDK support for domain negotiation. Frontends map entries to their own public URLs.
+The headless-only `external` flag and URL processing support Drupal request URIs: configured negotiation
+priority and explicit query-language selection are preserved, while editor-only preview settings are omitted.
+See [multilingual examples](../../docs/user/src/content/docs/headless/multilingual-sites.mdx#translation-links).
 
 ### Redirect response
 
@@ -168,9 +259,8 @@ Errors use RFC 9457 Problem Details and the `application/problem+json` media typ
 
 ## Known limitations
 
-- The rendered-content endpoint serves the default revision: an unpublished entity previews fully, but a published entity's forward
-  revision appears only in JSON:API-driven listings (the SDK hydrates working copies), not on pages rendered
-  through `fetchPage()`.
+- Canonical routes render the default revision. Use revision or latest-version
+  paths with `fetchPage()` to render a published entity's forward revision.
 - Core JSON:API filtered collections exclude unpublished content regardless of permissions; the example app avoids
   filtered collection queries for draft content.
 - Content gated by a view permission not declared preview-safe is invisible in previews until the owning module
