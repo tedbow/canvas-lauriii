@@ -244,3 +244,50 @@ translation deletes, the publish transaction).
    the fix ships. The field-definition clearing on every workspace switch and
    the core computed `path` alias limitation stay recorded here as known
    workarounds, not filed yet.
+
+## 5. Implementation notes (2026-10-07, branch `workspaces-simplify`)
+
+The cut landed with these deviations from section 1, each forced by a
+decision in section 4 or by a test:
+
+- **`isPublishTimeStaging()` and `hook_canvas_workspace_staged_write()`
+  stay.** Decisions 3 and 4 keep code components, asset libraries, brand
+  kits, staged config updates and staged configuration translations in the
+  fallback store, so a staged write is not always an entity save:
+  `canvas_workflows` still needs the hook to demote on those writes, and the
+  config-save listener still needs the latch while the pre-publish subscriber
+  stages fallback drafts.
+- **`executeInWorkspaceUnchecked()` stays**, for the reads that need the
+  workspace partition (staged workspace-scoped configuration, the pending
+  list built for a publish from cron, discarding staged config) and for the
+  update path's migration. Content drafts are read by revision id
+  (`loadRevision()`), so content reads, discards and lock lookups no longer
+  switch.
+- **Drafts are validated inside the staging workspace.**
+  `ClientDataToEntityConverter` runs the entity form and entity validation
+  through `AutoSaveManager::executeInStagingWorkspace()`: with the
+  Main-workspace exemption gone, core's `EntityWorkspaceConflict` refuses an
+  entity drafted in the workspace when validated outside it (kernel tests
+  have no active workspace).
+- **Latest-only retention** deletes the revision core tracked before the
+  save: core's association table holds one revision per entity per
+  workspace, so the previous pending revision is untracked, not listed.
+- **The layout GET's `autoSaved` query parameter stays**, no longer behind a dev flag: the
+  review page's published pane needs the Live version. The `canvas_dev_cd`
+  gate, the `updated` response property and the conflict error codes are
+  gone.
+- **`WorkspaceConfigTestTrait::registerWorkspaceConfigKeyValue()` (from
+  `workspace_config`) stays in the kernel test bases**: `workspace_config`'s
+  publishing subscriber asserts the decorated key-value factory, which
+  KernelTestBase's synthetic `keyvalue` otherwise skips. Canvas's own
+  invariant factory and test trait are gone.
+- **Pre-existing failures** on the branch, unchanged by the cut (verified
+  against the pre-cut tree): `ApiLayoutControllerGetTest::testRenderDynamic`,
+  `ApiLayoutControllerPatchTest::testPatchCleansUpOrphanedChildrenOnComponentEvolution`
+  (the workspace partition of `workspace_config`'s cached config storage
+  goes stale after a Live write: `WorkspaceConfigCachedStorage::getCacheKey()`
+  prefixes the key per workspace, and a Live write deletes only the Live
+  key; upstream bug), five tests in `ApiAutoSaveControllerTranslationTest`,
+  six in `ContentEntityTranslationPropagationTest`, and
+  `PageVariantTest::testPageEntityHasPageVariantBaseField`.
+

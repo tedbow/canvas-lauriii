@@ -28,22 +28,20 @@ publish), that content templates are no longer created disabled, and how the
 base for hashes and starting points is chosen; consequence 12 records the
 accepted cache-tag invalidation cost.
 
-Amended 2026-10-07 (decided, not yet implemented; see
-`docs/workspace-simplification-review.md` section 4): drafts the storage
-layer rejects are retained in a per-workspace key-value collection, not a
-snapshot content entity; the deferred write buffer and flusher are removed
-(every editor request already flushed before responding); staged revision
-retention is latest-only; core's `EntityWorkspaceConflict` lock applies
-unchanged (no Main-workspace exemption, no hash-based external-edit conflict
-detection or resolution); content templates created inside a workspace are
-not created disabled; publish validation moves into a `WorkspacePrePublishEvent`
-subscriber so core UI and cron publishes are validated like the Canvas API;
+Amended 2026-10-07 (see `docs/workspace-simplification-review.md` section
+4): a staged write is an entity save inside the workspace and nothing else.
+Drafts the storage layer rejects, and drafts of config entity types whose
+save has side effects, are retained in a per-workspace key-value fallback
+store, not a snapshot content entity; the deferred write buffer and flusher
+are gone (every editor request already flushed before responding); staged
+revision retention is latest-only; core's `EntityWorkspaceConflict` lock
+applies unchanged (no Main-workspace exemption, no hash-based external-edit
+conflict detection or resolution); content templates are created enabled;
+publish validation runs in a `WorkspacePrePublishEvent` subscriber so core
+UI and cron publishes are validated like the Canvas API;
 `drupal/workspace_config` is pinned to `^1.0@beta`, which makes the
-workspace-invariant key-value factory unnecessary. Decision 3's "still
-created disabled" sentence is superseded. Code components, asset libraries,
-brand kits, staged config updates and staged configuration translations keep
-the fallback store until a spike confirms their save side effects can be
-gated inside a workspace.
+workspace-invariant key-value factory unnecessary. Decisions 1, 2, 3 and 6
+and consequence 12 below describe the amended state.
 
 Amends [ADR 14](0014-stage-autosaves-in-a-dedicated-workspace.md): the
 publish half of that decision (per-item publish, workspace publish blocked)
@@ -71,22 +69,25 @@ unit of review and publish.
 
 1. **Staging follows the active workspace.** Auto-save reads and writes
    resolve against core's negotiated active workspace, falling back to the
-   Main workspace (`canvas_default`, relabeled from "Canvas"; same machine
-   ID, no data migration). Auto-save keys are workspace-prefixed
-   (`{workspace}:{type}:{id}[:{langcode}]`), which partitions every staging
-   store — snapshot rows (which gain a `workspace` field and a
-   workspace-qualified unique key), buffer rows and their staging metadata,
-   form violations, pruner bookkeeping, and caches — per workspace. Buffer rows
-   flush into the workspace recorded in their key even if the user has
-   switched since. Route-scoped workspace activation is removed; the editor
-   activates the Main workspace (persisting) when negotiation yields none.
-   There is no fallback store: Workspaces and Workspace Config are hard
-   dependencies, so every draft is a workspace revision, workspace-scoped
-   configuration, or a snapshot row (staged configuration translations
-   included), and the staging metadata (client instance, stored-entity hash,
-   conflict retention) lives with the draft; the `canvas.auto_save` key-value
-   store is read by the update path only. The Main workspace
-   cannot be deleted. A pending workspace revision only carries revisionable
+   Main workspace (`canvas_default`). Auto-save keys are workspace-prefixed
+   (`{workspace}:{type}:{id}[:{langcode}]`), which partitions form
+   violations and caches per workspace; the key-value stores are one
+   collection per workspace (`canvas.auto_save.{workspace}` for fallback
+   drafts, `canvas.auto_save_meta.{workspace}` for the client instance, the
+   verbatim draft `path` value and attribution the primary stores cannot
+   record), which caps workspace IDs at 100 characters. Route-scoped
+   workspace activation is removed; the editor activates the Main workspace
+   (persisting) when negotiation yields none. Workspaces and Workspace
+   Config are hard dependencies, so a staged write is an entity save inside
+   the workspace: content becomes the one tracked pending revision of the
+   entity (the previously tracked revision is deleted), component tree
+   config entities become workspace-scoped configuration. The fallback store
+   holds what cannot be such a save: drafts the storage layer rejected, and
+   drafts of config entity types whose save has side effects. A fallback row
+   shadows the primary store and is removed by the next successful primary
+   persist. The 1.x `canvas.auto_save` store is read by the update path
+   only. Client data is converted and validated inside the staging
+   workspace, where the draft lives. The Main workspace cannot be deleted. A pending workspace revision only carries revisionable
    fields, so every field a draft can edit is revisionable (the page owner
    field was made so in `canvas_update_11202`), and a translation's draft is
    the per-translation difference between the staged revision and Live: an
@@ -95,14 +96,17 @@ unit of review and publish.
    Kernel tests provision the same infrastructure as an installed site.
 
 2. **The workspace is the unit of publish.** The publish endpoint takes no
-   item selection: it validates every item tracked in the active workspace
-   (entity validation plus recorded form violations; update access per
-   item), stages any snapshot-held drafts into the workspace, and calls core
-   `Workspace::publish()` inside one database transaction (core's own
-   transaction becomes a savepoint). Core promotes every tracked revision —
-   sibling translations and dependent path aliases included, which removes
-   Phase 1's grouping and dependent-publish workarounds — and the
-   `workspace_config` pre-publish subscriber applies staged configuration.
+   item selection: it calls core `Workspace::publish()` inside one database
+   transaction (core's own transaction becomes a savepoint). A Canvas
+   `WorkspacePrePublishEvent` subscriber, which core dispatches inside every
+   publish (Canvas API, core Workspaces UI, cron), validates every pending
+   change of the workspace (entity validation plus recorded form violations;
+   update access per item) and then stages the fallback drafts into the
+   workspace; any failure throws, and core does not catch it, so no live
+   write happens. Core promotes every tracked revision — sibling
+   translations and dependent path aliases included, which removes Phase 1's
+   grouping and dependent-publish workarounds — and the `workspace_config`
+   pre-publish subscriber applies staged configuration.
    A post-publish subscriber clears Canvas's staging stores and completes
    the workspace: a published named workspace is deleted (its content is
    live; nothing is lost), and sessions pointing at it fall back to the
@@ -122,26 +126,21 @@ unit of review and publish.
    regular configuration for every consumer inside that workspace (entity
    view builders, Views, page variant resolution, the editor preview), not
    only on Canvas preview routes. Code components, asset libraries, brand
-   kits and staged config updates keep snapshot rows as their primary
-   store: their saves compile and write asset files or apply to other
-   configuration, which a draft must not trigger. Canvas declares its
-   workspace-staged config entity types workspace-safe to
-   `workspace_config` itself rather than relying on that module's built-in
-   list. A config entity created inside a workspace
-   exists only there until publish. Content templates are still created
-   disabled and enabled at their first publish (the flag doubles as the
-   "never published" signal); inside a workspace, a disabled template with
-   no Live copy renders as if enabled, since it is that workspace's own
-   unpublished creation, and renders of templated entities vary by the
-   workspace cache context. Hashes, dirty state and the client's
-   auto-save starting point are computed against a stable base: the Live
-   configuration when one exists, otherwise the configuration as it was
-   created inside the workspace (recorded alongside the draft's
-   conflict-detection metadata); never the staged copy itself. Content
-   deletion remains a Live operation — core has no staged deletion.
-   Snapshot rows remain the store for drafts that cannot be persisted (code
-   editor working copies, storage-rejected payloads), now per workspace, and
-   are staged into the workspace at publish.
+   kits, staged config updates and staged configuration translations keep
+   the fallback store as their primary store: their saves compile and write
+   asset files or apply to other configuration, which a draft must not
+   trigger (gating those side effects inside a workspace is a pending
+   spike). Canvas declares its workspace-staged config entity types
+   workspace-safe to `workspace_config` itself rather than relying on that
+   module's built-in list. A config entity created inside a workspace
+   exists only there until publish: it is "new" until the workspace
+   publishes, and content templates are created enabled. Hashes and dirty
+   state are computed against the Live configuration; configuration created
+   inside the workspace has no Live copy and is always pending, with a
+   constant auto-save starting point until publish. Content deletion remains
+   a Live operation — core has no staged deletion. Fallback drafts are
+   staged into the workspace by the pre-publish subscriber, so core's
+   publish promotes them.
 
 4. **Review process defined as a core workflow.** The review steps are an
    ordinary workflow of a Canvas-provided workflow type
@@ -174,10 +173,11 @@ unit of review and publish.
    instead of retrying.
 
 6. **Cross-workspace locks are surfaced.** Core's one-workspace-per-entity
-   semantics apply to named workspaces. The Phase 1 constraint exemption is
-   narrowed: only Live saves (no active workspace) of an entity tracked
-   solely in the Main workspace remain exempt. Canvas staged writes check
-   ownership explicitly (programmatic saves bypass validation) and reject
+   semantics apply to every workspace, the Main workspace included: an
+   entity with a Canvas draft cannot be saved outside its workspace (node
+   form, JSON:API) until the draft is published or discarded, and Canvas
+   has no external-edit conflict detection of its own. Canvas staged writes
+   check ownership explicitly (programmatic saves bypass validation) and reject
    foreign-owned entities with a structured 409 naming the owning
    workspace; the editor receives lock and active-workspace context at boot
    so it can warn before the first write.
@@ -192,14 +192,15 @@ unit of review and publish.
    schedule/unschedule.
 
 8. **Update path.** One straight-line migration from 1.x:
-   `canvas_update_11201` enables `workspaces` and `workspace_config`,
-   installs the snapshot entity type and creates the Main workspace;
+   `canvas_update_11201` enables `workspaces` and `workspace_config` and
+   creates the Main workspace;
    `canvas_update_11202` makes the page owner field revisionable;
    `canvas_post_update_0031_migrate_auto_save_to_workspace` persists every
-   `canvas.auto_save` key-value row through the staged write path into the
-   Main workspace (content as pending revisions, component tree config as
-   workspace-scoped configuration, the rest as snapshot rows), preserving
-   payload, editor and edit time, and empties the store;
+   `canvas.auto_save` key-value row into the Main workspace (content as
+   pending revisions, component tree config as workspace-scoped
+   configuration, the rest moved as is into the Main workspace's fallback
+   collection), preserving payload, editor and edit time, and empties the
+   store;
    `canvas_post_update_0032_workspace_permissions` maps Canvas permissions
    onto core workspace permissions ("view any workspace" for Canvas-editor
    roles; "edit any workspace" and "create workspace" for publisher roles).
@@ -278,12 +279,11 @@ unit of review and publish.
     for every entity whose output depends on that configuration (for a
     content template, every entity of that bundle in that view mode).
     Correctness is unaffected; Live cache hit rate suffers while
-    configuration is being edited in any workspace. Accepted: staged
-    config writes flush at most once per target per request through the
-    deferred flusher, and core Workspaces treats a content entity saved in
-    a workspace the same way (its own tag is invalidated globally).
+    configuration is being edited in any workspace. Accepted: the editor
+    debounces its writes, and core Workspaces treats a content entity saved
+    in a workspace the same way (its own tag is invalidated globally).
     Narrowing invalidation to the writing workspace is an
     invalidation-layer concern that does not alter this decision's write
     path and is left to a separate decision. In addition, `workspace_config`
     stores each staged write as a new revision of its tracking entity with
-    no pruning; the per-request flush bounds that growth.
+    no pruning.
