@@ -9,6 +9,7 @@ use Drupal\canvas\AutoSave\Workspace\CanvasWorkspaceProvider;
 use Drupal\canvas\CanvasNotificationHandler;
 use Drupal\canvas\CanvasServiceProvider;
 use Drupal\canvas\Entity\CanvasAutoSaveSnapshot;
+use Drupal\canvas\Entity\Page;
 use Drupal\canvas\Health\HealthCheck;
 use Drupal\canvas\Health\HealthRecords;
 use Drupal\Core\Datetime\DateFormatterInterface;
@@ -282,6 +283,31 @@ function canvas_update_11202(): void {
       $store->delete($key);
     }
   }
+}
+
+/**
+ * Makes the canvas_page owner field revisionable so drafts can stage it.
+ *
+ * A draft is staged as a pending workspace revision, which only carries
+ * revisionable fields.
+ */
+function canvas_update_11203(array &$sandbox): void {
+  $update_manager = \Drupal::entityDefinitionUpdateManager();
+  $entity_type = $update_manager->getEntityType(Page::ENTITY_TYPE_ID);
+  if ($entity_type === NULL) {
+    return;
+  }
+  /** @var \Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface $repository */
+  $repository = \Drupal::service(EntityLastInstalledSchemaRepositoryInterface::class);
+  $field_storage_definitions = $repository->getLastInstalledFieldStorageDefinitions(Page::ENTITY_TYPE_ID);
+  $owner = $field_storage_definitions['owner'] ?? NULL;
+  if (!$owner instanceof BaseFieldDefinition || $owner->isRevisionable()) {
+    return;
+  }
+  $owner->setRevisionable(TRUE);
+  $progress = $sandbox;
+  $update_manager->updateFieldableEntityType($entity_type, $field_storage_definitions, $progress);
+  $sandbox = $progress ?? [];
 }
 
 /**

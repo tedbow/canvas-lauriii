@@ -121,6 +121,11 @@ final class Page extends EditorialContentEntityBase implements EntityOwnerInterf
     /** @var \Drupal\Core\Field\BaseFieldDefinition[] $fields */
     $fields = parent::baseFieldDefinitions($entity_type);
     $fields += self::ownerBaseFieldDefinitions($entity_type);
+    // A draft is staged as a pending (non-default) workspace revision, which
+    // only carries revisionable fields: a non-revisionable owner could never be
+    // drafted. Core's trait leaves the owner field non-revisionable.
+    // @see \Drupal\user\EntityOwnerTrait::ownerBaseFieldDefinitions()
+    $fields['owner']->setRevisionable(TRUE);
     $fields['title'] = BaseFieldDefinition::create('string')
       ->setLabel(t('Title'))
       ->setTranslatable(TRUE)
