@@ -77,10 +77,6 @@ final class ApiConfigControllers extends ApiControllerBase {
     private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
 
-  private function workspaceManager(): WorkspaceManagerInterface {
-    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
-  }
-
   /**
    * Returns a list of enabled Canvas config entities in client representation.
    *

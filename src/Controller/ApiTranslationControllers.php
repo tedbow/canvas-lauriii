@@ -31,10 +31,6 @@ final class ApiTranslationControllers extends ApiControllerBase {
     private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
 
-  private function workspaceManager(): WorkspaceManagerInterface {
-    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
-  }
-
   /**
    * Deletes a single translation of a canvas_page entity.
    *

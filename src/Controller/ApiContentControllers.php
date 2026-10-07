@@ -80,10 +80,6 @@ final class ApiContentControllers extends ApiControllerBase {
     private readonly ?WorkspaceManagerInterface $workspaceManager,
   ) {}
 
-  private function workspaceManager(): WorkspaceManagerInterface {
-    return $this->workspaceManager ?? throw new \LogicException('The Workspaces module is not installed.');
-  }
-
   /**
    * Returns a single Canvas page with its component tree field.
    */
