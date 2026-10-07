@@ -65,6 +65,13 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 final class WorkspaceAutoSave {
 
   /**
+   * Whether a translation is being dropped from a staged copy right now.
+   *
+   * @see ::discardStagedTranslation()
+   */
+  private bool $discardingTranslation = FALSE;
+
+  /**
    * Metadata key holding a content draft's verbatim `path` field value.
    */
   public const string DRAFT_PATH_KEY = 'draft_path';
@@ -1359,6 +1366,55 @@ final class WorkspaceAutoSave {
         }
       }
     }
+  }
+
+  /**
+   * Drops one translation from the staged revision after its Live deletion.
+   *
+   * A workspace revision carries every translation, so discarding the staged
+   * revisions would also discard the sibling translations' drafts. Only the
+   * deleted translation leaves the staged copy; the siblings stay pending and
+   * publishing no longer resurrects the deleted translation.
+   *
+   * @see \Drupal\canvas\Hook\AutoSaveHooks::entityTranslationDelete()
+   */
+  public function discardStagedTranslation(ContentEntityInterface $translation): void {
+    // Removing the translation from the staged copy saves that copy, which
+    // fires hook_entity_translation_delete() again for the staged copy's
+    // translation while the tracked revision still carries it.
+    if ($this->discardingTranslation) {
+      return;
+    }
+    $key = AutoSaveManager::getAutoSaveKey($translation);
+    $id = $translation->id();
+    $type_id = $translation->getEntityTypeId();
+    $langcode = $translation->language()->getId();
+    $workspace_id = $this->getStagingWorkspaceId();
+    if ($id !== NULL) {
+      $this->store->deleteTarget($workspace_id, AutoSaveFallbackStore::targetKey($translation));
+    }
+    if ($id !== NULL && !$translation->isDefaultTranslation() && $this->trackedRevisionIds($translation, $workspace_id) !== []) {
+      $this->executeInWorkspaceUnchecked($workspace_id, function () use ($type_id, $id, $langcode, $workspace_id): void {
+        $storage = $this->entityTypeManager->getStorage($type_id);
+        $storage->resetCache([$id]);
+        $staged = $storage->load($id);
+        if (!$staged instanceof ContentEntityInterface || !$staged->hasTranslation($langcode) || $staged->getTranslation($langcode)->isDefaultTranslation()) {
+          return;
+        }
+        $previous_revision_ids = $this->trackedRevisionIds($staged, $workspace_id);
+        $staged->removeTranslation($langcode);
+        $this->discardingTranslation = TRUE;
+        try {
+          $staged->save();
+        }
+        finally {
+          $this->discardingTranslation = FALSE;
+        }
+        $this->pruneToLatestRevision($staged, $previous_revision_ids);
+      });
+    }
+    $this->cacheTagsInvalidator->invalidateTags([AutoSaveManager::CACHE_TAG]);
+    $this->cache->delete($key);
   }
 
   /**
