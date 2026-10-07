@@ -10,8 +10,6 @@ use Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface;
 use Drupal\Core\Entity\EntityStorageException;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Language\LanguageInterface;
-use Drupal\workspaces\WorkspaceManagerInterface;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
 /**
  * Reads and writes payload snapshot rows, one per staged target per workspace.
@@ -26,8 +24,6 @@ final class AutoSaveSnapshotRepository {
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly EntityLastInstalledSchemaRepositoryInterface $entityLastInstalledSchemaRepository,
-    #[Autowire(service: 'workspaces.manager')]
-    private readonly WorkspaceManagerInterface $workspaceManager,
   ) {}
 
   /**
@@ -150,19 +146,6 @@ final class AutoSaveSnapshotRepository {
     if ($entities) {
       $storage->delete($entities);
     }
-  }
-
-  /**
-   * Runs $callable inside the staging workspace when it exists.
-   *
-   * The staging workspace is the active workspace when one is negotiated
-   * (in which case this is a passthrough) or the Main workspace otherwise.
-   */
-  public function executeInStagingWorkspace(callable $callable): mixed {
-    if ($this->workspaceManager->hasActiveWorkspace()) {
-      return $callable();
-    }
-    return $this->workspaceManager->executeInWorkspace(AutoSaveWorkspace::ID, $callable);
   }
 
 }

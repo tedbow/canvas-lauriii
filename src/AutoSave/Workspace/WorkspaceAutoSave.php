@@ -276,11 +276,28 @@ final class WorkspaceAutoSave {
   }
 
   /**
-   * Runs a bookkeeping callback inside the staging workspace.
+   * Runs a user-initiated write inside the staging workspace.
    *
    * A passthrough when the staging workspace is already active: every
    * workspace switch dispatches WorkspaceSwitchEvent, which resets config
    * and field definition caches, so needless round trips are avoided.
+   * Switching follows core workspace access: the write is the user's own.
+   *
+   * @see ::executeInStagingWorkspaceUnchecked()
+   */
+  private function executeInStagingWorkspace(callable $callback): mixed {
+    $staging_workspace_id = $this->getStagingWorkspaceId();
+    if ($this->workspaceManager->getActiveWorkspace()?->id() === $staging_workspace_id) {
+      return $callback();
+    }
+    return $this->workspaceManager->executeInWorkspace($staging_workspace_id, $callback);
+  }
+
+  /**
+   * Runs a bookkeeping callback inside the staging workspace.
+   *
+   * Like ::executeInStagingWorkspace(), but the switch is granted regardless
+   * of who triggered it.
    *
    * @see ::executeInWorkspaceUnchecked()
    */
@@ -557,7 +574,7 @@ final class WorkspaceAutoSave {
     // Scope the workspace context to the persist operation: permanently
     // activating the workspace would leak into subsequent entity saves in the
     // same process (CLI, tests, long-running workers).
-    $this->snapshotRepository->executeInStagingWorkspace(function () use ($entity, $clientId, $immediateContentPersist, $entry): void {
+    $this->executeInStagingWorkspace(function () use ($entity, $clientId, $immediateContentPersist, $entry): void {
       if ($this->usesWorkspaceConfigStaging($entity)) {
         \assert($entity instanceof ComponentTreeConfigEntityBase);
         $this->persistConfigEntity($entity, $clientId, $immediateContentPersist, $entry);
