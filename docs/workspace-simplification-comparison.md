@@ -37,7 +37,7 @@ None of these depend on A's storage design. All port to B.
 | | A | B |
 |---|---|---|
 | Stores | Pending revision, `workspace_config` row, `canvas_auto_save_snapshot` entity, `PendingContentAutoSaveBuffer` key-value row (also the metadata sidecar), `AutoSaveRevisionPruner` key-value state. | Pending revision, `workspace_config` row, `AutoSaveFallbackStore` key-value row (`canvas.auto_save.{workspace}`, 1.x row shape), metadata collection `canvas.auto_save_meta.{workspace}`. |
-| Content write | `WorkspaceContentEntityPersist::persist()` (A `:51-93`): `save()` in the workspace, `recordAndPrune()`, delete shadowing snapshot; any `\Throwable` → snapshot. On `canvas.api.*` routes the write is enqueued in the buffer first (`shouldDeferContentPersistToTerminate()` A `WorkspaceAutoSave.php:868-875`). | `persistContentEntity()` (B `:591-612`): `save()` in the workspace, `pruneToLatestRevision()`, `recordPrimaryPersist()`; any `\Throwable` → fallback row. Always synchronous. |
+| Content write | `WorkspaceContentEntityPersist::persist()` (A `:51-93`): `save()` in the workspace, `recordAndPrune()`, delete shadowing snapshot; any `\Throwable` → snapshot. On `canvas.api.*` routes the write is enqueued in the buffer first (`shouldDeferContentPersistToTerminate()` A `WorkspaceAutoSave.php:868-875`). | `persistContentEntity()`: `save()` in the workspace, `pruneToLatestRevision()`, `recordPrimaryPersist()`; any `\Throwable` → fallback row, plus a placeholder pending revision of the unchanged entity when nothing is tracked yet (`claimEntityForWorkspace()`), so the entity is locked to the workspace from its first auto-save. Always synchronous. |
 | Component-tree config write (content template, pattern, page variant) | `WorkspaceConfigEntityPersist::persist()` (A `:84-139`) → `workspace_config` row; exception → snapshot. Deferred on `canvas.api.*` routes. | `persistConfigEntity()` (B `:560-586`) → `workspace_config` row; exception → fallback row. Synchronous. |
 | Code component, asset library, brand kit, `StagedConfigUpdate`, `StagedLanguageConfigOverride` | Snapshot entity (A `:608-611`). | Fallback row (B `retainFallbackDraft()` `:676-702`). Review decisions 3 and 4. |
 | Write-time switch | `executeInStagingWorkspace()` (user-checked, A `:313-319`). | `executeInWorkspaceUnchecked()` (B `:537`). A user without `view` access to the workspace still writes there. |
@@ -86,7 +86,12 @@ core's list includes them; the cost is that non-Canvas publishes must be
 refused by the snapshot gate.
 
 B records the storage layer's message on the fallback row
-(`AutoSaveFallbackStore::STORAGE_ERROR_KEY`). `stageFallbackDrafts()` stages
+(`AutoSaveFallbackStore::STORAGE_ERROR_KEY`) and, when the entity is not yet
+tracked, saves a placeholder pending revision of its unchanged state so
+core's tracker — and with it core's lock, Canvas's cross-workspace lock and
+the `canvas_workflows` presave demotion — knows the entity from the first
+auto-save; the row shadows the placeholder, and the next accepted draft
+replaces it through latest-only pruning. `stageFallbackDrafts()` stages
 config rows only (`workspace_config` applies them at priority 0). For a
 content row, `validateItem()` runs entity validation first — the
 per-property violations are the actionable reasons — and, when the draft
@@ -106,7 +111,7 @@ External edits:
 
 | | A | B |
 |---|---|---|
-| Core `EntityWorkspaceConflict` lock | `CanvasAwareEntityWorkspaceConflictConstraintValidator` (A `:43-50`) exempts Live saves of entities tracked only in Main. | Core lock unchanged. |
+| Core `EntityWorkspaceConflict` lock | `CanvasAwareEntityWorkspaceConflictConstraintValidator` (A `:43-50`) exempts Live saves of entities tracked only in Main. | Core lock unchanged; holds from the first auto-save even when that draft is storage-rejected (placeholder revision, section 3). |
 | `EntityChanged` | `CanvasAwareEntityChangedConstraintValidator` compares against Live. | Core compares against the staged revision; `ClientDataToEntityConverter` raises `changed` to request time (B `:225-237`). |
 | Detection and resolution | `original_hash` in the buffer sidecar, `getUnresolvedConflict()` (Page only), GET `/auto-saves/pending` 409, `conflictViolation()` at publish, `PATCH ... {resolved_conflict_id}`, `ConflictResolutionOutcomeEnum`, the `/conflict` UI, bell and toast notifications. All active only with `canvas_dev_cd` installed. This is 1.x code; A's diff against the merge base touches none of it. | Removed. `canvas_dev_cd` is `hidden: true, lifecycle: obsolete` and uninstalled by `canvas_update_11201()`. |
 | Programmatic Live save (Drush, migrate, `$entity->save()`) | Not validated, not detected unless `canvas_dev_cd` + Page; staged revision promoted over the Live edit at publish (core `checkConflictsOnTarget()` is a no-op). | Same. Review decision 2 says these are refused at publish through `getDifferringRevisionIdsOnTarget()`; nothing in B `src/` or `modules/` calls it. |
@@ -200,8 +205,11 @@ covers the replacement retention rule. The fallback path is exercised through
 three throwing fixtures (`canvas_force_publish_error` presave, non-revisionable
 `entity_test`, config UUID mismatch), none at the database level.
 
-Not covered in B: the core lock refusing a Live save of a Main-drafted
-entity (the premise of review decision 2); a fallback row written inside a
+Covered in B by `ApiAutoSaveControllerTest::testPost`: the core lock
+refusing a Live save of a Main-drafted entity (the premise of review
+decision 2), asserted on an entity whose only draft was storage-rejected.
+
+Not covered in B: a fallback row written inside a
 workspace being readable from Live with the `workspace_config` key-value
 overlay active (B's kernel base no longer enables the overlay); the
 publish-409 "legacy error" Playwright case; the "All changes published!"
@@ -265,6 +273,6 @@ Open items before cutting PRs from B:
 1. Port the section 1 commits.
 2. Implement the `getDifferringRevisionIdsOnTarget()` pre-publish check or
    remove the claim from the review and ADR 0017.
-3. Add kernel tests for the core lock and for fallback-row visibility across
-   the key-value overlay.
+3. Add a kernel test for fallback-row visibility across the key-value
+   overlay.
 4. Reconcile the review document and ADR 0017 with the code.
