@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Drupal\canvas\Workspace;
 
+use Drupal\canvas\AutoSave\Workspace\AutoSaveFallbackStore;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
-use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\workspaces\WorkspaceInterface;
@@ -27,7 +27,7 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 final class WorkspaceNormalizer {
 
   public function __construct(
-    private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly AutoSaveFallbackStore $fallbackStore,
     private readonly AccountInterface $currentUser,
     private readonly ModuleHandlerInterface $moduleHandler,
     // NULL on a site updating from 1.x until canvas_update_11201() has enabled
@@ -83,7 +83,7 @@ final class WorkspaceNormalizer {
   }
 
   /**
-   * The number of entities the workspace tracks, plus Canvas snapshot drafts.
+   * The number of entities the workspace tracks, plus its fallback drafts.
    *
    * An approximation for the switcher and the delete confirmation; the
    * review manifest is the authoritative list.
@@ -96,13 +96,7 @@ final class WorkspaceNormalizer {
       }
       $count += \count(\array_unique($revision_map));
     }
-    $snapshot_storage = $this->entityTypeManager->getStorage('canvas_auto_save_snapshot');
-    $count += (int) $snapshot_storage->getQuery()
-      ->accessCheck(FALSE)
-      ->condition('workspace', (string) $workspace->id())
-      ->count()
-      ->execute();
-    return $count;
+    return $count + \count($this->fallbackStore->getAllDrafts((string) $workspace->id()));
   }
 
 }

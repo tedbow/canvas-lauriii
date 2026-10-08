@@ -10,6 +10,7 @@ use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveFallbackStore;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\Workspace\WorkspaceEntityLockedException;
+use Drupal\canvas\Workspace\WorkspaceNormalizer;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\entity_test\Entity\EntityTest;
 use Drupal\entity_test\Entity\EntityTestMulRevPub;
@@ -202,10 +203,17 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     $list = $manager->getAllAutoSaveList(FALSE);
     self::assertArrayHasKey(AutoSaveManager::getAutoSaveKey($entity), $list);
 
+    // The workspace switcher's pending count includes fallback drafts.
+    $normalizer = $this->container->get(WorkspaceNormalizer::class);
+    $workspace = Workspace::load(AutoSaveWorkspace::ID);
+    self::assertInstanceOf(Workspace::class, $workspace);
+    self::assertSame(1, $normalizer->normalize($workspace, NULL)['pendingChangesCount']);
+
     // Discarding removes the fallback row.
     $manager->delete($entity);
     self::assertTrue($manager->getAutoSaveEntity($entity)->isEmpty());
     self::assertNull($store->getDraft(AutoSaveWorkspace::ID, AutoSaveFallbackStore::targetKey($entity)));
+    self::assertSame(0, $normalizer->normalize($workspace, NULL)['pendingChangesCount']);
   }
 
   /**
