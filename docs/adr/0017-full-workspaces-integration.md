@@ -85,7 +85,9 @@ unit of review and publish.
    holds what cannot be such a save: drafts the storage layer rejected, and
    drafts of config entity types whose save has side effects. A fallback row
    shadows the primary store and is removed by the next successful primary
-   persist. The 1.x `canvas.auto_save` store is read by the update path
+   persist. A content entity whose first draft was rejected is still tracked
+   in the workspace through a placeholder pending revision of its unchanged
+   state, so core's workspace lock applies from the first auto-save. The 1.x `canvas.auto_save` store is read by the update path
    only. Client data is converted and validated inside the staging
    workspace, where the draft lives. The Main workspace cannot be deleted. A pending workspace revision only carries revisionable
    fields, so every field a draft can edit is revisionable (the page owner

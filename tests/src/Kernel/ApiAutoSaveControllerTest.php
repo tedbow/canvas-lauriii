@@ -50,6 +50,8 @@ use Drupal\Tests\user\Traits\UserCreationTrait;
 use Drupal\Tests\workspace_config\Kernel\WorkspaceConfigTestTrait;
 use Drupal\user\Entity\User;
 use Drupal\user\UserInterface;
+use Drupal\workspaces\WorkspaceManagerInterface;
+use Drupal\workspaces\WorkspaceTrackerInterface;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
@@ -1073,14 +1075,30 @@ final class ApiAutoSaveControllerTest extends KernelTestBase {
     $this->assertSame(['message' => 'Successfully published 2 items.'], self::decodeResponse($response));
 
     // A draft the storage layer refuses to write is retained in the fallback
-    // store, with the rejection recorded on the row, and the editor is not
-    // told. Publishing is refused with a per-item violation, nothing goes
-    // live, and both drafts stay pending.
+    // store, with the rejection recorded on the row. Publishing is refused
+    // with a per-item violation, nothing goes live, and both drafts stay
+    // pending.
     $autoSave->saveEntity($node1->set('title', 'cause exception'), 'client-a');
     $autoSave->saveEntity($node2->set('title', 'this will be fine'));
     $workspace_auto_save = $this->container->get(WorkspaceAutoSave::class);
     self::assertSame('Forced exception for testing purposes.', $workspace_auto_save->getRejectedDraftError($node1));
     self::assertNull($workspace_auto_save->getRejectedDraftError($node2));
+    // The rejected first draft still claims the node for the workspace: one
+    // placeholder revision is tracked, the pending list has one entry for the
+    // node (the fallback row, not the placeholder), and core's workspace lock
+    // refuses a save of the node outside the workspace.
+    $tracker = $this->container->get(WorkspaceTrackerInterface::class);
+    $tracked_node1 = static fn (): int => \count($tracker->getTrackedEntities(AutoSaveWorkspace::ID, 'node', [(string) $node1->id()])['node'] ?? []);
+    self::assertSame(1, $tracked_node1());
+    $node1_keys = \array_filter(\array_keys($autoSave->getAllAutoSaveList(FALSE)), static fn (string $key): bool => \str_starts_with($key, AutoSaveWorkspace::ID . ':node:' . $node1->id() . ':'));
+    self::assertSame([AutoSaveManager::getAutoSaveKey($node1)], \array_values($node1_keys));
+    $node_storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage('node');
+    $live_violations = $this->container->get(WorkspaceManagerInterface::class)->executeOutsideWorkspace(static function () use ($node_storage, $node1): array {
+      $live = $node_storage->loadUnchanged((string) $node1->id());
+      self::assertInstanceOf(NodeInterface::class, $live);
+      return \array_map(static fn ($violation): string => (string) $violation->getMessage(), \iterator_to_array($live->validate()));
+    });
+    self::assertNotEmpty(\array_filter($live_violations, static fn (string $message): bool => \str_contains($message, 'being edited in')), \implode("\n", $live_violations));
     $response = $this->makePublishAllRequest([]);
     $decoded = self::decodeResponse($response);
     self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
@@ -1090,17 +1108,17 @@ final class ApiAutoSaveControllerTest extends KernelTestBase {
     self::assertSame(AutoSaveManager::getAutoSaveKey($node1), $decoded['errors'][0]['source']['pointer']);
     self::assertFalse($autoSave->getAutoSaveEntity($node1)->isEmpty());
     self::assertFalse($autoSave->getAutoSaveEntity($node2)->isEmpty());
-    $node_storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage('node');
     self::assertSame('I am unique!', $node_storage->loadUnchanged((string) $node1->id())?->label());
     self::assertSame('I am different!', $node_storage->loadUnchanged((string) $node2->id())?->label());
 
     // Once the storage layer accepts the draft again, re-sending the same
     // payload from the same client is not treated as a no-op retry: it moves
-    // the draft into the workspace, clears the rejection, and the publish
-    // promotes it. Nothing is lost.
+    // the draft into the workspace (replacing the placeholder revision),
+    // clears the rejection, and the publish promotes it. Nothing is lost.
     $this->container->get(StateInterface::class)->set('canvas_force_publish_error.throw', FALSE);
     $autoSave->saveEntity($node1->set('title', 'cause exception'), 'client-a');
     self::assertNull($workspace_auto_save->getRejectedDraftError($node1));
+    self::assertSame(1, $tracked_node1());
     self::assertSame('I am unique!', $node_storage->loadUnchanged((string) $node1->id())?->label());
     $response = $this->makePublishAllRequest([]);
     $this->assertSame(['message' => 'Successfully published 2 items.'], self::decodeResponse($response));

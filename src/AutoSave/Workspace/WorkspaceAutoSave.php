@@ -586,6 +586,14 @@ final class WorkspaceAutoSave {
   }
 
   /**
+   * Stages a content entity draft as a tracked pending revision.
+   *
+   * A rejected first draft still claims the entity for the workspace with a
+   * `changed`-only pending revision of the unchanged entity, so core's
+   * EntityWorkspaceConflict lock and the workflow presave hook apply from the
+   * first auto-save; the fallback row keeps shadowing it until a draft is
+   * accepted, which replaces it like any previously tracked revision.
+   *
    * @param array<string, mixed> $entry
    */
   private function persistContentEntity(ContentEntityInterface $entity, array $entry, string $workspace_id): void {
@@ -605,10 +613,47 @@ final class WorkspaceAutoSave {
         '@message' => $e->getMessage(),
       ]);
       $this->retainFallbackDraft($entity, $entry, $workspace_id, $e);
+      if ($previous_revision_ids === []) {
+        $this->claimEntityForWorkspace($entity);
+      }
       return;
     }
     $this->pruneToLatestRevision($to_save, $previous_revision_ids);
     $this->recordPrimaryPersist($entity, $entry, $workspace_id);
+  }
+
+  /**
+   * Tracks an entity in the active workspace with a placeholder revision.
+   *
+   * Saves a copy of the unchanged entity, with only `changed` bumped, while
+   * the workspace is active; core's presave turns it into a tracked pending
+   * revision. Failure is logged only: the fallback row holds the draft
+   * either way.
+   */
+  private function claimEntityForWorkspace(ContentEntityInterface $entity): void {
+    $id = $entity->id();
+    if ($id === NULL) {
+      return;
+    }
+    $storage = $this->entityTypeManager->getStorage($entity->getEntityTypeId());
+    $unchanged = $storage->loadUnchanged($id);
+    if (!$unchanged instanceof ContentEntityInterface) {
+      return;
+    }
+    $placeholder = clone $unchanged;
+    if ($placeholder instanceof EntityChangedInterface) {
+      $placeholder->setChangedTime($this->time->getRequestTime());
+    }
+    try {
+      $placeholder->save();
+    }
+    catch (\Throwable $e) {
+      $this->logger->warning('Canvas could not track @type @id in the workspace for its rejected draft (@message).', [
+        '@type' => $entity->getEntityTypeId(),
+        '@id' => (string) $entity->id(),
+        '@message' => $e->getMessage(),
+      ]);
+    }
   }
 
   /**

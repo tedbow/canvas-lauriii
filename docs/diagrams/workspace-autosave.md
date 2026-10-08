@@ -30,7 +30,10 @@ to write — most often a content draft whose component tree is invalid, since
 `ComponentTreeItem::preSave()` validates component inputs and throws — and
 for config entity types whose save has side effects (code components, asset
 libraries, brand kits, staged config updates, staged configuration
-translations). A rejected row carries the storage layer's message.
+translations). A rejected row carries the storage layer's message, and a
+content entity whose first draft was rejected is still tracked in the
+workspace through a placeholder pending revision of its unchanged state, so
+core's lock applies from the first auto-save.
 Validation runs once, at publish, over every pending change of the workspace
 — and any invalid item aborts the whole publish (all or nothing). A rejected
 content draft that validates cleanly still blocks the publish, with its

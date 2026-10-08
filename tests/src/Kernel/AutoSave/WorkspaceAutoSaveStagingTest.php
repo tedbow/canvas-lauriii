@@ -193,6 +193,9 @@ final class WorkspaceAutoSaveStagingTest extends CanvasKernelTestBase {
     self::assertNotNull($row, 'The draft was retained as a fallback row.');
     self::assertSame('client-a', $row['client_id']);
     self::assertSame('unstorable draft', $row['data']['name'][0]['value'] ?? NULL);
+    // The placeholder revision that would claim the entity for the workspace
+    // is refused for the same reason; the row holds the draft regardless.
+    self::assertSame(0, $this->trackedRevisionCount('entity_test', (string) $entity->id()));
 
     $auto_save = $manager->getAutoSaveEntity($entity);
     self::assertFalse($auto_save->isEmpty(), 'Fallback drafts are readable for any entity type.');
