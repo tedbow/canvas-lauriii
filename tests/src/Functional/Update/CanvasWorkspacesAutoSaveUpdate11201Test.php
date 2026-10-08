@@ -9,6 +9,7 @@ use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
 use Drupal\canvas\Entity\Page;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
+use Symfony\Component\Validator\ConstraintViolationList;
 
 /**
  * Tests the Workspaces auto-save upgrade path end-to-end on the bare Canvas dump.
@@ -67,10 +68,19 @@ final class CanvasWorkspacesAutoSaveUpdate11201Test extends CanvasUpdatePathTest
     $kv = \Drupal::keyValue(AutoSaveManager::AUTO_SAVE_STORE);
     $kv->set($legacy_key, $legacy);
     self::assertSame($legacy, $kv->get($legacy_key));
+    // 1.x form violation rows share the bare key; component instance rows are
+    // keyed by the instance UUID alone.
+    $violations = \Drupal::keyValue(AutoSaveManager::FORM_VIOLATIONS_STORE);
+    $violations->set($legacy_key, new ConstraintViolationList());
+    $instance_violations = \Drupal::keyValue(AutoSaveManager::COMPONENT_INSTANCE_FORM_VIOLATIONS_STORE);
+    $instance_violations->set('7f5c1d7e-7c7d-4a5d-9a0e-0b0a3c2f9b11', new ConstraintViolationList());
 
     $this->runUpdates();
 
     self::assertSame([], $kv->getAll(), 'Legacy key-value auto-save must be removed after migration to workspace staging.');
+    $prefix = AutoSaveWorkspace::ID . ':';
+    self::assertSame([$prefix . $legacy_key], \array_keys($violations->getAll()), 'Form violation rows are re-keyed under the Main workspace.');
+    self::assertSame([$prefix . '7f5c1d7e-7c7d-4a5d-9a0e-0b0a3c2f9b11'], \array_keys($instance_violations->getAll()), 'Component instance violation rows are re-keyed under the Main workspace.');
 
     /** @var \Drupal\workspaces\WorkspaceInterface $workspace */
     $workspace = \Drupal::entityTypeManager()->getStorage('workspace')->load(AutoSaveWorkspace::ID);
