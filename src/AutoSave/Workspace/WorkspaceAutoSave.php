@@ -578,7 +578,7 @@ final class WorkspaceAutoSave {
         '@id' => $id,
         '@message' => $e->getMessage(),
       ]);
-      $this->retainFallbackDraft($entity, $entry, $workspace_id);
+      $this->retainFallbackDraft($entity, $entry, $workspace_id, $e);
       return;
     }
     $this->recordPrimaryPersist($entity, $entry, $workspace_id);
@@ -604,7 +604,7 @@ final class WorkspaceAutoSave {
         '@id' => (string) $entity->id(),
         '@message' => $e->getMessage(),
       ]);
-      $this->retainFallbackDraft($entity, $entry, $workspace_id);
+      $this->retainFallbackDraft($entity, $entry, $workspace_id, $e);
       return;
     }
     $this->pruneToLatestRevision($to_save, $previous_revision_ids);
@@ -671,9 +671,17 @@ final class WorkspaceAutoSave {
   /**
    * Retains a draft as a fallback row.
    *
+   * A rejection is recorded on the row; the publish reports it as a per-item
+   * violation.
+   *
    * @param array<string, mixed> $entry
+   * @param \Throwable|null $rejection
+   *   The storage layer's exception when the primary store refused the
+   *   draft; NULL for entity types the fallback store holds by design.
+   *
+   * @see ::getRejectedDraftError()
    */
-  private function retainFallbackDraft(EntityInterface $entity, array $entry, string $workspace_id): void {
+  private function retainFallbackDraft(EntityInterface $entity, array $entry, string $workspace_id, ?\Throwable $rejection = NULL): void {
     $row = \array_intersect_key($entry, \array_flip([
       'entity_type',
       'entity_id',
@@ -698,7 +706,28 @@ final class WorkspaceAutoSave {
       'owner' => (int) $this->currentUser->id(),
       'updated' => $this->time->getRequestTime(),
     ];
+    if ($rejection !== NULL) {
+      $row[AutoSaveFallbackStore::STORAGE_ERROR_KEY] = $rejection->getMessage();
+    }
     $this->store->drafts($workspace_id)->set(AutoSaveFallbackStore::targetKey($entity), $row);
+  }
+
+  /**
+   * The storage error recorded when the primary store refused a draft.
+   *
+   * @return string|null
+   *   The storage layer's message, or NULL when the draft is in a primary
+   *   store or is held by the fallback store by design.
+   *
+   * @see ::retainFallbackDraft()
+   */
+  public function getRejectedDraftError(EntityInterface $entity, ?string $workspace_id = NULL): ?string {
+    if ($entity->id() === NULL) {
+      return NULL;
+    }
+    $row = $this->store->getDraft($workspace_id ?? $this->getStagingWorkspaceId(), AutoSaveFallbackStore::targetKey($entity));
+    $error = $row[AutoSaveFallbackStore::STORAGE_ERROR_KEY] ?? NULL;
+    return \is_string($error) ? $error : NULL;
   }
 
   /**
@@ -1358,23 +1387,34 @@ final class WorkspaceAutoSave {
   }
 
   /**
-   * Stages every fallback draft of a workspace into the workspace itself.
+   * Stages every config fallback draft of a workspace into the workspace.
    *
-   * Runs before a publish so core's publish can promote them. A draft whose
-   * save succeeds leaves the fallback store (it is now a workspace revision
-   * or workspace-scoped configuration); one whose save fails stays and is
-   * reported.
+   * Runs inside core's pre-publish event. A config entity save inside the
+   * workspace becomes workspace-scoped configuration, which the
+   * workspace_config publish subscriber (priority 0) reads from the workspace
+   * afterwards; a draft whose save succeeds leaves the fallback store, one
+   * whose save fails stays and is reported.
+   *
+   * Content fallback rows are never staged here: core captured the tracked
+   * revisions it will promote before dispatching the event, so a revision
+   * saved now would be left behind, untracked, and lost. A content row
+   * blocks the publish instead, until the editor re-saves the draft (which
+   * retries the primary store) or discards it.
    *
    * @return array<string, \Throwable>
    *   The failures, keyed by auto-save key.
    *
    * @see \Drupal\canvas\EventSubscriber\AutoSave\AutoSaveWorkspacePublishSubscriber::onPrePublish()
+   * @see \Drupal\workspaces\WorkspacePublisher::publish()
    */
   public function stageFallbackDrafts(string $workspace_id): array {
     return $this->executeInWorkspaceUnchecked($workspace_id, function () use ($workspace_id): array {
       $failures = [];
       $this->executePublishTimeStaging(function () use ($workspace_id, &$failures): void {
         foreach ($this->store->getAllDrafts($workspace_id) as $key => $row) {
+          if ($this->entityTypeManager->getDefinition($row['entity_type'])->entityClassImplements(ContentEntityInterface::class)) {
+            continue;
+          }
           $storage = $this->entityTypeManager->getStorage($row['entity_type']);
           $target = $storage->load($row['entity_id'] ?? '');
           $draft = $this->reconstructDraft($row, $target);
@@ -1382,10 +1422,6 @@ final class WorkspaceAutoSave {
             if ($draft instanceof AutoSavePublishAwareInterface) {
               $draft->autoSavePublish();
             }
-            // Inside the workspace: a config entity save stages via
-            // workspace_config, a content entity save becomes a tracked
-            // pending revision; both are promoted by the core publish that
-            // follows.
             $draft->save();
           }
           catch (\Throwable $e) {

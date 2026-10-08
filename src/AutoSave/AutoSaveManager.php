@@ -234,8 +234,9 @@ class AutoSaveManager implements EventSubscriberInterface {
 
     // A payload identical to the currently staged draft from the same client
     // instance is a retry (e.g. after a response timeout): re-staging it
-    // would only churn workspace revisions.
-    if (!$forcePreserve && !$has_form_violations) {
+    // would only churn workspace revisions. Unless the primary store rejected
+    // that draft: then the retry is the way back into the primary store.
+    if (!$forcePreserve && !$has_form_violations && $this->workspaceAutoSave->getRejectedDraftError($entity) === NULL) {
       $staged = $this->workspaceAutoSave->loadAutoSaveEntity($entity);
       if (!$staged->isEmpty()
         && \is_string($staged->hash)

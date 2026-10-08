@@ -11,8 +11,9 @@ the permanent default the editor activates when negotiation yields none;
 named workspaces are parallel units of work. The workspace — not the item —
 is the unit of review and publish: `CanvasWorkspacePublisher` calls core
 `Workspace::publish()` in one database transaction, and Canvas's pre-publish
-subscriber validates every pending change and stages the fallback drafts
-before core promotes anything.
+subscriber validates every pending change and stages the config fallback
+drafts before core promotes anything; a content draft the storage layer
+rejected blocks the publish until it is re-saved or discarded.
 
 Invariant: for any target entity (per type, ID, langcode, and workspace),
 exactly one staging store holds the current draft. Auto-save keys are
@@ -23,13 +24,18 @@ then the primary store: the one tracked workspace revision for content
 successful persist to a primary store deletes the shadowing fallback row.
 
 Invalid is not the same as unstorable. Staging never runs entity validation,
-so a draft that would fail validation stores in its primary store like any
-other draft; the fallback store exists for drafts the storage layer refuses
-to write, and for config entity types whose save has side effects (code
-components, asset libraries, brand kits, staged config updates, staged
-configuration translations). Validation runs once, at publish, over every
-pending change of the workspace — and any invalid item aborts the whole
-publish (all or nothing).
+so a draft with, say, an invalid title stores in its primary store like any
+other draft. The fallback store exists for drafts the storage layer refuses
+to write — most often a content draft whose component tree is invalid, since
+`ComponentTreeItem::preSave()` validates component inputs and throws — and
+for config entity types whose save has side effects (code components, asset
+libraries, brand kits, staged config updates, staged configuration
+translations). A rejected row carries the storage layer's message.
+Validation runs once, at publish, over every pending change of the workspace
+— and any invalid item aborts the whole publish (all or nothing). A rejected
+content draft that validates cleanly still blocks the publish, with its
+recorded storage message, until it is re-saved (which retries the primary
+store) or discarded.
 
 ```mermaid
 flowchart TB
@@ -59,7 +65,7 @@ flowchart TB
 
     subgraph Publish["Workspace publish"]
         publisher["CanvasWorkspacePublisher<br>Workspace::publish() in one transaction"]
-        gate["AutoSaveWorkspacePublishSubscriber<br>pre-publish: validate every pending change,<br>stage fallback drafts (all surfaces)<br>post-publish: clear staging stores,<br>delete named workspace<br>(canvas_workflows adds the review gate<br>and resets Main's review state)"]
+        gate["AutoSaveWorkspacePublishSubscriber<br>pre-publish: validate every pending change,<br>stage config fallback drafts (all surfaces);<br>a rejected content draft blocks the publish<br>post-publish: clear staging stores,<br>delete named workspace<br>(canvas_workflows adds the review gate<br>and resets Main's review state)"]
     end
 
     live["Live<br>default revisions + live configuration"]
@@ -81,7 +87,8 @@ flowchart TB
 ```
 
 Publishing completes a workspace: Canvas's pre-publish subscriber validates
-every pending change and stages the fallback drafts, core promotes every
+every pending change (a content draft the storage layer rejected is a
+violation of its own) and stages the config fallback drafts, core promotes every
 tracked revision (sibling translations and dependent path aliases included),
 the `workspace_config` pre-publish subscriber applies staged configuration,
 and the post-publish subscriber clears every Canvas staging store for the

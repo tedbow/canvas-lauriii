@@ -7,8 +7,15 @@ use Drupal\Core\Entity\EntityStorageException;
 
 /**
  * Implements hook_entity_presave().
+ *
+ * Throws for any entity whose label contains "cause exception", unless the
+ * `canvas_force_publish_error.throw` state value is FALSE: a test can flip
+ * it to simulate a storage failure that later clears.
  */
 function canvas_force_publish_error_entity_presave(EntityInterface $entity): void {
+  if (\Drupal::state()->get('canvas_force_publish_error.throw', TRUE) === FALSE) {
+    return;
+  }
   // Check if entity has a title/label and it contains "cause exception".
   $label = $entity->label();
   if ($label && stripos((string) $label, 'cause exception') !== FALSE) {

@@ -8,6 +8,7 @@ namespace Drupal\Tests\canvas\Kernel;
 
 use Drupal\canvas\AutoSave\AutoSaveManager;
 use Drupal\canvas\AutoSave\Workspace\AutoSaveWorkspace;
+use Drupal\canvas\AutoSave\Workspace\WorkspaceAutoSave;
 use Drupal\canvas\Controller\ApiAutoSaveController;
 use Drupal\canvas\Entity\AssetLibrary;
 use Drupal\canvas\Entity\Component;
@@ -28,6 +29,7 @@ use Drupal\Core\Extension\ModuleInstallerInterface;
 use Drupal\Core\Http\Exception\CacheableAccessDeniedHttpException;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\Session\SessionConfigurationInterface;
+use Drupal\Core\State\StateInterface;
 use Drupal\Core\Url;
 use Drupal\image\ImageStyleInterface;
 use Drupal\KernelTests\KernelTestBase;
@@ -1071,21 +1073,45 @@ final class ApiAutoSaveControllerTest extends KernelTestBase {
     $this->assertSame(['message' => 'Successfully published 2 items.'], self::decodeResponse($response));
 
     // A draft the storage layer refuses to write is retained in the fallback
-    // store and cannot be published: the publish is refused with a per-item
-    // violation, nothing goes live, and both drafts stay pending.
-    $autoSave->saveEntity($node1->set('title', 'cause exception'));
+    // store, with the rejection recorded on the row, and the editor is not
+    // told. Publishing is refused with a per-item violation, nothing goes
+    // live, and both drafts stay pending.
+    $autoSave->saveEntity($node1->set('title', 'cause exception'), 'client-a');
     $autoSave->saveEntity($node2->set('title', 'this will be fine'));
+    $workspace_auto_save = $this->container->get(WorkspaceAutoSave::class);
+    self::assertSame('Forced exception for testing purposes.', $workspace_auto_save->getRejectedDraftError($node1));
+    self::assertNull($workspace_auto_save->getRejectedDraftError($node2));
     $response = $this->makePublishAllRequest([]);
     $decoded = self::decodeResponse($response);
     self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
     self::assertCount(1, $decoded['errors']);
     self::assertStringContainsString('Forced exception for testing purposes.', $decoded['errors'][0]['detail']);
+    self::assertStringContainsString('Edit it again to retry, or discard it.', $decoded['errors'][0]['detail']);
     self::assertSame(AutoSaveManager::getAutoSaveKey($node1), $decoded['errors'][0]['source']['pointer']);
     self::assertFalse($autoSave->getAutoSaveEntity($node1)->isEmpty());
     self::assertFalse($autoSave->getAutoSaveEntity($node2)->isEmpty());
     $node_storage = $this->container->get(EntityTypeManagerInterface::class)->getStorage('node');
     self::assertSame('I am unique!', $node_storage->loadUnchanged((string) $node1->id())?->label());
     self::assertSame('I am different!', $node_storage->loadUnchanged((string) $node2->id())?->label());
+
+    // Once the storage layer accepts the draft again, re-sending the same
+    // payload from the same client is not treated as a no-op retry: it moves
+    // the draft into the workspace, clears the rejection, and the publish
+    // promotes it. Nothing is lost.
+    $this->container->get(StateInterface::class)->set('canvas_force_publish_error.throw', FALSE);
+    $autoSave->saveEntity($node1->set('title', 'cause exception'), 'client-a');
+    self::assertNull($workspace_auto_save->getRejectedDraftError($node1));
+    self::assertSame('I am unique!', $node_storage->loadUnchanged((string) $node1->id())?->label());
+    $response = $this->makePublishAllRequest([]);
+    $this->assertSame(['message' => 'Successfully published 2 items.'], self::decodeResponse($response));
+    self::assertTrue($autoSave->getAutoSaveEntity($node1)->isEmpty());
+    $live_node1 = $node_storage->loadUnchanged((string) $node1->id());
+    $live_node2 = $node_storage->loadUnchanged((string) $node2->id());
+    self::assertInstanceOf(NodeInterface::class, $live_node1);
+    self::assertInstanceOf(NodeInterface::class, $live_node2);
+    self::assertSame('cause exception', $live_node1->label());
+    self::assertSame('this will be fine', $live_node2->label());
+    $this->container->get(StateInterface::class)->delete('canvas_force_publish_error.throw');
   }
 
   /**

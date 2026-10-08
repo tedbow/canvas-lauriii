@@ -67,24 +67,36 @@ their failures outside the request's error handling (A
 | | A | B |
 |---|---|---|
 | Entry point | `CanvasWorkspacePublisher::publish()` (A `:84-183`): flush buffers, list, per-item access + conflict + validation, throw `WorkspacePublishValidationException`; then one transaction around `executePublishTimeStaging()` (snapshots saved, content templates enabled) and `$workspace->publish()`. | `CanvasWorkspacePublisher::publish()` (B `:67-94`): transaction, `$workspace->publish()`. |
-| Validation and access | Only through the Canvas publisher: Canvas API and cron (`WorkspaceScheduledPublish.php:64`). Core Workspaces UI and direct `$workspace->publish()` run only the snapshot gate (`AutoSaveWorkspacePublishSubscriber:50-68`). | `AutoSaveWorkspacePublishSubscriber::onPrePublish()` (B `:74-109`, priority 90): validation, per-item access, `stageFallbackDrafts()`. Uniform across Canvas API, core UI, cron: core does not catch subscriber exceptions (`WorkspacePublisher.php:57-62`). |
+| Validation and access | Only through the Canvas publisher: Canvas API and cron (`WorkspaceScheduledPublish.php:64`). Core Workspaces UI and direct `$workspace->publish()` run only the snapshot gate (`AutoSaveWorkspacePublishSubscriber:50-68`). | `AutoSaveWorkspacePublishSubscriber::onPrePublish()` (priority 90): validation, per-item access, `stageFallbackDrafts()` for config rows. Uniform across Canvas API, core UI, cron: core does not catch subscriber exceptions (`WorkspacePublisher.php:57-62`). |
 | Failure response | 500 with pointer `error`, whole publish rolled back (`ApiAutoSaveControllerTest::testPost`). | 422 with one error per item, pointer = auto-save key. |
 | Content templates | Created disabled, enabled at publish (`ContentTemplate::autoSavePublish()`), `isUnpublishedWorkspaceCreation()` in the view builder, `workspace` cache context. | Created enabled; none of the above. |
 
-### Publish-time staging of content fallback drafts (B defect)
+### Storage-rejected content drafts at publish
 
-Core captures `$tracked_entities` before dispatching
+A content draft the storage layer refused at save time (most often an
+invalid component tree: `ComponentTreeItem::preSave()` validates component
+inputs and throws) is not a workspace revision, so core's publish cannot
+promote it. Core captures `$tracked_entities` before dispatching
 `WorkspacePrePublishEvent` and promotes only that list (core
-`WorkspacePublisher.php:56-72`). B's `stageFallbackDrafts()` runs inside that
-event (B `WorkspaceAutoSave.php:1373-1402`). A content fallback draft whose
-`save()` succeeds at that point becomes a tracked revision outside core's
-list: it is not promoted, core's post-publish deletes its association
-(`WorkspaceTracker.php:530-537`) and Canvas's post-publish deletes the
-fallback row. The draft is lost without an error. Config fallback drafts are
-unaffected because `workspace_config`'s subscriber re-reads the workspace
-configuration at priority 0. A staged snapshots before `$workspace->publish()`
-(A `:157-164`), so its list was complete. Reachable only for content drafts
-the storage layer rejected earlier and accepts at publish time.
+`WorkspacePublisher.php:56-72`); a revision saved inside the event would be
+left untracked and dropped by the post-publish cleanup.
+
+A stages its snapshot rows before `$workspace->publish()` (A `:157-164`), so
+core's list includes them; the cost is that non-Canvas publishes must be
+refused by the snapshot gate.
+
+B records the storage layer's message on the fallback row
+(`AutoSaveFallbackStore::STORAGE_ERROR_KEY`). `stageFallbackDrafts()` stages
+config rows only (`workspace_config` applies them at priority 0). For a
+content row, `validateItem()` runs entity validation first — the
+per-property violations are the actionable reasons — and, when the draft
+validates cleanly, reports the recorded storage message as a per-item
+violation. Either way the publish is blocked until the editor re-saves the
+draft (which retries the primary store; `AutoSaveManager::saveEntity()`
+bypasses its identical-payload no-op while a rejection is recorded) or
+discards it. `ApiAutoSaveControllerTest::testPost` covers the refuse, re-save
+and publish sequence with the `canvas_force_publish_error` test module's
+state toggle.
 
 ## 4. Conflicts
 
@@ -217,7 +229,9 @@ Capabilities in A and not in B:
 1. Live-session editing (node form, JSON:API) of an entity drafted in Main.
 2. External-edit conflict detection and resolution (1.x, `canvas_dev_cd`, Page only).
 3. The fixes in section 1.
-4. Content fallback drafts staged into core's promoted list at publish (section 3).
+4. Publishing a storage-rejected content draft in the same publish that
+   stores it (section 3; B blocks the publish until the draft is re-saved
+   or discarded).
 5. Staged writes through core's user-checked workspace switch.
 6. Snapshot gate refusing non-Canvas publishes.
 
@@ -249,10 +263,8 @@ and the "about 500 lines" estimate. ADR 0017 repeats the decision 2 claim.
 Open items before cutting PRs from B:
 
 1. Port the section 1 commits.
-2. Stage content fallback drafts before `$workspace->publish()`, or stop
-   holding content in the fallback store and return 422 on storage rejection.
-3. Implement the `getDifferringRevisionIdsOnTarget()` pre-publish check or
+2. Implement the `getDifferringRevisionIdsOnTarget()` pre-publish check or
    remove the claim from the review and ADR 0017.
-4. Add kernel tests for the core lock and for fallback-row visibility across
+3. Add kernel tests for the core lock and for fallback-row visibility across
    the key-value overlay.
-5. Reconcile the review document and ADR 0017 with the code.
+4. Reconcile the review document and ADR 0017 with the code.

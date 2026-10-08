@@ -101,9 +101,14 @@ unit of review and publish.
    `WorkspacePrePublishEvent` subscriber, which core dispatches inside every
    publish (Canvas API, core Workspaces UI, cron), validates every pending
    change of the workspace (entity validation plus recorded form violations;
-   update access per item) and then stages the fallback drafts into the
-   workspace; any failure throws, and core does not catch it, so no live
-   write happens. Core promotes every tracked revision — sibling
+   update access per item) and then stages the config fallback drafts into
+   the workspace; any failure throws, and core does not catch it, so no live
+   write happens. A content draft the storage layer rejected is retained
+   with the rejection recorded on its fallback row and is reported here as a
+   per-item violation that blocks the publish until the editor re-saves it
+   (which retries the primary store) or discards it; it is never staged at
+   publish, because core captured the revisions it promotes before this
+   event. Core promotes every tracked revision — sibling
    translations and dependent path aliases included, which removes Phase 1's
    grouping and dependent-publish workarounds — and the `workspace_config`
    pre-publish subscriber applies staged configuration.

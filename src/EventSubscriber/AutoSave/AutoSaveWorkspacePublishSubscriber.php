@@ -28,11 +28,15 @@ use Symfony\Component\Validator\ConstraintViolationListInterface;
  * Pre-publish: validates every pending change of the workspace (content
  * entities via entity validation plus recorded form violations, config
  * entities via typed data) and checks per-item update access, then stages
- * every fallback-store draft into the workspace so core's publish promotes
- * it. Any failure throws a WorkspacePublishValidationException, which core
- * does not catch: no live write happens when anything is invalid. Because
- * core dispatches this event inside every publish (Canvas API, core
- * Workspaces UI, cron), every surface is validated the same way.
+ * every config fallback-store draft into the workspace so the
+ * workspace_config publish applies it. A content draft the storage layer
+ * rejected is a violation of its own: it cannot be staged this late (core
+ * already captured the revisions it will promote), so it blocks the publish
+ * until the editor re-saves or discards it. Any failure throws a
+ * WorkspacePublishValidationException, which core does not catch: no live
+ * write happens when anything is invalid. Because core dispatches this event
+ * inside every publish (Canvas API, core Workspaces UI, cron), every surface
+ * is validated the same way.
  *
  * Post-publish: clears every Canvas staging store for the workspace, then
  * deletes the workspace: a published workspace is a completed unit of work.
@@ -96,9 +100,10 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
         throw new WorkspacePublishValidationException($violation_sets);
       }
 
-      // Fallback drafts are invisible to core's publish until they are staged
-      // into the workspace. A draft the storage layer still rejects cannot be
-      // published; it stays pending and blocks the publish.
+      // Config fallback drafts are invisible to the workspace_config publish
+      // until they are staged into the workspace. A draft the storage layer
+      // still rejects cannot be published; it stays pending and blocks the
+      // publish.
       foreach ($this->workspaceAutoSave->stageFallbackDrafts($workspace_id) as $key => $exception) {
         $violation_sets[] = self::stagingViolation($key, $exception);
       }
@@ -139,10 +144,19 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
       foreach ($form_violations as $form_violation) {
         $violations->add($form_violation);
       }
-      if ($violations->count() === 0) {
-        return NULL;
+      if ($violations->count() > 0) {
+        // These are the actionable reasons, with per-property pointers: an
+        // invalid component tree is also what made the storage layer refuse
+        // the draft, so the generic rejection below would only repeat them.
+        return ApiAutoSaveController::getViolationSetsFromPropertyPathsAndRoot($entity, $violations);
       }
-      return ApiAutoSaveController::getViolationSetsFromPropertyPathsAndRoot($entity, $violations);
+      // A valid draft the storage layer still refused is not a workspace
+      // revision, so core's publish cannot promote it.
+      $storage_error = $this->workspaceAutoSave->getRejectedDraftError($entity);
+      if ($storage_error !== NULL) {
+        return self::rejectedDraftViolation($entity, $storage_error);
+      }
+      return NULL;
     }
     return NULL;
   }
@@ -175,7 +189,26 @@ final class AutoSaveWorkspacePublishSubscriber implements EventSubscriberInterfa
   }
 
   /**
-   * A violation set for a fallback draft the storage layer still rejects.
+   * A per-item violation set for a content draft the storage layer refused.
+   *
+   * Resolving means re-saving the draft (which retries the primary store) or
+   * discarding it.
+   */
+  private static function rejectedDraftViolation(ContentEntityInterface $entity, string $storage_error): EntityConstraintViolationList {
+    $message = \sprintf('The draft of %s could not be saved to the workspace (%s). Edit it again to retry, or discard it.', (string) ($entity->label() ?? $entity->id()), $storage_error);
+    $violation = new ConstraintViolation(
+      message: $message,
+      messageTemplate: $message,
+      parameters: [],
+      root: $entity,
+      propertyPath: AutoSaveManager::getAutoSaveKey($entity),
+      invalidValue: NULL,
+    );
+    return new EntityConstraintViolationList($entity, [$violation]);
+  }
+
+  /**
+   * A violation set for a config fallback draft the storage layer rejects.
    */
   private static function stagingViolation(string $key, \Throwable $exception): ConstraintViolationListInterface {
     $message = \sprintf('The draft %s cannot be stored: %s', $key, $exception->getMessage());

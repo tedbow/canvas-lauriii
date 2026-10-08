@@ -22,6 +22,7 @@ use Drupal\Core\KeyValueStore\KeyValueStoreInterface;
  *   1.x `canvas.auto_save` shape (`entity_type`, `entity_id`, `data`,
  *   `langcode`, `is_default_translation`, `label`, `data_hash`, `client_id`,
  *   `owner`, `updated`), so the 1.x store migrates by renaming its collection.
+ *   A row the storage layer rejected also carries `storage_error`.
  * - metadata (`canvas.auto_save_meta.{workspace}`): what the primary stores
  *   cannot record about a draft: the client instance that produced it, the
  *   verbatim draft `path` value, and attribution for workspace-scoped
@@ -35,6 +36,13 @@ final class AutoSaveFallbackStore {
   public const string DRAFTS_COLLECTION_PREFIX = 'canvas.auto_save.';
 
   public const string METADATA_COLLECTION_PREFIX = 'canvas.auto_save_meta.';
+
+  /**
+   * The draft row key holding the storage layer's message when it refused.
+   *
+   * Absent on rows the fallback store holds by design.
+   */
+  public const string STORAGE_ERROR_KEY = 'storage_error';
 
   /**
    * The longest workspace ID a collection name can carry.
