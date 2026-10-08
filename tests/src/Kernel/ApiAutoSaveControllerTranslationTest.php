@@ -596,7 +596,7 @@ final class ApiAutoSaveControllerTranslationTest extends CanvasKernelTestBase {
     // else the workspace holds.
     $response = $this->makePublishAllRequest();
     self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
-    self::assertSame([], $autoSave->getAllAutoSaveList(with_entities: FALSE, with_conflicts: FALSE));
+    self::assertSame([], $autoSave->getAllAutoSaveList(with_entities: FALSE));
 
     // The Spanish edit landed on the Spanish translation only; the default
     // translation is untouched.
