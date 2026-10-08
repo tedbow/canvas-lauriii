@@ -185,10 +185,11 @@ sequenceDiagram
 ```
 
 Auto-save staging is backed by Workspaces, as described in
-[ADR 0014](adr/0014-stage-autosaves-in-a-dedicated-workspace.md) and the
+[ADR 0017](adr/0017-full-workspaces-integration.md) and the
 [workspace auto-save diagram](diagrams/workspace-autosave.md). Segments are
-config entities, so their drafts are stored as auto-save snapshot rows and
-validated when published through the Canvas publish pipeline.
+config entities without a component tree, so their drafts are stored in the
+per-workspace key-value fallback store and validated when the workspace is
+published.
 
 So the flow will start with a POST to create the original entity.
 This new segment will be disabled by default.

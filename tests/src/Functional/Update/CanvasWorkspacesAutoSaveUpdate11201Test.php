@@ -78,6 +78,7 @@ final class CanvasWorkspacesAutoSaveUpdate11201Test extends CanvasUpdatePathTest
     self::assertSame(AutoSaveWorkspace::LABEL, $workspace->label());
     self::assertSame('default', $workspace->get('provider')->value);
     self::assertTrue(\Drupal::moduleHandler()->moduleExists('workspace_config'));
+    self::assertFalse(\Drupal::moduleHandler()->moduleExists('canvas_dev_cd'), 'The obsolete 1.x conflict detection flag module is uninstalled.');
 
     // Migration preserves attribution: the pending change stays attributed to
     // the legacy editor with the legacy edit time, not to the migration run.

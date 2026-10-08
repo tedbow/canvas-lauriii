@@ -804,7 +804,8 @@ function canvas_post_update_0030_page_variant_selection_options(): void {
  * Every draft a 1.x site holds in the `canvas.auto_save` key-value store is
  * persisted through the staged write path into the Main workspace: content
  * drafts become pending workspace revisions, component tree config drafts
- * become workspace-scoped configuration, and everything else a snapshot row.
+ * become workspace-scoped configuration, and everything else a row in the
+ * Main workspace's key-value fallback store.
  * Payload, editor and last-edit time are preserved. Rows whose target entity
  * no longer exists are dropped.
  *

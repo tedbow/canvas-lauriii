@@ -1,6 +1,10 @@
+# @todo Remove after Canvas 2.0: canvas_update_11201() uninstalls it.
 name: Drupal Canvas Dev Conflict Detection
-description: 'Enables conflict detection and resolution in Canvas - feature flag until the conflict detection and resolution is fully stable.'
+description: '(OBSOLETE) Former feature flag for the 1.x external-edit conflict detection, which Canvas 2.x replaces with the Workspaces entity lock.'
 core_version_requirement: ^11.3
+hidden: true
+lifecycle: obsolete
+lifecycle_link: 'https://git.drupalcode.org/project/canvas/-/work_items/3591732'
 type: module
 package: Drupal Canvas
 dependencies:
